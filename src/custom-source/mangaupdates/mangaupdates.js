@@ -42,8 +42,8 @@ class Provider {
       genres: (record.genres || []).map((g) => g.genre)
     };
   }
-  // Anime stubs: required by the abstract CustomSource shape even though
-  // supportsAnime=false. They will never be called.
+  // Anime stubs: required by the abstract CustomSource shape. Seanime does
+  // not gate calls on `supportsAnime`, so these are reachable in practice.
   async getAnime(_ids) {
     return [];
   }
@@ -51,7 +51,7 @@ class Provider {
     return null;
   }
   async getAnimeWithRelations(_id) {
-    return null;
+    throw new Error("mangaupdates: anime not supported");
   }
   async getAnimeDetails(_id) {
     return null;

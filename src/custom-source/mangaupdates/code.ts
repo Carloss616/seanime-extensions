@@ -1,5 +1,6 @@
 /// <reference path="../../../types/core.d.ts" />
 /// <reference path="../../../types/custom-source.d.ts" />
+/// <reference path="../../../types/mu-api.d.ts" />
 
 class Provider implements CustomSource {
     private readonly api = "https://api.mangaupdates.com/v1"
@@ -53,8 +54,8 @@ class Provider implements CustomSource {
         }
     }
 
-    // Anime stubs: required by the abstract CustomSource shape even though
-    // supportsAnime=false. They will never be called.
+    // Anime stubs: required by the abstract CustomSource shape. Seanime does
+    // not gate calls on `supportsAnime`, so these are reachable in practice.
     async getAnime(_ids: number[]): Promise<$app.AL_BaseAnime[]> {
         return []
     }
@@ -64,7 +65,9 @@ class Provider implements CustomSource {
         return null
     }
     async getAnimeWithRelations(_id: number): Promise<$app.AL_CompleteAnime> {
-        return null as unknown as $app.AL_CompleteAnime
+        // Throw so goja produces a clean promise rejection. Returning null
+        // here nil-derefs inside seanime's GojaCustomSource.GetAnimeWithRelations.
+        throw new Error("mangaupdates: anime not supported")
     }
     async getAnimeDetails(
         _id: number,
@@ -137,23 +140,3 @@ function mapFormat(type?: string): $app.AL_MediaFormat | undefined {
     }
 }
 
-type MUSearchResponse = {
-    total_hits: number
-    page: number
-    per_page: number
-    results?: Array<{ record: MUSeriesRecord }>
-}
-
-type MUSeriesRecord = {
-    series_id: number
-    title: string
-    url: string
-    description?: string | null
-    image?: { url?: { original?: string; thumb?: string } }
-    type?: string
-    year?: string
-    bayesian_rating?: number
-    rating_votes?: number
-    genres?: Array<{ genre: string }>
-    associated?: Array<{ title?: string }>
-}

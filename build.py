@@ -4,14 +4,22 @@ Build all extensions under src/ and regenerate marketplace.json.
 
 Layout convention:
     src/<type>/<id>/code.ts
-    src/<type>/<id>/manifest.template.json   (with "payload": "__PAYLOAD__")
-    src/<type>/<id>/<id>.js                  (generated)
-    src/<type>/<id>/<id>.json                (generated)
+    src/<type>/<id>/manifest.template.json   (no payload — payloadURI auto-injected from manifestURI)
+    src/<type>/<id>/<id>.js                  (generated, raw JS — what seanime fetches via payloadURI)
+    src/<type>/<id>/<id>.json                (generated, manifest with payloadURI set to <id>.js raw URL)
+
+Distribution mode: payloadURI (per official doc — see
+https://seanime.gitbook.io/seanime-extensions/content-providers/write-test-share).
+The manifest sets payloadURI to the raw GitHub URL of <id>.js and leaves
+`payload` empty. Seanime fetches the JS lazily at plugin load time. Keeps the
+manifest small and readable, and makes PR diffs land in the .js (or .ts source)
+instead of as escaped strings inside the JSON.
 
 Usage:
     python3 build.py                     build every extension + marketplace.json
     python3 build.py <id> [<id> ...]     build only matching extensions (+ marketplace)
     python3 build.py new <type> <id>     scaffold a new extension folder
+    python3 build.py dev [<id> ...]      generate <id>.dev.json for every (or given) extension
     python3 build.py --no-marketplace    skip marketplace.json regeneration
 """
 from __future__ import annotations
@@ -68,13 +76,22 @@ def build_one(ext_dir: Path) -> dict | None:
         return None
 
     manifest = json.loads(tpl.read_text())
-    if manifest.get("payload") != "__PAYLOAD__":
-        raise SystemExit(f"{tpl}: missing 'payload': '__PAYLOAD__' placeholder")
     if manifest["type"] not in VALID_TYPES:
         raise SystemExit(f"{tpl}: unknown type {manifest['type']!r}")
+    manifest_uri = manifest.get("manifestURI", "")
+    if not manifest_uri.endswith(".json"):
+        raise SystemExit(
+            f"{tpl}: manifestURI must be set and end with .json "
+            f"(got {manifest_uri!r}) — payloadURI is derived from it"
+        )
 
     js = transpile(code_ts.read_text())
-    manifest["payload"] = js
+
+    # payloadURI distribution: store the .js URL alongside the .json, leave
+    # `payload` empty. Both files share a path prefix on raw GitHub so they
+    # always come from the same commit when fetched via the same branch.
+    manifest["payloadURI"] = manifest_uri[: -len(".json")] + ".js"
+    manifest["payload"] = ""
 
     ext_id = manifest["id"]
     (ext_dir / f"{ext_id}.js").write_text(js)
@@ -156,7 +173,6 @@ def cmd_new(ext_type: str, ext_id: str) -> int:
                 "website": "",
                 "readme": f"https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/{ext_type}/{ext_id}/README.md",
                 "lang": "en",
-                "payload": "__PAYLOAD__",
             },
             indent=2,
         )
@@ -174,6 +190,69 @@ def cmd_new(ext_type: str, ext_id: str) -> int:
     return 0
 
 
+def cmd_dev(targets: set[str]) -> int:
+    """Generate <id>.dev.json next to each manifest.template.json.
+
+    Dev manifests live alongside the prod manifest but are gitignored
+    (see .gitignore -> *.dev.json). Drop them into $SEANIME_DATA_DIR/extensions/
+    (or symlink) and seanime treats `payloadURI` as a local filesystem path,
+    re-reading it from disk on every load — no `build.py` step needed for
+    code-only iteration since seanime transpiles TS internally when
+    `language: "typescript"`.
+
+    Caveats:
+    - `icon` is set to a `file://` URL pointing at the local icon.png.
+      Works in seanime desktop (webview can load file://); in pure web
+      builds, mixed-scheme policy may block it — fall back to the HTTPS
+      icon manually if so.
+    - seanime refuses to install dev manifests via the "Add from URL" UI
+      flow; drop the file in the data dir manually.
+    """
+    matched = False
+    discovered_ids: list[str] = []
+    for tpl in discover_manifests():
+        ext_dir = tpl.parent
+        manifest = json.loads(tpl.read_text())
+        ext_id = manifest.get("id", "")
+        discovered_ids.append(ext_id)
+        if targets and ext_id not in targets:
+            continue
+        if manifest.get("type") not in VALID_TYPES:
+            continue
+        code_ts = ext_dir / "code.ts"
+        if not code_ts.exists():
+            sys.stderr.write(f"skip {ext_id}: no code.ts in {ext_dir}\n")
+            continue
+
+        dev = dict(manifest)
+        dev["name"] = f"{manifest.get('name', ext_id)} (dev)"
+        dev["manifestURI"] = ""
+        dev["payloadURI"] = str(code_ts.resolve())
+        dev["isDevelopment"] = True
+        # Drop the embedded payload field if the prod manifest had one;
+        # dev mode reads payloadURI from disk.
+        dev.pop("payload", None)
+        # Prefer a local icon (file://) when available so dev works offline.
+        for cand in ("icon.png", "icon.jpg", "icon.jpeg", "icon.webp", "icon.ico"):
+            icon_path = ext_dir / cand
+            if icon_path.exists():
+                dev["icon"] = f"file://{icon_path.resolve()}"
+                break
+
+        dev_path = ext_dir / f"{ext_id}.dev.json"
+        dev_path.write_text(json.dumps(dev, ensure_ascii=False, indent=2) + "\n")
+        print(f"wrote {dev_path.relative_to(ROOT)}")
+        matched = True
+
+    if targets and not matched:
+        sys.stderr.write(
+            f"no extensions matched: {sorted(targets)}; "
+            f"available: {sorted(discovered_ids)}\n"
+        )
+        return 1
+    return 0
+
+
 def main(argv: list[str]) -> int:
     args = argv[1:]
     if args and args[0] == "new":
@@ -181,6 +260,9 @@ def main(argv: list[str]) -> int:
             sys.stderr.write("usage: build.py new <type> <id>\n")
             return 2
         return cmd_new(args[1], args[2])
+
+    if args and args[0] == "dev":
+        return cmd_dev(set(args[1:]))
 
     regen = True
     if "--no-marketplace" in args:

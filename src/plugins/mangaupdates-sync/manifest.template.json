@@ -1,0 +1,56 @@
+{
+  "id": "mangaupdates-sync",
+  "name": "MangaUpdates Sync",
+  "version": "0.7.1",
+  "manifestURI": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/mangaupdates-sync/mangaupdates-sync.json",
+  "language": "typescript",
+  "type": "plugin",
+  "description": "Syncs your manga reading progress with MangaUpdates whenever you mark a chapter in seanime.",
+  "author": "Carloss616",
+  "icon": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/mangaupdates-sync/icon.png",
+  "website": "https://www.mangaupdates.com/",
+  "readme": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/mangaupdates-sync/README.md",
+  "lang": "en",
+  "plugin": {
+    "version": "1",
+    "permissions": {
+      "scopes": ["storage", "anilist"],
+      "allow": {
+        "networkAccess": {
+          "allowedDomains": ["api.mangaupdates.com"],
+          "reasoning": "Sync your manga reading list with MangaUpdates."
+        }
+      }
+    }
+  },
+  "userConfig": {
+    "version": 1,
+    "requiresConfig": true,
+    "fields": [
+      {
+        "type": "text",
+        "name": "username",
+        "label": "MangaUpdates username",
+        "default": ""
+      },
+      {
+        "type": "text",
+        "name": "password",
+        "label": "MangaUpdates password",
+        "default": ""
+      },
+      {
+        "type": "switch",
+        "name": "autoSyncOnProgress",
+        "label": "Auto-sync changes to MangaUpdates (chapter & manual edits)",
+        "default": "true"
+      },
+      {
+        "type": "switch",
+        "name": "syncScore",
+        "label": "Sync score on manual edit",
+        "default": "true"
+      }
+    ]
+  }
+}

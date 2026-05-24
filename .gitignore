@@ -5,3 +5,8 @@ __pycache__/
 .idea/
 .vscode/
 .tsbuildinfo
+
+# Per-developer dev manifests. They bake in an absolute filesystem path in
+# `payloadURI` and `isDevelopment: true`, so they MUST NOT be shared — and
+# seanime refuses to install them via the marketplace flow anyway.
+*.dev.json

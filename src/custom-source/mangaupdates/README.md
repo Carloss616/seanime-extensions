@@ -8,7 +8,7 @@ Adds [MangaUpdates](https://www.mangaupdates.com/) as a metadata source for sean
 - **Details** — `getMangaDetails(id)` → `GET /v1/series/{id}` (returns minimal AniList-shaped detail object)
 - **Batch fetch** — `getManga(ids)` → parallel `GET /v1/series/{id}`
 
-Anime methods (`listAnime`, `getAnime`, ...) are stubbed and never called because `supportsAnime=false`.
+Anime methods (`listAnime`, `getAnime`, ...) are stubbed. Seanime does **not** gate calls on `supportsAnime` — the stubs are reachable in practice (e.g. the library scanner may invoke `getAnimeWithRelations`), so keep them in place even though `getSettings()` reports `supportsAnime: false`.
 
 ## What this is NOT
 

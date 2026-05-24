@@ -7,9 +7,8 @@
   "type": "custom-source",
   "description": "Adds MangaUpdates as a metadata source (search and details). Read-only; does not provide chapter pages.",
   "author": "Carloss616",
-  "icon": "https://www.mangaupdates.com/favicon.ico",
+  "icon": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/mangaupdates/icon.png",
   "website": "https://www.mangaupdates.com/",
   "readme": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/mangaupdates/README.md",
-  "lang": "en",
-  "payload": "__PAYLOAD__"
+  "lang": "en"
 }

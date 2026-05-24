@@ -5,8 +5,20 @@
     "description": "Adds MangaUpdates as a metadata source (search and details). Read-only; does not provide chapter pages.",
     "author": "Carloss616",
     "manifestURI": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/mangaupdates/mangaupdates.json",
-    "icon": "https://www.mangaupdates.com/favicon.ico",
+    "icon": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/mangaupdates/icon.png",
     "type": "custom-source",
+    "language": "typescript",
+    "lang": "en",
+    "website": "https://www.mangaupdates.com/"
+  },
+  {
+    "id": "mangaupdates-sync",
+    "name": "MangaUpdates Sync",
+    "description": "Syncs your manga reading progress with MangaUpdates whenever you mark a chapter in seanime.",
+    "author": "Carloss616",
+    "manifestURI": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/mangaupdates-sync/mangaupdates-sync.json",
+    "icon": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/mangaupdates-sync/icon.png",
+    "type": "plugin",
     "language": "typescript",
     "lang": "en",
     "website": "https://www.mangaupdates.com/"
