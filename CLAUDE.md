@@ -25,13 +25,62 @@ There is no test command and no lint command. Type-checking is IDE-only via [tsc
 ## Build pipeline (what `build.py` actually does)
 
 1. Discovers every `src/**/manifest.template.json` via `rglob`.
-2. For each, reads the sibling `code.ts`, pipes it through `npx esbuild --loader=ts --target=es2018`.
+2. For each extension folder, reads `code.ts`, resolves `// @inject-lib <path>` markers by inlining the referenced files (see "Splitting an extension across multiple files" below), and pipes the result through `npx esbuild --loader=ts --target=es2018`.
 3. Loads the manifest, asserts `"payload": "__PAYLOAD__"` and that `type` is in `VALID_TYPES`.
 4. Replaces `payload` with the transpiled JS **as a string** (not a file reference — the JS is embedded in the JSON).
 5. Writes `<id>.js` (the raw transpiled JS, for debugging) and `<id>.json` (the manifest with embedded payload) next to the source.
 6. After building, regenerates [marketplace.json](marketplace.json) by reading every built `<id>.json` and projecting `MARKETPLACE_FIELDS` (id, name, description, author, manifestURI, icon, type, language, lang, website). **Never hand-edit `marketplace.json`** — it will be overwritten on the next build.
 
 Both source and built artifacts are committed (the raw GitHub URLs in `manifestURI` are how seanime installs them).
+
+## Splitting an extension across multiple files
+
+Goja has no module loader (`import`/`export` is forbidden at runtime), AND the relevant top-level callbacks — `$app.on*` hooks, the `$ui.register` outer callback, and anything else seanime serializes via `.toString()` and re-execs in a fresh worker — do NOT see module scope at runtime. Each isolated-runtime callback only sees what's physically inside its own body.
+
+To split an extension across files, drop helper TypeScript files into a `lib/` sibling of `code.ts` and reference them with `// @inline <path>` markers placed **inside** each isolated-runtime callback that needs them. `build.py` replaces each marker with the file's contents (minus triple-slash references) before transpiling. The path is relative to `code.ts` and must stay inside the extension folder. Multiple markers per callback are fine:
+
+```ts
+$ui.register((ctx) => {
+    // @inline ./lib/mu-client.ts
+    // @inline ./lib/anilist-helpers.ts
+    const mu = new MUClient(...)
+    // ...
+})
+```
+
+The marker is intentionally a preprocessor directive (textual `#include`-style), NOT an ES `import` — bundlers always hoist imports to module scope, which seanime's `.toString() + eval` strips. The mechanic is documented in detail at the top of [src/plugins/mangaupdates-sync/code.ts](src/plugins/mangaupdates-sync/code.ts).
+
+Lib files are **not** auto-concatenated at module scope — they appear in the built `.js` only where explicitly injected. TypeScript still sees them via the project-wide `include` glob (with `isolatedModules: false` and no `import`/`export`, they share global script scope at type-check time), so the IDE resolves `new MUClient(...)` against the canonical class declaration in `lib/mu-client.ts`. esbuild auto-renames each injected copy (`MUClient2`, etc.) to avoid name collisions at runtime.
+
+### Lib-file scoping rule (avoid dead code in inlines)
+
+**Keep each `lib/*.ts` file as narrow as possible** — only group helpers that are always used together. Every callback that injects a lib file pays the size cost of every declaration in it. If two callbacks need different subsets of helpers, split the lib file rather than inflating both.
+
+`build.py` enforces this with a validator that runs before transpilation. Two errors fail the build:
+
+1. **Missing inline** — a callback body references a name declared in `lib/*.ts` but has no `// @inline ./lib/<file>.ts` marker for that file. The error names the line of the usage and the lib file to add.
+2. **Unused inline** — a marker is present but none of the lib file's top-level declarations (`class`, `function` at column 0) are referenced in the enclosing body. The error suggests either removing the marker or narrowing the lib file.
+
+The validator parses comments/strings/templates with a small state machine to avoid false matches on identifier names that appear in docstrings or log messages.
+
+### Class-field gotcha inside inlined classes
+
+TypeScript class field declarations (`private x: T` even without an initializer) and parameter properties (`constructor(private x: T) {}`) cause esbuild to emit `__publicField(this, ...)` calls — and the `__publicField` helper lives at the module-scope top of the bundle, which inlined classes can't see at runtime. Inside any class that's injected via `// @inline`, declare fields with the `declare` modifier (TypeScript-only, no runtime emit) and assign them in the constructor:
+
+```ts
+class MyHelper {
+    declare private foo: string                // ← `declare` is load-bearing
+    constructor(foo: string) {
+        this.foo = foo                         // assign in constructor body
+    }
+}
+```
+
+See [lib/mu-client.ts](src/plugins/mangaupdates-sync/lib/mu-client.ts) for the working pattern. Symptoms when this is missed: `ReferenceError: __publicField is not defined` at plugin load time.
+
+### Reference plugin
+
+The `mangaupdates-sync` plugin uses this pattern: [lib/mu-client.ts](src/plugins/mangaupdates-sync/lib/mu-client.ts) defines `MUClient` once. Both the post-hook IIFE and the `$ui.register` callback in [code.ts](src/plugins/mangaupdates-sync/code.ts) carry `// @inline ./lib/mu-client.ts`, dropping the class into each isolated runtime that needs it.
 
 ## Adding an extension
 

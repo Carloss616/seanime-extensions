@@ -4,6 +4,15 @@ Pushes your manga reading state to MangaUpdates whenever seanime updates an
 entry — both chapter "+1" bumps and full manual edits (status, score,
 progress). Plugin extension — no seanime core changes required.
 
+## Requires
+
+Any seanime version that supports the
+[official plugin runtime](https://seanime.gitbook.io/seanime-extensions/plugins/introduction).
+The plugin uses only documented APIs (`$ui.register`, `ctx.action.newMangaPageButton`,
+`ctx.newTray`, `ctx.fetch`, `ctx.state`, `ctx.effect`, `ctx.fieldRef`,
+`ctx.registerEventHandler`, `ctx.eventHandler`, `ctx.toast`, `ctx.screen.*`,
+`$storage`, `$store`, `$anilist`) — no fork-specific or undocumented surface.
+
 ## How it works
 
 Two hook pairs run inside `init()`:
@@ -46,19 +55,20 @@ rating endpoint. (Discovered by spec audit — the previous version sent
 | `password`           | MU password. Used to fetch the initial session token; reused on 401 to refresh.                      |
 | `autoSyncOnProgress` | On by default. Gates **both** the chapter-update and manual-edit hooks.                              |
 | `syncScore`          | On by default. When off, skips the `PUT .../rating` request (status / chapter still sync).           |
+| `autoMatchFallback`  | **Off by default.** When on, the resolver falls back to MU's title search if no explicit link exists; the first hit is cached as `source: "auto"`. May mismatch on common / generic titles. |
 
 The session token lives in the plugin's `$storage`. On 401 the plugin
 re-logs in using the stored credentials and refreshes the token.
 
 ## Permissions requested
 
-- `storage` — session token + AniList-id → MU-series-id cache.
+- `storage` — session token and per-entry `mu_link_<mediaId>` records.
 - `anilist` — fast lookup of title / `siteUrl` without an extra HTTP call.
 - `networkAccess: ["api.mangaupdates.com"]`.
 
 ## Mapping AniList ↔ MU series
 
-Tried in this order:
+The plugin tries to resolve the MU `series_id` in this order:
 
 1. **Custom-source fast path.** If the manga came from the
    [`mangaupdates` custom-source](../../custom-source/mangaupdates/) in this
@@ -66,10 +76,38 @@ Tried in this order:
    Detected via the `ext_custom_source_mangaupdates|END|` prefix on
    `manga.siteUrl`; decoded from the low 40 bits of `mediaId`. **No network
    call.**
-2. **`$storage` cache.** First push for a given `mediaId` is cached.
-3. **Title search fallback.** For real AniList mangas,
-   `POST /v1/series/search` with the title; the first result wins.
-   Ambiguous titles can map wrong.
+2. **Explicit link in `$storage`.** Set by the user via the "Link to
+   MangaUpdates" button on the manga page (see below).
+3. **Title-search fallback (opt-in).** Only when `autoMatchFallback` is
+   enabled in plugin settings. `POST /v1/series/search` with the title; the
+   first result wins. Cached as `source: "auto"`. Ambiguous titles can map
+   wrong, which is why this is off by default.
+
+If none of the above resolve, the plugin logs a warning and skips the push.
+
+### Linking AniList entries explicitly
+
+The plugin renders a **Link to MangaUpdates** button on every manga entry
+page that isn't from the `mangaupdates` custom-source. The button:
+
+- Pre-populates the search input with the entry's title and triggers an
+  initial search against MangaUpdates.
+- Opens the plugin's tray-popover with the search results listed as
+  pickable buttons. **The tray icon must be pinned** (top-right of the
+  seanime navbar) for the popover to open — this is a documented
+  limitation of `tray.open()`. If the tray isn't pinned, the button
+  shows a toast asking you to pin it.
+- When you click a search result, the plugin records the mapping in
+  `$storage` under `mu_link_<mediaId>` and the button relabels itself
+  to `MU: <title>`.
+- Click the button again to re-link (e.g. if the original pick was wrong).
+- Inside the tray popover you can also use the **Clear link** button to
+  remove the mapping for the current entry.
+
+If the button shows **MU: ? (verify)**, the link was set by the
+**Auto-match fallback** (`autoMatchFallback` in plugin settings) — it took
+the first MU search result for the entry's title. Click the button to
+confirm or re-link manually.
 
 ## Status mapping
 
@@ -118,8 +156,10 @@ buckets) imply 0–10 with one decimal.
 ## SPIKE — still pending
 
 - Token TTL and the 401 → re-login path — not yet exercised in production.
-- Title-search fallback for real AniList mangas — only the custom-source
-  path has been tested end-to-end.
+- Title-search fallback (opt-in, `autoMatchFallback`) for real AniList
+  mangas — preserved from earlier versions for users who relied on it;
+  not the recommended path. Manual linking via the button is the canonical
+  flow now.
 - The rating endpoint flow (`PUT /v1/series/{id}/rating`) — added in
   v0.7.0; needs a real edit to confirm MU persists it.
 
@@ -131,9 +171,11 @@ buckets) imply 0–10 with one decimal.
   updates to the same manga may drop silently.
 - **Push-only.** If you change things on MU directly, seanime won't notice.
   A "Pull diff" UI could be added with `$ui` later.
-- **Title-based mapping** for the AniList path is lossy — `mal_id` /
-  `anilist_id` cross-IDs would help; the spec doesn't expose them on
-  `GET /v1/series/{id}`.
+- **Linking requires user action** for AniList entries — the plugin can't
+  automatically determine the right MU series without prompting (the MU
+  spec doesn't expose `mal_id`/`anilist_id` cross-IDs). The opt-in
+  title-search fallback covers users who don't want to link manually but
+  may mismatch.
 - **Stored credentials** live in seanime's `$storage` backend — plaintext at
   the JSON level. Treat the seanime data directory as sensitive.
 - **No repeat-count sync.** AniList tracks rereads via `UpdateEntryRepeat`;

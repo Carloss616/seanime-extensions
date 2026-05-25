@@ -10,3 +10,13 @@ __pycache__/
 # `payloadURI` and `isDevelopment: true`, so they MUST NOT be shared — and
 # seanime refuses to install them via the marketplace flow anyway.
 *.dev.json
+
+# Local design docs / implementation plans — kept on disk for reference
+# but not part of the repo's public surface.
+docs/superpowers/
+
+# Auto-created by `npx tsc --noEmit` when TypeScript isn't already installed.
+# This repo intentionally uses `npx --yes esbuild` for the build (see CLAUDE.md);
+# the package.json npm creates here is a transient install record, not project config.
+/package.json
+/package-lock.json
