@@ -4,89 +4,87 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-A personal collection of [seanime](https://github.com/5rahim/seanime) extensions. Each extension is a TypeScript file (`code.ts`) plus a JSON manifest template; the build step transpiles the TS and inlines it into the manifest as a string payload. The output `<id>.json` files are what seanime actually loads.
+A personal collection of [seanime](https://github.com/5rahim/seanime) extensions. Each extension is a TypeScript entry (`code.ts`) plus a `manifest.json`. The build transpiles `code.ts` to a sibling `code.js`; the manifest's `payloadURI` points at the raw GitHub URL of that `code.js`, which is what seanime fetches and runs. Both source and built `code.js` are committed.
 
 ## Build commands
 
 ```bash
-python3 build.py                  # build every extension + regen marketplace.json
-python3 build.py mangaupdates     # build one extension by id
-python3 build.py id1 id2          # build several
-python3 build.py --no-marketplace # skip marketplace.json regeneration
-python3 build.py new <type> <id>  # scaffold a new extension under src/<type>/<id>/
+bun run build        # build every extension + regen marketplace.json
+bun run typecheck    # tsc --noEmit over src/+types/ and over scripts/ (two configs)
+bun run check        # biome lint + format check (check:fix to autofix)
 ```
 
-`<type>` must be one of: `custom-source`, `manga-provider`, `anime-torrent-provider`, `onlinestream-provider`, `plugin` (enforced by `VALID_TYPES` in [build.py](build.py)).
+`<type>` folders are: `custom-source`, `manga-provider`, `anime-torrent-provider`, `onlinestream-provider`, `plugin` (the build's `VALID_TYPES` in [scripts/build.ts](scripts/build.ts) validates each manifest's `type`).
 
-Requirements: Python 3, `npx` on PATH (esbuild is fetched via `npx --yes esbuild` on demand — no `node_modules` checked in).
+Requirements: [Bun](https://bun.com/) on PATH; `bun install` once (pulls `@types/bun` + biome). No scaffold command — create new extensions by hand (see "Adding an extension").
 
-There is no test command and no lint command. Type-checking is IDE-only via [tsconfig.json](tsconfig.json) (`noEmit: true`).
+## Build pipeline (what `scripts/build.ts` actually does)
 
-## Build pipeline (what `build.py` actually does)
+For each `src/*/*/code.ts`:
 
-1. Discovers every `src/**/manifest.template.json` via `rglob`.
-2. For each extension folder, reads `code.ts`, resolves `// @inject-lib <path>` markers by inlining the referenced files (see "Splitting an extension across multiple files" below), and pipes the result through `npx esbuild --loader=ts --target=es2018`.
-3. Loads the manifest, asserts `"payload": "__PAYLOAD__"` and that `type` is in `VALID_TYPES`.
-4. Replaces `payload` with the transpiled JS **as a string** (not a file reference — the JS is embedded in the JSON).
-5. Writes `<id>.js` (the raw transpiled JS, for debugging) and `<id>.json` (the manifest with embedded payload) next to the source.
-6. After building, regenerates [marketplace.json](marketplace.json) by reading every built `<id>.json` and projecting `MARKETPLACE_FIELDS` (id, name, description, author, manifestURI, icon, type, language, lang, website). **Never hand-edit `marketplace.json`** — it will be overwritten on the next build.
+1. Loads + validates the sibling `manifest.json`: `type` must be in `VALID_TYPES`, `manifestURI` must end in `manifest.json`, and `payloadURI` must be the derived sibling `code.js` URL (so the two can't drift).
+2. Bundles each `modules/*.ts` standalone with `Bun.build` (resolving its `utils/*` imports), then bundles the entry `code.ts` with a plugin that re-emits each imported module as a **self-contained function** (see "Splitting an extension across multiple files").
+3. Writes the single-file `code.js` next to `code.ts`.
 
-Both source and built artifacts are committed (the raw GitHub URLs in `manifestURI` are how seanime installs them).
+Then regenerates [marketplace.json](marketplace.json) by projecting `MARKETPLACE_FIELDS` (id, name, description, author, manifestURI, icon, type, language, lang, website) from every manifest, sorted by id. **Never hand-edit `marketplace.json`** — overwritten on the next build.
+
+No bundling-to-string: goja has no module system, so `code.js` IS the payload (fetched lazily via `payloadURI`).
 
 ## Splitting an extension across multiple files
 
-Goja has no module loader (`import`/`export` is forbidden at runtime), AND the relevant top-level callbacks — `$app.on*` hooks, the `$ui.register` outer callback, and anything else seanime serializes via `.toString()` and re-execs in a fresh worker — do NOT see module scope at runtime. Each isolated-runtime callback only sees what's physically inside its own body.
+Goja has no module loader (`import`/`export` is forbidden at runtime), AND the relevant top-level callbacks — `$app.on*` hooks and the `$ui.register` callback — do NOT see module scope at runtime. seanime serializes each callback via `.toString()` and re-evals it in a **fresh isolated runtime**; the docs are explicit that a callback reading a module-scope or `init()`-scope variable gets `undefined`. So any helper a callback needs must end up *physically inside the serialized function's own body*.
 
-To split an extension across files, drop helper TypeScript files into a `lib/` sibling of `code.ts` and reference them with `// @inline <path>` markers placed **inside** each isolated-runtime callback that needs them. `build.py` replaces each marker with the file's contents (minus triple-slash references) before transpiling. The path is relative to `code.ts` and must stay inside the extension folder. Multiple markers per callback are fine:
+The convention that keeps this DRY:
 
-```ts
-$ui.register((ctx) => {
-    // @inline ./lib/mu-client.ts
-    // @inline ./lib/anilist-helpers.ts
-    const mu = new MUClient(...)
-    // ...
-})
+- Put each isolated callback in its own file under `modules/`, exporting exactly one function (`export const onPostUpdateEntry = (event) => { ... }`).
+- Put shared helpers (classes/functions) under `utils/` and `import` them normally into the module files.
+- `code.ts` imports each module and registers it: `$app.onPostUpdateEntryProgress(onPostUpdateEntry)`.
+
+[scripts/build.ts](scripts/build.ts) bundles each `modules/*.ts` standalone (inlining its `utils/*` imports via `Bun.build`), then bundles `code.ts` with an `onLoad` plugin that re-emits each imported module as a **self-contained function**:
+
+```js
+// NOT an IIFE-closure — the helper would live in the closure, unreachable
+// from inside the serialized callback (`fn.toString()` excludes it).
+export const onPostUpdateEntry = (...args) => {
+  class MUClient { /* ...inlined from utils/... */ }
+  const onPostUpdateEntry = (event) => { /* ...uses MUClient... */ };
+  return onPostUpdateEntry(...args);
+};
 ```
 
-The marker is intentionally a preprocessor directive (textual `#include`-style), NOT an ES `import` — bundlers always hoist imports to module scope, which seanime's `.toString() + eval` strips. The mechanic is documented in detail at the top of [src/plugins/mangaupdates-sync/code.ts](src/plugins/mangaupdates-sync/code.ts).
+Because the class is declared **inside** the registered function's body, `onPostUpdateEntry.toString()` carries it across the runtime boundary. An IIFE wrapper (`(() => { class MUClient{}; return fn })()`) would put the class in the closure and fail at runtime with `ReferenceError: MUClient is not defined` — the bug this wrapper exists to avoid. See the wrapper comment in [scripts/build.ts](scripts/build.ts).
 
-Lib files are **not** auto-concatenated at module scope — they appear in the built `.js` only where explicitly injected. TypeScript still sees them via the project-wide `include` glob (with `isolatedModules: false` and no `import`/`export`, they share global script scope at type-check time), so the IDE resolves `new MUClient(...)` against the canonical class declaration in `lib/mu-client.ts`. esbuild auto-renames each injected copy (`MUClient2`, etc.) to avoid name collisions at runtime.
+A custom-source's methods are *not* serialized per-callback (the class instance lives in one runtime), so a custom-source can be a single `code.ts` with no `modules/` — see [src/custom-source/mangaupdates/code.ts](src/custom-source/mangaupdates/code.ts).
 
-### Lib-file scoping rule (avoid dead code in inlines)
+### Class-field gotcha inside helper classes
 
-**Keep each `lib/*.ts` file as narrow as possible** — only group helpers that are always used together. Every callback that injects a lib file pays the size cost of every declaration in it. If two callbacks need different subsets of helpers, split the lib file rather than inflating both.
-
-`build.py` enforces this with a validator that runs before transpilation. Two errors fail the build:
-
-1. **Missing inline** — a callback body references a name declared in `lib/*.ts` but has no `// @inline ./lib/<file>.ts` marker for that file. The error names the line of the usage and the lib file to add.
-2. **Unused inline** — a marker is present but none of the lib file's top-level declarations (`class`, `function` at column 0) are referenced in the enclosing body. The error suggests either removing the marker or narrowing the lib file.
-
-The validator parses comments/strings/templates with a small state machine to avoid false matches on identifier names that appear in docstrings or log messages.
-
-### Class-field gotcha inside inlined classes
-
-TypeScript class field declarations (`private x: T` even without an initializer) and parameter properties (`constructor(private x: T) {}`) cause esbuild to emit `__publicField(this, ...)` calls — and the `__publicField` helper lives at the module-scope top of the bundle, which inlined classes can't see at runtime. Inside any class that's injected via `// @inline`, declare fields with the `declare` modifier (TypeScript-only, no runtime emit) and assign them in the constructor:
+TypeScript class field declarations (`private x: T`) and parameter properties (`constructor(private x: T) {}`) can compile to `__publicField(this, ...)` calls under some transpiler targets — a helper that lives at bundle module scope, unreachable from inside an isolated callback body (`ReferenceError: __publicField is not defined`). `Bun.build`'s current target emits native class fields, so this is largely historical, but as a defensive measure declare fields with the `declare` modifier (TS-only, no runtime emit) and assign them in the constructor:
 
 ```ts
 class MyHelper {
-    declare private foo: string                // ← `declare` is load-bearing
+    private declare foo: string                // ← `declare` keeps emit clean
     constructor(foo: string) {
         this.foo = foo                         // assign in constructor body
     }
 }
 ```
 
-See [lib/mu-client.ts](src/plugins/mangaupdates-sync/lib/mu-client.ts) for the working pattern. Symptoms when this is missed: `ReferenceError: __publicField is not defined` at plugin load time.
+See [utils/mu-client.ts](src/plugins/mangaupdates-sync/utils/mu-client.ts) for the working pattern.
 
 ### Reference plugin
 
-The `mangaupdates-sync` plugin uses this pattern: [lib/mu-client.ts](src/plugins/mangaupdates-sync/lib/mu-client.ts) defines `MUClient` once. Both the post-hook IIFE and the `$ui.register` callback in [code.ts](src/plugins/mangaupdates-sync/code.ts) carry `// @inline ./lib/mu-client.ts`, dropping the class into each isolated runtime that needs it.
+The `mangaupdates-sync` plugin uses this pattern: [utils/mu-client.ts](src/plugins/mangaupdates-sync/utils/mu-client.ts) defines `MUClient` once; the callback modules ([modules/on-post-update-entry.ts](src/plugins/mangaupdates-sync/modules/on-post-update-entry.ts), [modules/register.ts](src/plugins/mangaupdates-sync/modules/register.ts)) import it, and the build inlines it into each one.
 
 ## Adding an extension
 
-`python3 build.py new <type> <id>` creates `src/<type>/<id>/` with a stub `code.ts`, a `manifest.template.json` (with the `__PAYLOAD__` placeholder and a `manifestURI` already pointing at the eventual raw GitHub URL), and a `README.md`. After implementation, run `python3 build.py <id>` to produce the artifacts, then commit everything.
+Create `src/<type>/<id>/` by hand:
 
-`<type>` directories under `src/` are pure folder convention. The build script doesn't care about path depth — it accepts any subfolder containing both `code.ts` and `manifest.template.json`.
+- `code.ts` — the entry (triple-slash-reference the `types/*.d.ts` you need; register hooks/UI here).
+- `manifest.json` — set `id`, `type`, `manifestURI` (ending in `manifest.json`), `payloadURI` (the sibling `code.js` URL), `icon` (point at `assets/icon.png`), and the standard metadata.
+- `assets/icon.png`, `README.md`.
+- `modules/` + `utils/` only if the extension has isolated callbacks needing shared helpers.
+
+Then `bun run build` and commit the source + `code.js`. The build accepts any `src/*/*/code.ts` regardless of the `<type>` folder name.
 
 ## Runtime environment for extension code
 
@@ -95,7 +93,7 @@ Extensions run inside seanime under **goja** (Go's JS engine, no Node, no browse
 - `fetch(url, options)` returns a `FetchResponse` whose `text()` / `json()` are **synchronous methods** (not Promises) — even though the outer `fetch` returns a Promise. See how [src/custom-source/mangaupdates/code.ts](src/custom-source/mangaupdates/code.ts) calls `res.json()` without `await`.
 - `$sleep`, `$clone`, `$replace`, `$toString`, `$getUserPreference` are runtime helpers (not Node/browser builtins).
 - Plugins additionally get `$app` (lifecycle hooks), `$anilist` (in-process AniList lookups), `$storage` (per-extension persistence) — declared in [types/plugin.d.ts](types/plugin.d.ts).
-- ES2018 target. No `async/await` polyfill issues, but no newer syntax.
+- `tsconfig.json` targets ES2018 for IDE/typecheck strictness, but `Bun.build` does not down-convert syntax — modern output (native class fields, optional chaining, etc.) passes through. Recent goja accepts it; if a feature ever trips goja, avoid it in source.
 
 Each `code.ts` pulls types in via triple-slash references at the top, e.g.:
 
@@ -123,13 +121,13 @@ The `CustomSource` abstract class declares both anime and manga methods. Even wh
 
 Plugin extensions use a top-level `init()` function (declared in [types/plugin.d.ts](types/plugin.d.ts)) as the entry point. Inside `init()`, register hooks via `$app.onPreUpdateEntryProgress` / `$app.onPostUpdateEntryProgress` / etc. State that must outlive `init()` goes in closures or `$storage`.
 
-Convention used by `mangaupdates-sync`: capture payload in the **pre**-hook into an in-memory `Map`, then consume it in the **post**-hook. The post-hook only fires when the underlying AniList update succeeds, so this keeps the external service (MU) and AniList in lock-step without a transaction. See [src/plugins/mangaupdates-sync/code.ts](src/plugins/mangaupdates-sync/code.ts) `init()`.
+Convention used by `mangaupdates-sync`: capture the payload in the **pre**-hook into `$store` (the cross-runtime in-memory channel — hook runtimes can't share closures), then consume it in the **post**-hook. The post-hook only fires when the underlying AniList update succeeds, so this keeps the external service (MU) and AniList in lock-step without a transaction. The hooks live in [modules/](src/plugins/mangaupdates-sync/modules/) and are wired up in [code.ts](src/plugins/mangaupdates-sync/code.ts) `init()`.
 
 Every hook callback must call `event.next()` — even on error paths.
 
 ## Plugin manifest extras
 
-Plugin manifests have two blocks beyond the standard fields ([example](src/plugins/mangaupdates-sync/manifest.template.json)):
+Plugin manifests have two blocks beyond the standard fields ([example](src/plugins/mangaupdates-sync/manifest.json)):
 
 - `plugin.permissions.scopes` — needed capabilities (`storage`, `anilist`, …).
 - `plugin.permissions.allow.networkAccess.allowedDomains` — host allow-list; `fetch` to anything not listed is blocked.

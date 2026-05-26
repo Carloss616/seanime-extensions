@@ -41,14 +41,14 @@ This is **not** a manga reader. MangaUpdates does not host chapter pages — it 
 From the repo root:
 
 ```bash
-python3 build.py mangaupdates
+bun run build
 ```
 
-This regenerates `mangaupdates.js` and `mangaupdates.json` from `code.ts` + `manifest.template.json`.
+This transpiles `code.ts` to `code.js` (the `payloadURI` target) and regenerates `marketplace.json` from `manifest.json`.
 
 ## Local install
 
-Copy the built `mangaupdates.json` into `$SEANIME_DATA_DIR/extensions/` and reload extensions in seanime.
+Copy `manifest.json` into `$SEANIME_DATA_DIR/extensions/` and reload extensions in seanime.
 
 ## Attribution
 

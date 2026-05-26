@@ -1,0 +1,21 @@
+{
+  "name": "seanime-extensions",
+  "module": "build.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "bun run scripts/build.ts",
+    "postbuild": "bun run check:fix",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p scripts/tsconfig.json",
+    "check": "biome check .",
+    "check:fix": "biome check . --write --unsafe"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.15",
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^6.0.3"
+  },
+  "packageManager": "bun@1.3.14"
+}

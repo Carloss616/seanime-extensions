@@ -28,8 +28,10 @@ the update, so MU stays in lock-step.
 
 > Note: hook callbacks do **not** close over module-scope helpers — seanime's
 > goja runtime serializes them via `.toString()` and recompiles them in a
-> fresh pool runtime. Every hook body in `code.ts` is therefore fully
-> self-contained; shared state between Pre and Post goes through `$store`.
+> fresh runtime. Each callback lives in its own `modules/*.ts` file and the
+> build inlines its `utils/` deps into the callback body, so the serialized
+> function is self-contained; shared state between Pre and Post goes through
+> `$store`.
 
 ## What the plugin sends to MU
 

@@ -10,27 +10,27 @@
 // tracker's own code.ts because they are not shared.
 
 interface MUSeriesRecord {
-    series_id: number
-    title: string
-    url: string
-    description?: string | null
-    image?: { url?: { original?: string; thumb?: string } }
-    type?: string
-    year?: string
-    bayesian_rating?: number
-    rating_votes?: number
-    genres?: Array<{ genre: string }>
-    associated?: Array<{ title?: string }>
-    // SPIKE: not confirmed that MU exposes cross-ids on /series/{id}. Kept
-    // optional so the tracker's resolveReverseMapping can probe for them.
-    anilist_id?: number
-    mal_id?: number
-    external_ids?: { anilist?: number; mal?: number }
+  series_id: number;
+  title: string;
+  url: string;
+  description?: string | null;
+  image?: { url?: { original?: string; thumb?: string } };
+  type?: string;
+  year?: string;
+  bayesian_rating?: number;
+  rating_votes?: number;
+  genres?: Array<{ genre: string }>;
+  associated?: Array<{ title?: string }>;
+  // SPIKE: not confirmed that MU exposes cross-ids on /series/{id}. Kept
+  // optional so the tracker's resolveReverseMapping can probe for them.
+  anilist_id?: number;
+  mal_id?: number;
+  external_ids?: { anilist?: number; mal?: number };
 }
 
 interface MUSearchResponse {
-    total_hits: number
-    page: number
-    per_page: number
-    results?: Array<{ record: MUSeriesRecord }>
+  total_hits: number;
+  page: number;
+  per_page: number;
+  results?: Array<{ record: MUSeriesRecord }>;
 }
