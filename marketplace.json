@@ -1,5 +1,17 @@
 [
   {
+    "id": "custom-local-manga",
+    "name": "Local Manga (Custom)",
+    "description": "A custom metadata source for manga not on AniList/MangaUpdates. Serves a user-curated catalog (from a URL or inline JSON) so obscure titles appear in your collection and can be read with any installed manga provider.",
+    "author": "Carloss616",
+    "manifestURI": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/local-manga/manifest.json",
+    "icon": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/local-manga/assets/icon.png",
+    "type": "custom-source",
+    "language": "typescript",
+    "lang": "en",
+    "website": "https://github.com/Carloss616/seanime-extensions"
+  },
+  {
     "id": "mangaupdates",
     "name": "MangaUpdates",
     "description": "Adds MangaUpdates as a metadata source (search and details). Read-only; does not provide chapter pages.",

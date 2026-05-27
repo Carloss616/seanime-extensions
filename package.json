@@ -8,7 +8,8 @@
     "postbuild": "bun run check:fix",
     "typecheck": "tsc --noEmit && tsc --noEmit -p scripts/tsconfig.json",
     "check": "biome check .",
-    "check:fix": "biome check . --write --unsafe"
+    "check:fix": "biome check . --write --unsafe",
+    "test": "bun test"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.15",

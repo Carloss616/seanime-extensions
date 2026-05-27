@@ -1,0 +1,39 @@
+{
+  "id": "custom-local-manga",
+  "name": "Local Manga (Custom)",
+  "version": "1.0.0",
+  "manifestURI": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/local-manga/manifest.json",
+  "language": "typescript",
+  "type": "custom-source",
+  "description": "A custom metadata source for manga not on AniList/MangaUpdates. Serves a user-curated catalog (from a URL or inline JSON) so obscure titles appear in your collection and can be read with any installed manga provider.",
+  "author": "Carloss616",
+  "icon": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/local-manga/assets/icon.png",
+  "website": "https://github.com/Carloss616/seanime-extensions",
+  "readme": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/local-manga/README.md",
+  "lang": "en",
+  "payloadURI": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/local-manga/code.js",
+  "userConfig": {
+    "requiresConfig": true,
+    "version": 1,
+    "fields": [
+      {
+        "name": "catalogUrl",
+        "label": "Catalog URL — public raw JSON (gist/repo raw, or http://localhost:8000/catalog.json). No token; leave empty to use the inline JSON below.",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "name": "catalog",
+        "label": "Inline catalog JSON (used when Catalog URL is empty). The default below is an editable example — replace it with your own entries (full field list in the README).",
+        "type": "text",
+        "default": "{\"version\":1,\"manga\":[{\"id\":1,\"title\":\"Example Title\",\"synonyms\":[\"alternate title\"],\"genres\":[\"Action\"],\"status\":\"RELEASING\",\"chapters\":120,\"year\":2024}]}"
+      },
+      {
+        "name": "cacheMinutes",
+        "label": "Cache minutes (0 disables caching)",
+        "type": "text",
+        "default": "10"
+      }
+    ]
+  }
+}

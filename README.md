@@ -8,6 +8,7 @@ Official docs: <https://seanime.gitbook.io/seanime-extensions>
 
 | ID                     | Type          | Status                                            |
 | ---------------------- | ------------- | ------------------------------------------------- |
+| `custom-local-manga`   | custom-source | ready                                             |
 | `mangaupdates`         | custom-source | ready                                             |
 | `mangaupdates-sync`    | plugin        | ready                                             |
 

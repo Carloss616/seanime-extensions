@@ -1,0 +1,22 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="back" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F59E0B"/><stop offset="1" stop-color="#D97706"/></linearGradient>
+    <linearGradient id="front" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FBBF24"/><stop offset="1" stop-color="#F59E0B"/></linearGradient>
+    <filter id="soft" x="-25%" y="-25%" width="150%" height="150%"><feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#7C2D12" flood-opacity="0.3"/></filter>
+    <filter id="sheet" x="-25%" y="-25%" width="150%" height="150%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#78350F" flood-opacity="0.25"/></filter>
+  </defs>
+  <g filter="url(#soft)">
+    <path d="M72 176 Q72 150 98 150 L184 150 Q198 150 208 160 L226 178 Q236 188 250 188 L426 188 Q452 188 452 214 L452 378 Q452 404 426 404 L98 404 Q72 404 72 378 Z" fill="url(#back)"/>
+
+    <g filter="url(#sheet)">
+      <rect x="144" y="118" width="228" height="196" rx="14" fill="#FFFFFF"/>
+    </g>
+    <g font-family="Menlo, 'DejaVu Sans Mono', monospace" font-weight="700" font-size="26">
+      <text x="168" y="160" fill="#334155">{</text>
+      <text x="186" y="198"><tspan fill="#D97706">"manga"</tspan><tspan fill="#334155">: [</tspan></text>
+      <text x="206" y="236" fill="#334155">{</text>
+    </g>
+
+    <path d="M72 270 Q72 244 98 244 L426 244 Q452 244 452 270 L452 378 Q452 404 426 404 L98 404 Q72 404 72 378 Z" fill="url(#front)"/>
+  </g>
+</svg>
