@@ -1,12 +1,24 @@
 [
   {
-    "id": "custom-local-manga",
-    "name": "Local Manga (Custom)",
+    "id": "local-catalog",
+    "name": "Local Catalog",
     "description": "A custom metadata source for manga not on AniList/MangaUpdates. Serves a user-curated catalog (from a URL or inline JSON) so obscure titles appear in your collection and can be read with any installed manga provider.",
     "author": "Carloss616",
-    "manifestURI": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/local-manga/manifest.json",
-    "icon": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/local-manga/assets/icon.png",
+    "manifestURI": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/local-catalog/manifest.json",
+    "icon": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/local-catalog/assets/icon.png",
     "type": "custom-source",
+    "language": "typescript",
+    "lang": "en",
+    "website": "https://github.com/Carloss616/seanime-extensions"
+  },
+  {
+    "id": "local-catalog-manager",
+    "name": "Local Catalog Manager",
+    "description": "Manage your local-catalog from inside seanime (add/edit/delete) and sync it to a GitHub Gist so the custom-source serves it across devices.",
+    "author": "Carloss616",
+    "manifestURI": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/local-catalog-manager/manifest.json",
+    "icon": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/local-catalog-manager/assets/icon.png",
+    "type": "plugin",
     "language": "typescript",
     "lang": "en",
     "website": "https://github.com/Carloss616/seanime-extensions"

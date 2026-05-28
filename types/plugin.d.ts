@@ -256,6 +256,8 @@ interface PluginContext {
   fetch(input: string, init?: FetchOptions): Promise<FetchResponse>;
 
   newTray(opts: NewTrayOptions): Tray;
+  cron: Cron;
+  newCommandPalette(opts: CommandPaletteOptions): CommandPalette;
   newWebview(opts: WebviewOptions): Webview;
 }
 
@@ -447,6 +449,19 @@ interface Tray {
     },
   ): unknown;
 
+  select(
+    label: string,
+    opts: {
+      placeholder?: string;
+      value?: string;
+      options: { label: string; value: string }[];
+      fieldRef: FieldRef<string>;
+    },
+  ): unknown;
+  switch(
+    label: string,
+    opts: { side?: "left" | "right"; fieldRef: FieldRef<boolean> },
+  ): unknown;
   render(builder: () => unknown): void;
   updateBadge(update: TrayBadgeUpdate): void;
   onOpen(callback: () => void): void;
@@ -457,4 +472,41 @@ interface Tray {
   open(): void;
   close(): void;
   update(): void;
+}
+
+interface Cron {
+  /** Adds (or replaces) a cron job. cronExpr is a 5-field expression or macro. */
+  add(id: string, cronExpr: string, fn: () => void): void;
+  remove(id: string): void;
+  removeAll(): void;
+  total(): number;
+  /** Starts the scheduler (jobs do not run until started). */
+  start(): void;
+  /** Stops the scheduler; can be resumed with start(). */
+  stop(): void;
+  hasStarted(): boolean;
+}
+
+interface CommandPaletteOptions {
+  placeholder?: string;
+  keyboardShortcut?: string;
+}
+
+interface CommandPaletteItem {
+  label?: string;
+  value: string;
+  filterType?: "includes" | "startsWith";
+  heading?: string;
+  onSelect: () => void;
+}
+
+interface CommandPalette {
+  setItems(items: CommandPaletteItem[]): void;
+  setPlaceholder(placeholder: string): void;
+  open(): void;
+  close(): void;
+  setInput(input: string): void;
+  getInput(): string;
+  onOpen(cb: () => void): void;
+  onClose(cb: () => void): void;
 }

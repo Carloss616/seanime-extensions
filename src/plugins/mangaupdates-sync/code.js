@@ -8,7 +8,7 @@ var onPostUpdateEntry = (...args) => {
   }
 
   class MUClient {
-    constructor(fetcher) {
+    constructor(fetchFn) {
       this.base = "https://api.mangaupdates.com/v1";
       this.tokenKey = "mu_session_token";
       this.statusList = {
@@ -19,13 +19,13 @@ var onPostUpdateEntry = (...args) => {
         PAUSED: 4,
         REPEATING: 0,
       };
-      this.fetcher = fetcher;
+      this.fetchFn = fetchFn;
     }
     async req(token, method, path, body) {
       const headers = { Accept: "application/json" };
       if (token) headers.Authorization = `Bearer ${token}`;
       if (body !== undefined) headers["Content-Type"] = "application/json";
-      const res = await this.fetcher(this.base + path, {
+      const res = await this.fetchFn(this.base + path, {
         method,
         headers,
         body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -39,7 +39,7 @@ var onPostUpdateEntry = (...args) => {
       return null;
     }
     async login(username, password) {
-      const res = await this.fetcher(`${this.base}/account/login`, {
+      const res = await this.fetchFn(`${this.base}/account/login`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -262,7 +262,7 @@ var register = (...args) => {
   }
 
   class MUClient {
-    constructor(fetcher) {
+    constructor(fetchFn) {
       this.base = "https://api.mangaupdates.com/v1";
       this.tokenKey = "mu_session_token";
       this.statusList = {
@@ -273,13 +273,13 @@ var register = (...args) => {
         PAUSED: 4,
         REPEATING: 0,
       };
-      this.fetcher = fetcher;
+      this.fetchFn = fetchFn;
     }
     async req(token, method, path, body) {
       const headers = { Accept: "application/json" };
       if (token) headers.Authorization = `Bearer ${token}`;
       if (body !== undefined) headers["Content-Type"] = "application/json";
-      const res = await this.fetcher(this.base + path, {
+      const res = await this.fetchFn(this.base + path, {
         method,
         headers,
         body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -293,7 +293,7 @@ var register = (...args) => {
       return null;
     }
     async login(username, password) {
-      const res = await this.fetcher(`${this.base}/account/login`, {
+      const res = await this.fetchFn(`${this.base}/account/login`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",

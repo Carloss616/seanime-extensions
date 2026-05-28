@@ -1,4 +1,4 @@
-# Local Manga (Custom)
+# Local Catalog (Custom)
 
 A seanime **custom-source** that serves a manga catalog you curate yourself, for titles that are not on AniList / MangaUpdates (or not yet uploaded). The entries show up in your manga collection like any AniList media; you read them with any installed manga provider (matched by title) or the built-in local reader.
 
@@ -61,7 +61,7 @@ The custom-source only supplies metadata. When you open an entry, seanime calls 
 
 ## Roadmap
 
-A companion **plugin** (`local-manga-manager`, a separate extension) over this same catalog format is planned. Not included yet. Scope:
+A companion **plugin** (`local-catalog-manager`, a separate extension) over this same catalog format is planned. Not included yet. Scope:
 
 - **CRUD** — tray + command-palette UI to add/edit/delete entries, persisting the catalog to a Gist that the Catalog URL points at (token in `$storage`) plus a local backup.
 - **Sync / auto-sync** — keep the same library *and* reading position across devices:

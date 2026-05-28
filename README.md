@@ -6,11 +6,12 @@ Official docs: <https://seanime.gitbook.io/seanime-extensions>
 
 ## Extensions
 
-| ID                     | Type          | Status                                            |
-| ---------------------- | ------------- | ------------------------------------------------- |
-| `custom-local-manga`   | custom-source | ready                                             |
-| `mangaupdates`         | custom-source | ready                                             |
-| `mangaupdates-sync`    | plugin        | ready                                             |
+| ID                      | Type          | Status                                            |
+| ----------------------- | ------------- | ------------------------------------------------- |
+| `local-catalog`         | custom-source | ready                                             |
+| `local-catalog-manager` | plugin        | ready                                             |
+| `mangaupdates`          | custom-source | ready                                             |
+| `mangaupdates-sync`     | plugin        | ready                                             |
 
 ## Install in seanime
 

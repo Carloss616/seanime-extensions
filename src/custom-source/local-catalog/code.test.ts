@@ -1,71 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import {
-  normalizeEntry,
-  parseCatalog,
-  searchAndPaginate,
-} from "../../../src/custom-source/local-manga/code.ts";
+import { normalizeEntry, searchAndPaginate } from "./code.ts";
 
-describe("parseCatalog", () => {
-  test("reads the manga array from an object", () => {
-    const out = parseCatalog({
-      version: 1,
-      manga: [{ id: 1, title: "A" }],
-    });
-    expect(out).toHaveLength(1);
-    expect(out[0].id).toBe(1);
-  });
-
-  test("accepts a bare array", () => {
-    const out = parseCatalog([{ id: 5, title: "B" }]);
-    expect(out).toHaveLength(1);
-    expect(out[0].id).toBe(5);
-  });
-
-  test("skips entries with no valid id", () => {
-    const out = parseCatalog([
-      { id: 0, title: "zero" },
-      { id: -1, title: "neg" },
-      { title: "noid" },
-      { id: 2, title: "ok" },
-    ]);
-    expect(out.map((e) => e.id)).toEqual([2]);
-  });
-
-  test("skips entries with no resolvable title", () => {
-    const out = parseCatalog([
-      { id: 1 },
-      { id: 2, title: "" },
-      { id: 3, title: { english: "x" } },
-    ]);
-    expect(out.map((e) => e.id)).toEqual([3]);
-  });
-
-  test("dedupes by id, last wins", () => {
-    const out = parseCatalog([
-      { id: 1, title: "first" },
-      { id: 1, title: "second" },
-    ]);
-    expect(out).toHaveLength(1);
-    expect(out[0].title).toBe("second");
-  });
-
-  test("returns empty for garbage input", () => {
-    expect(parseCatalog(null)).toEqual([]);
-    expect(parseCatalog(42)).toEqual([]);
-    expect(parseCatalog({})).toEqual([]);
-  });
-
-  test("coerces a numeric-string id to a number", () => {
-    const out = parseCatalog([{ id: "5", title: "S" }]);
-    expect(out).toHaveLength(1);
-    expect(out[0].id).toBe(5);
-  });
-
-  test("survives null / non-object array items", () => {
-    const out = parseCatalog([null, 5, "x", { id: 1, title: "ok" }]);
-    expect(out.map((e) => e.id)).toEqual([1]);
-  });
-});
+// parseCatalog / resolveUserPreferred / serializeCatalog now live in
+// src/_shared/local-catalog/parse.test.ts (shared with the manager plugin).
 
 describe("normalizeEntry", () => {
   test("expands a string title to english + userPreferred", () => {

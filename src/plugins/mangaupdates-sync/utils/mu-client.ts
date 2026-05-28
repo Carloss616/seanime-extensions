@@ -7,15 +7,6 @@
 // MUClient physically inside every goja-isolated callback that needs it. See
 // CLAUDE.md "Splitting an extension across multiple files".
 
-type MUFetcher = (
-  url: string,
-  init?: {
-    method?: string;
-    headers?: Record<string, string>;
-    body?: string;
-  },
-) => Promise<FetchResponse>;
-
 class MUTokenExpiredError extends Error {
   constructor() {
     super("MU session expired");
@@ -33,14 +24,14 @@ export class MUClient {
   private declare base: string;
   private declare tokenKey: string;
   private declare statusList: Record<string, number>;
-  private declare fetcher: MUFetcher;
+  private declare fetchFn: typeof fetch;
 
   /**
-   * @param fetcher  HTTP transport. Pass `ctx.fetch.bind(ctx)` from UI
+   * @param fetchFn  HTTP transport. Pass `ctx.fetch.bind(ctx)` from UI
    *                 scope, or the plain `fetch` global from hook scope.
    *                 Indirection lets the same class work in either runtime.
    */
-  constructor(fetcher: MUFetcher) {
+  constructor(fetchFn: typeof fetch) {
     this.base = "https://api.mangaupdates.com/v1";
     this.tokenKey = "mu_session_token";
     // Numeric ids of MU's built-in lists. `POST /v1/lists/series/update`
@@ -56,7 +47,7 @@ export class MUClient {
       PAUSED: 4, // On-Hold
       REPEATING: 0, // Reading (MU has no separate re-read list)
     };
-    this.fetcher = fetcher;
+    this.fetchFn = fetchFn;
   }
 
   async req<T = unknown>(
@@ -68,7 +59,7 @@ export class MUClient {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (token) headers.Authorization = `Bearer ${token}`;
     if (body !== undefined) headers["Content-Type"] = "application/json";
-    const res = await this.fetcher(this.base + path, {
+    const res = await this.fetchFn(this.base + path, {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -83,7 +74,7 @@ export class MUClient {
   }
 
   async login(username: string, password: string): Promise<string> {
-    const res = await this.fetcher(`${this.base}/account/login`, {
+    const res = await this.fetchFn(`${this.base}/account/login`, {
       method: "PUT",
       headers: {
         "Content-Type": "application/json",

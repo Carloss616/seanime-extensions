@@ -1,0 +1,68 @@
+import { describe, expect, test } from "bun:test";
+import { GistClient } from "./gist-client.ts";
+
+type Call = { url: string; init: FetchOptions };
+
+function fakeFetch(response: unknown) {
+  const calls: Call[] = [];
+  const fn = async (url: string, init: FetchOptions) => {
+    calls.push({ url, init });
+    return {
+      ok: true,
+      status: 200,
+      json: () => response,
+      text: () => JSON.stringify(response),
+    } as FetchResponse;
+  };
+  return { fn, calls };
+}
+
+describe("GistClient", () => {
+  test("createGist posts to /gists with auth + secret + filename, returns id/owner/rawUrl", async () => {
+    const { fn, calls } = fakeFetch({ id: "abc", owner: { login: "carlos" } });
+    const c = new GistClient("tok", fn as unknown as typeof fetch);
+    const res = await c.createGist("catalog.json", "{}");
+    expect(calls[0].url).toBe("https://api.github.com/gists");
+    expect(calls[0].init.method).toBe("POST");
+    expect(calls[0].init.headers?.Authorization).toBe("Bearer tok");
+    const body = JSON.parse(calls[0].init.body);
+    expect(body.public).toBe(false);
+    expect(body.files["catalog.json"].content).toBe("{}");
+    expect(res).toEqual({
+      id: "abc",
+      owner: "carlos",
+      rawUrl: "https://gist.githubusercontent.com/carlos/abc/raw/catalog.json",
+    });
+  });
+
+  test("getGistFile GETs /gists/:id and returns the file content", async () => {
+    const { fn, calls } = fakeFetch({
+      files: { "catalog.json": { content: '{"version":1}' } },
+    });
+    const c = new GistClient("tok", fn as unknown as typeof fetch);
+    const content = await c.getGistFile("abc", "catalog.json");
+    expect(calls[0].url).toBe("https://api.github.com/gists/abc");
+    expect(calls[0].init.method).toBe("GET");
+    expect(content).toBe('{"version":1}');
+  });
+
+  test("updateGistFile PATCHes /gists/:id with the new content", async () => {
+    const { fn, calls } = fakeFetch({ id: "abc" });
+    const c = new GistClient("tok", fn as unknown as typeof fetch);
+    await c.updateGistFile("abc", "catalog.json", '{"v":2}');
+    expect(calls[0].url).toBe("https://api.github.com/gists/abc");
+    expect(calls[0].init.method).toBe("PATCH");
+    expect(JSON.parse(calls[0].init.body).files["catalog.json"].content).toBe(
+      '{"v":2}',
+    );
+  });
+
+  test("throws on a non-ok response", async () => {
+    const c = new GistClient("tok", (async () => ({
+      ok: false,
+      status: 401,
+      text: () => "bad",
+    })) as unknown as typeof fetch);
+    await expect(c.getGistFile("abc", "catalog.json")).rejects.toThrow();
+  });
+});

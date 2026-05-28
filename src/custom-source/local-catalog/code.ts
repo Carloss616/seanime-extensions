@@ -1,80 +1,4 @@
-/// <reference path="../../../types/core.d.ts" />
-/// <reference path="../../../types/custom-source.d.ts" />
-
-interface CatalogTitle {
-  english?: string;
-  romaji?: string;
-  native?: string;
-  userPreferred?: string;
-}
-
-interface CatalogEntry {
-  id: number;
-  title: string | CatalogTitle;
-  synonyms?: string[];
-  cover?: string;
-  banner?: string;
-  description?: string;
-  genres?: string[];
-  status?: $app.AL_MediaStatus;
-  format?: $app.AL_MediaFormat;
-  chapters?: number;
-  volumes?: number;
-  year?: number;
-  isAdult?: boolean;
-  country?: string;
-  siteUrl?: string;
-}
-
-interface Catalog {
-  version?: number;
-  manga?: CatalogEntry[];
-}
-
-function resolveUserPreferred(title: unknown): string | undefined {
-  if (typeof title === "string") {
-    return title.trim() || undefined;
-  }
-  if (title && typeof title === "object") {
-    const t = title as CatalogTitle;
-    const v = t.userPreferred || t.english || t.romaji || t.native;
-    return v?.trim() || undefined;
-  }
-  return undefined;
-}
-
-export function parseCatalog(raw: unknown): CatalogEntry[] {
-  let list: unknown[] = [];
-  if (Array.isArray(raw)) {
-    list = raw;
-  } else if (
-    raw &&
-    typeof raw === "object" &&
-    Array.isArray((raw as Catalog).manga)
-  ) {
-    list = (raw as Catalog).manga as CatalogEntry[];
-  }
-
-  const byId = new Map<number, CatalogEntry>();
-  for (const item of list) {
-    const entry = item as CatalogEntry;
-    const id = Number(entry?.id);
-    if (!Number.isInteger(id) || id < 1) {
-      console.warn("local-manga: skipping entry with invalid id");
-      continue;
-    }
-    if (!resolveUserPreferred(entry?.title)) {
-      console.warn(`local-manga: skipping entry ${id} with no title`);
-      continue;
-    }
-    if (byId.has(id)) {
-      console.warn(`local-manga: duplicate id ${id}, last wins`);
-    }
-    entry.id = id;
-    byId.set(id, entry);
-  }
-  return Array.from(byId.values());
-}
+import { parseCatalog } from "../../_shared/local-catalog/parse";
 
 function coerceTitle(title: string | CatalogTitle): $app.AL_BaseManga_Title {
   if (typeof title === "string") {
@@ -194,7 +118,7 @@ export class Provider implements CustomSource {
     return null;
   }
   async getAnimeWithRelations(_id: number): Promise<$app.AL_CompleteAnime> {
-    throw new Error("local-manga: anime not supported");
+    throw new Error("local-catalog: anime not supported");
   }
   async getAnimeDetails(
     _id: number,
@@ -223,7 +147,7 @@ export class Provider implements CustomSource {
       this.cacheAt = now;
       return parsed;
     } catch (e) {
-      console.error("local-manga: failed to load catalog", e);
+      console.error("local-catalog: failed to load catalog", e);
       return this.cache ?? [];
     }
   }

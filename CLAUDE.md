@@ -95,14 +95,9 @@ Extensions run inside seanime under **goja** (Go's JS engine, no Node, no browse
 - Plugins additionally get `$app` (lifecycle hooks), `$anilist` (in-process AniList lookups), `$storage` (per-extension persistence) — declared in [types/plugin.d.ts](types/plugin.d.ts).
 - `tsconfig.json` targets ES2018 for IDE/typecheck strictness, but `Bun.build` does not down-convert syntax — modern output (native class fields, optional chaining, etc.) passes through. Recent goja accepts it; if a feature ever trips goja, avoid it in source.
 
-Each `code.ts` pulls types in via triple-slash references at the top, e.g.:
+TypeScript picks up `types/**/*.d.ts` via `tsconfig.json`'s `include`, so the goja globals (`$app`, `$anilist`, `$storage`, `CustomSource`, `CatalogEntry`, …) are in scope in every source file automatically — no triple-slash `/// <reference path="…" />` needed.
 
-```ts
-/// <reference path="../../../types/core.d.ts" />
-/// <reference path="../../../types/custom-source.d.ts" />
-```
-
-There is no module system at runtime — the entire transpiled file is the payload, executed in the goja sandbox. Don't `import` anything.
+There is no module system at runtime — `code.js` is one bundled payload executed in the goja sandbox. Source-level `import`s ARE fine: the build inlines them at bundle time (per-module for isolated callbacks, see "Splitting an extension across multiple files"); the file goja runs has no imports left.
 
 ## Type definitions are intentionally partial
 

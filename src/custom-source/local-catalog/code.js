@@ -1,4 +1,4 @@
-// src/custom-source/local-manga/code.ts
+// src/_shared/local-catalog/parse.ts
 function resolveUserPreferred(title) {
   if (typeof title === "string") {
     return title.trim() || undefined;
@@ -11,32 +11,42 @@ function resolveUserPreferred(title) {
   return;
 }
 function parseCatalog(raw) {
+  let data = raw;
+  if (typeof raw === "string") {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
   let list = [];
-  if (Array.isArray(raw)) {
-    list = raw;
-  } else if (raw && typeof raw === "object" && Array.isArray(raw.manga)) {
-    list = raw.manga;
+  if (Array.isArray(data)) {
+    list = data;
+  } else if (data && typeof data === "object" && Array.isArray(data.manga)) {
+    list = data.manga;
   }
   const byId = new Map();
   for (const item of list) {
     const entry = item;
     const id = Number(entry?.id);
     if (!Number.isInteger(id) || id < 1) {
-      console.warn("local-manga: skipping entry with invalid id");
+      console.warn("local-catalog: skipping entry with invalid id");
       continue;
     }
     if (!resolveUserPreferred(entry?.title)) {
-      console.warn(`local-manga: skipping entry ${id} with no title`);
+      console.warn(`local-catalog: skipping entry ${id} with no title`);
       continue;
     }
     if (byId.has(id)) {
-      console.warn(`local-manga: duplicate id ${id}, last wins`);
+      console.warn(`local-catalog: duplicate id ${id}, last wins`);
     }
     entry.id = id;
     byId.set(id, entry);
   }
   return Array.from(byId.values());
 }
+
+// src/custom-source/local-catalog/code.ts
 function coerceTitle(title) {
   if (typeof title === "string") {
     return { english: title, userPreferred: title };
@@ -133,7 +143,7 @@ class Provider {
     return null;
   }
   async getAnimeWithRelations(_id) {
-    throw new Error("local-manga: anime not supported");
+    throw new Error("local-catalog: anime not supported");
   }
   async getAnimeDetails(_id) {
     return null;
@@ -155,7 +165,7 @@ class Provider {
       this.cacheAt = now;
       return parsed;
     } catch (e) {
-      console.error("local-manga: failed to load catalog", e);
+      console.error("local-catalog: failed to load catalog", e);
       return this.cache ?? [];
     }
   }
