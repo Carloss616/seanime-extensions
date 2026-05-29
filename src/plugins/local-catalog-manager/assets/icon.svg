@@ -2,12 +2,14 @@
   <defs>
     <linearGradient id="back" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F59E0B"/><stop offset="1" stop-color="#D97706"/></linearGradient>
     <linearGradient id="front" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FBBF24"/><stop offset="1" stop-color="#F59E0B"/></linearGradient>
+    <linearGradient id="badge" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#B45309"/><stop offset="1" stop-color="#7C2D12"/></linearGradient>
+    <radialGradient id="gloss" cx="0.5" cy="0.28" r="0.7"><stop offset="0" stop-color="#FFFFFF" stop-opacity="0.2"/><stop offset="0.55" stop-color="#FFFFFF" stop-opacity="0.04"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></radialGradient>
     <filter id="soft" x="-25%" y="-25%" width="150%" height="150%"><feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#7C2D12" flood-opacity="0.3"/></filter>
     <filter id="sheet" x="-25%" y="-25%" width="150%" height="150%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#78350F" flood-opacity="0.25"/></filter>
+    <filter id="badgesh" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#451A03" flood-opacity="0.5"/></filter>
   </defs>
   <g transform="translate(256 256) scale(1.32) translate(-262 -261)" filter="url(#soft)">
     <path d="M72 176 Q72 150 98 150 L184 150 Q198 150 208 160 L226 178 Q236 188 250 188 L426 188 Q452 188 452 214 L452 378 Q452 404 426 404 L98 404 Q72 404 72 378 Z" fill="url(#back)"/>
-
     <g filter="url(#sheet)">
       <rect x="144" y="118" width="228" height="196" rx="14" fill="#FFFFFF"/>
     </g>
@@ -16,7 +18,15 @@
       <text x="186" y="198"><tspan fill="#D97706">"manga"</tspan><tspan fill="#334155">: [</tspan></text>
       <text x="206" y="236" fill="#334155">{</text>
     </g>
-
     <path d="M72 270 Q72 244 98 244 L426 244 Q452 244 452 270 L452 378 Q452 404 426 404 L98 404 Q72 404 72 378 Z" fill="url(#front)"/>
+  </g>
+
+  <g filter="url(#badgesh)">
+    <circle cx="422" cy="360" r="62" fill="url(#badge)"/>
+    <circle cx="422" cy="360" r="62" fill="none" stroke="#FBBF24" stroke-width="1.5" stroke-opacity="0.5"/>
+    <circle cx="422" cy="360" r="62" fill="url(#gloss)"/>
+    <g transform="translate(422 360) scale(3.3) translate(-12 -12)" fill="#FFFFFF">
+      <path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/>
+    </g>
   </g>
 </svg>

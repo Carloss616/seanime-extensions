@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "build": "bun run scripts/build.ts",
+    "icon": "bun run scripts/svg2png.ts",
     "postbuild": "bun run check:fix",
     "typecheck": "tsc --noEmit && tsc --noEmit -p scripts/tsconfig.json",
     "check": "biome check .",
