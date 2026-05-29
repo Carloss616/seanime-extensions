@@ -65,4 +65,31 @@ describe("GistClient", () => {
     })) as unknown as typeof fetch);
     await expect(c.getGistFile("abc", "catalog.json")).rejects.toThrow();
   });
+
+  test("deleteGist sends DELETE with auth", async () => {
+    const { fn, calls } = fakeFetch({});
+    const c = new GistClient("tok", fn as unknown as typeof fetch);
+    await c.deleteGist("abc");
+    expect(calls[0].url).toBe("https://api.github.com/gists/abc");
+    expect(calls[0].init.method).toBe("DELETE");
+    expect(calls[0].init.headers?.Authorization).toBe("Bearer tok");
+  });
+
+  test("deleteGist treats 404 as success (already gone)", async () => {
+    const c = new GistClient("tok", (async () => ({
+      ok: false,
+      status: 404,
+      text: () => "not found",
+    })) as unknown as typeof fetch);
+    await expect(c.deleteGist("abc")).resolves.toBeUndefined();
+  });
+
+  test("deleteGist throws on other non-ok responses", async () => {
+    const c = new GistClient("tok", (async () => ({
+      ok: false,
+      status: 401,
+      text: () => "unauthorized",
+    })) as unknown as typeof fetch);
+    await expect(c.deleteGist("abc")).rejects.toThrow();
+  });
 });

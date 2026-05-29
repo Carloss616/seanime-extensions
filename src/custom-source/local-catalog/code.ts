@@ -1,4 +1,4 @@
-import { parseCatalog } from "../../_shared/local-catalog/parse";
+import { parseCatalog } from "../../_utils/local-catalog/parse";
 
 function coerceTitle(title: string | CatalogTitle): $app.AL_BaseManga_Title {
   if (typeof title === "string") {
@@ -30,8 +30,21 @@ export function normalizeEntry(entry: CatalogEntry): $app.AL_BaseManga {
     volumes: entry.volumes,
     isAdult: entry.isAdult,
     countryOfOrigin: entry.country,
+    // Forward whichever date parts the catalog has — matches the
+    // AL_BaseManga_StartDate (FuzzyDate) shape. Note: seanime's manga entry
+    // header formats this via Intl.DateTimeFormat and defaults a missing
+    // month to January, so passing only `year` shows "Jan YYYY". Set month
+    // (and day) in the catalog when you know them to get the right label.
     startDate:
-      typeof entry.year === "number" ? { year: entry.year } : undefined,
+      typeof entry.year === "number" ||
+      typeof entry.month === "number" ||
+      typeof entry.day === "number"
+        ? {
+            year: typeof entry.year === "number" ? entry.year : undefined,
+            month: typeof entry.month === "number" ? entry.month : undefined,
+            day: typeof entry.day === "number" ? entry.day : undefined,
+          }
+        : undefined,
   };
 }
 

@@ -1,28 +1,62 @@
+import { GITHUB_RAW_WORKSPACE } from "../../../_utils/constants";
 import {
-  parseCatalog,
-  resolveUserPreferred,
-  serializeCatalog,
-} from "../../../_shared/local-catalog/parse";
-import {
-  nextId,
-  removeEntry,
-  upsertEntry,
-  validateEntry,
-} from "../utils/catalog";
-import { GistClient } from "../utils/gist-client";
-
-const FILENAME = "catalog.json";
-const K_GIST = "lmm_gist_id";
-const K_OWNER = "lmm_owner";
-const K_RAW = "lmm_raw_url";
-const K_CATALOG = "lmm_catalog";
-const K_UPDATED = "lmm_updated_at";
+  CUSTOM_SOURCE_ID,
+  CATALOG_FILENAME as FILENAME,
+  K_CATALOG,
+  K_DRIFT_FRESH_GIST,
+  K_DRIFT_REMOTE,
+  K_EXT_ID,
+  K_GIST,
+  K_OWNER,
+  K_PROGRESS,
+  K_PROGRESS_DRIFT_REMOTE,
+  K_PROGRESS_UPDATED,
+  K_RAW,
+  K_SYNC_PAUSED,
+  K_UPDATED,
+  SOURCE_PREFIX as PREFIX_SITEURL,
+  PROGRESS_FILENAME,
+  SHARED_LIB_NAME,
+} from "../utils/constants";
+import type { sharedLib } from "./shared-lib";
 
 export const register = (ctx: PluginContext) => {
+  // Custom-source mediaId encoding (see CLAUDE.md "Custom-source mediaId
+  // encoding" + seanime's internal/customsource/customsource.go):
+  //   mediaId = EXT_OFFSET + (extensionIdentifier << 40) + localId
+  // EXT_OFFSET is the boundary between AniList ids (< 2^31) and custom-
+  // source ids; LOCAL_RANGE is the per-extension localId range (2^40).
+  const EXT_OFFSET = 0x80000000;
+  const LOCAL_RANGE = 0x10000000000;
+
+  const {
+    GistClient,
+    parseCatalog,
+    resolveUserPreferred,
+    serializeCatalog,
+    mergeCatalog,
+    diffCatalog,
+    nextId,
+    removeEntry,
+    upsertEntry,
+    validateEntry,
+    decodeLocalId,
+    buildMediaIdLookup,
+    applyRemote,
+    detectOrphans,
+    pruneOrphans,
+    pullProgress,
+    pushProgress,
+    parseProgress,
+    serializeProgress,
+    mergeProgress,
+    diffProgress,
+    progressMangaEquals,
+  } = $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
+
   const tray = ctx.newTray({
     tooltipText: "Local Catalog Manager",
-    iconUrl:
-      "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/local-catalog-manager/assets/icon.png",
+    iconUrl: `${GITHUB_RAW_WORKSPACE}/src/plugins/local-catalog-manager/assets/icon.png`,
     withContent: true,
   });
 
@@ -33,6 +67,603 @@ export const register = (ctx: PluginContext) => {
   const editingId = ctx.state<number>(0);
   const rawUrl = ctx.state<string>($storage.get<string>(K_RAW) ?? "");
   const status = ctx.state<string>("");
+
+  // Migration: V2-B initial $storage shape used `entries`; rename to `manga`
+  // on load so existing installs don't lose their progress cache.
+  const loadProgressDoc = (): ProgressDoc => {
+    const stored = $storage.get<
+      ProgressDoc & { entries?: Record<string, ProgressEntry> }
+    >(K_PROGRESS);
+    if (!stored) return { version: 1, updatedAt: 0, manga: {} };
+    if (!stored.manga && stored.entries) {
+      console.log(
+        "[local-catalog-manager] migrating $storage progress: entries → manga",
+      );
+      return {
+        version: stored.version ?? 1,
+        updatedAt: stored.updatedAt ?? 0,
+        manga: stored.entries,
+      };
+    }
+    return {
+      version: stored.version ?? 1,
+      updatedAt: stored.updatedAt ?? 0,
+      manga: stored.manga ?? {},
+    };
+  };
+  const progress = ctx.state<ProgressDoc>(loadProgressDoc());
+  const progressUpdated = ctx.state<number>(
+    $storage.get<number>(K_PROGRESS_UPDATED) ?? 0,
+  );
+  const progressStatus = ctx.state<string>("");
+
+  const localEntryCount = () => Object.keys(progress.get().manga).length;
+  const orphanCount = () => {
+    const catalogIds = new Set(entries.get().map((e) => e.id));
+    return detectOrphans(progress.get(), catalogIds).length;
+  };
+  const formatTs = (ms: number) => {
+    if (!ms) return "—";
+    const d = new Date(ms);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  async function pushProgressNow() {
+    const gistId = effectiveGistId();
+    if (!hasToken() || !gistId) {
+      ctx.toast.error("Reading progress sync requires Gist mode");
+      return;
+    }
+    if (hasDrift()) {
+      ctx.toast.warning("Resolve catalog drift first (see banner at top)");
+      return;
+    }
+    await runBusy("push-progress", async () => {
+      progressStatus.set("Pushing…");
+      try {
+        const now = Date.now();
+        const merged = await pushProgress(
+          client(),
+          gistId,
+          PROGRESS_FILENAME,
+          progress.get(),
+          now,
+        );
+        progress.set(merged);
+        progressUpdated.set(now);
+        $storage.set(K_PROGRESS, merged);
+        $storage.set(K_PROGRESS_UPDATED, now);
+        progressStatus.set(
+          `Pushed ${Object.keys(merged.manga).length} entries`,
+        );
+      } catch (e) {
+        console.warn("[local-catalog-manager] push progress failed:", e);
+        progressStatus.set(`Push failed: ${String(e)}`);
+      }
+    });
+  }
+
+  async function pullProgressNow() {
+    const gistId = effectiveGistId();
+    if (!hasToken() || !gistId) {
+      ctx.toast.error("Reading progress sync requires Gist mode");
+      return;
+    }
+    if (hasDrift()) {
+      ctx.toast.warning("Resolve catalog drift first (see banner at top)");
+      return;
+    }
+    await runBusy("pull-progress", async () => {
+      progressStatus.set("Pulling…");
+      try {
+        const now = Date.now();
+        const merged = await pullProgress(
+          client(),
+          gistId,
+          PROGRESS_FILENAME,
+          progress.get(),
+          now,
+        );
+        const collection = await ctx.manga.getCollection();
+        const lookup = buildMediaIdLookup(
+          collection,
+          PREFIX_SITEURL,
+          decodeLocalId,
+          { extId: $storage.get<number>(K_EXT_ID) ?? undefined },
+        );
+        const res = applyRemote(merged, progress.get(), {
+          updateEntry: applyEntryViaSeanime,
+          mediaIdByLocalId: lookup,
+        });
+        progress.set(merged);
+        progressUpdated.set(now);
+        $storage.set(K_PROGRESS, merged);
+        $storage.set(K_PROGRESS_UPDATED, now);
+        progressStatus.set(
+          `Pulled — applied ${res.applied}${res.skipped ? `, skipped ${res.skipped} orphan(s)` : ""}`,
+        );
+      } catch (e) {
+        console.warn("[local-catalog-manager] pull progress failed:", e);
+        progressStatus.set(`Pull failed: ${String(e)}`);
+      }
+    });
+  }
+
+  // Reload catalog = fetch remote, merge with local (local wins ties), push
+  // merged back so both sides converge. Replaces the separate Pull / Push
+  // catalog actions with a single idempotent sync.
+  async function reloadCatalog() {
+    const gistId = effectiveGistId();
+    if (!hasToken() || !gistId) {
+      ctx.toast.info(
+        "Add an entry to create a Gist, or create one in Gist Binding.",
+      );
+      return;
+    }
+    if (hasDrift()) {
+      ctx.toast.warning("Resolve catalog drift first (see banner at top)");
+      return;
+    }
+    await runBusy("reload-catalog", async () => {
+      try {
+        const content = await client().getGistFile(gistId, FILENAME);
+        const remote = parseCatalog(content);
+        const now = Date.now();
+        const merged = mergeCatalog(entries.get(), remote);
+        persistLocal(merged, now);
+        await client().updateGistFile(
+          gistId,
+          FILENAME,
+          serializeCatalog(merged, now),
+        );
+        status.set(`Reloaded · ${ent(merged.length)}`);
+        ctx.toast.success(`Catalog reloaded — ${ent(merged.length)}`);
+        // Flush custom-source cache after the merged catalog is pushed.
+        await reloadCustomSource();
+      } catch (e) {
+        ctx.toast.error(`Reload failed: ${(e as Error).message}`);
+      }
+    });
+  }
+
+  // Wrap $anilist.updateEntry with the pre/post-hook skip flag so the
+  // update doesn't echo back through our own hooks. Without this, every
+  // remote-applied entry fired a recursive on-pre/on-post-update-entry pair
+  // that captured the just-applied payload, called handlePostUpdate, and
+  // ran an out-of-band pushProgress — racing with the surrounding sync's
+  // updateGistFile. The race left local $storage and the gist with
+  // disagreeing updatedAts, so the next pull saw "remote ahead" and
+  // re-applied the same entry, surfacing the "Synced N progress updates"
+  // toast every time. Matches the existing skip-flag pattern in
+  // handlePostUpdate's restore-from-remote path.
+  const applyEntryViaSeanime = (
+    mediaId: number,
+    status: $app.AL_MediaListStatus | undefined,
+    scoreRaw: number | undefined,
+    prog: number | undefined,
+  ): void => {
+    $store.set(`progress:skip:${mediaId}`, true);
+    try {
+      $anilist.updateEntry(
+        mediaId,
+        status,
+        scoreRaw,
+        prog,
+        undefined,
+        undefined,
+      );
+    } finally {
+      $store.remove(`progress:skip:${mediaId}`);
+    }
+  };
+
+  // Core sync logic shared by reloadProgress (with runBusy wrapper) and
+  // linkExistingGist (already inside its own runBusy, can't nest). Pulls
+  // remote → per-entry LWW merge → apply remote-side changes to seanime
+  // → push merged back. Idempotent in both directions.
+  async function syncProgressInner(): Promise<{
+    applied: number;
+    skipped: number;
+  }> {
+    const gistId = effectiveGistId();
+    const now = Date.now();
+    // Inline pull (instead of `pullProgress`) so we keep the parsed remote
+    // around — needed to decide whether the push at the end is a real
+    // sync or just a no-op revision that bumps the wrapper updatedAt.
+    let remoteStr = "";
+    try {
+      remoteStr = await client().getGistFile(gistId, PROGRESS_FILENAME);
+    } catch (_) {
+      remoteStr = "";
+    }
+    const remote = parseProgress(remoteStr);
+    const localDoc = progress.get();
+    const merged = mergeProgress(localDoc, remote, now);
+    const collection = await ctx.manga.getCollection();
+    const lookup = buildMediaIdLookup(
+      collection,
+      PREFIX_SITEURL,
+      decodeLocalId,
+      { extId: $storage.get<number>(K_EXT_ID) ?? undefined },
+    );
+    const res = applyRemote(merged, localDoc, {
+      updateEntry: applyEntryViaSeanime,
+      mediaIdByLocalId: lookup,
+    });
+    // Push only when local has something the gist doesn't (extra entries
+    // or newer updatedAts). When `merged === remote` content-wise, pushing
+    // would only create a noise revision differing in top-level updatedAt
+    // — exactly the duplicate-revision problem the user saw after every
+    // chapter mark.
+    if (!progressMangaEquals(merged.manga, remote.manga)) {
+      await client().updateGistFile(
+        gistId,
+        PROGRESS_FILENAME,
+        serializeProgress(merged),
+      );
+    }
+    progress.set(merged);
+    progressUpdated.set(now);
+    $storage.set(K_PROGRESS, merged);
+    $storage.set(K_PROGRESS_UPDATED, now);
+    // When applyRemote actually wrote new state into seanime, refresh both
+    // seanime's in-process AniList cache and the frontend's React Query
+    // caches so the user sees the synced chapter numbers without having to
+    // hit refresh themselves. Skipped on no-op syncs to avoid noisy
+    // refetches when nothing changed.
+    if (res.applied > 0) {
+      try {
+        $anilist.refreshMangaCollection();
+      } catch (e) {
+        console.warn(
+          "[local-catalog-manager] refreshMangaCollection failed:",
+          e,
+        );
+      }
+      invalidateClientCaches({ progress: true });
+    }
+    return res;
+  }
+
+  // Silent background sync — used by event-triggered pulls (tray.onOpen,
+  // screen.onNavigate to manga entry, plugin init, optional onGetMangaCollection
+  // hook if seanime exposes it). Skips loudly if a hard precondition fails,
+  // but never toasts on no-op — only when something actually changed. A
+  // soft cooldown (`silentCooldownMs`) prevents spamming the network when
+  // multiple events fire in close succession (e.g., tray.onOpen + navigate
+  // both fire within ~1s).
+  const SILENT_COOLDOWN_MS = 10_000;
+  let lastSilentSyncAt = 0;
+  async function pullProgressSilent(reason: string): Promise<void> {
+    const gistId = effectiveGistId();
+    if (!hasToken() || !gistId) return;
+    // Don't fight catalog drift — user needs to resolve that first.
+    if (pendingDrift.get()) return;
+    // runBusy would race against the user clicking a button — instead skip
+    // when anything else is in flight (the next event will retry).
+    if (busyAction.get()) return;
+    const nowMs = Date.now();
+    if (nowMs - lastSilentSyncAt < SILENT_COOLDOWN_MS) return;
+    lastSilentSyncAt = nowMs;
+    try {
+      const hadProgressDrift = pendingProgressDrift.get() !== null;
+      const res = await syncProgressInner();
+      if (hadProgressDrift) {
+        pendingProgressDrift.set(null);
+        pauseProgressSync(null);
+      }
+      if (res.applied > 0) {
+        ctx.toast.info(
+          `Synced ${res.applied} progress update${res.applied === 1 ? "" : "s"} from remote (${reason})`,
+        );
+      }
+    } catch (e) {
+      console.warn(
+        `[local-catalog-manager] silent pull failed (${reason}):`,
+        e,
+      );
+    }
+  }
+
+  // Reload progress = single idempotent sync via syncProgressInner.
+  async function reloadProgress() {
+    const gistId = effectiveGistId();
+    if (!hasToken() || !gistId) {
+      ctx.toast.error("Reading progress sync requires Gist mode");
+      return;
+    }
+    // Catalog drift still blocks — a real conflict the user must resolve.
+    // Progress drift does NOT block: clicking Reload is implicit consent
+    // to the LWW merge, so we silently absorb a pending progress drift and
+    // continue. This keeps cross-device sync fluid (the per-entry updatedAt
+    // already prevents data loss).
+    if (pendingDrift.get()) {
+      ctx.toast.warning("Resolve catalog drift first (see banner at top)");
+      return;
+    }
+    await runBusy("reload-progress", async () => {
+      progressStatus.set("Reloading…");
+      try {
+        const hadProgressDrift = pendingProgressDrift.get() !== null;
+        const res = await syncProgressInner();
+        if (hadProgressDrift) {
+          pendingProgressDrift.set(null);
+          pauseProgressSync(null);
+        }
+        progressStatus.set(
+          `Reloaded — applied ${res.applied}${res.skipped ? `, skipped ${res.skipped} orphan(s)` : ""}${hadProgressDrift ? " · drift merged" : ""}`,
+        );
+      } catch (e) {
+        console.warn("[local-catalog-manager] reload progress failed:", e);
+        progressStatus.set(`Reload failed: ${String(e)}`);
+      }
+    });
+  }
+
+  // Invalidate seanime's client-side React Query caches so the frontend
+  // refetches them after we mutate state. Keys are the endpoint constants
+  // from internal/events/endpoints.go.
+  //   catalog=true  → custom-source search results (the user's catalog
+  //                   appears in /custom-sources?provider=local-catalog).
+  //   progress=true → user's manga collection + anilist collection (so the
+  //                   manga entry page picks up new status / progress / score).
+  // Wrapped in try/catch — invalidation is best-effort UX; if it fails the
+  // user just has to refresh the page manually.
+  function invalidateClientCaches(opts: {
+    catalog?: boolean;
+    progress?: boolean;
+  }) {
+    const keys: string[] = [];
+    if (opts.catalog) {
+      keys.push("CUSTOM-SOURCE-custom-source-list-manga");
+    }
+    if (opts.progress) {
+      keys.push(
+        "MANGA-get-manga-collection",
+        "MANGA-get-anilist-manga-collection",
+        "MANGA-get-manga-entry",
+      );
+    }
+    if (keys.length === 0) return;
+    try {
+      $app.invalidateClientQuery(keys);
+    } catch (e) {
+      console.warn("[local-catalog-manager] invalidateClientQuery failed:", e);
+    }
+  }
+
+  // Single persistence path for progress mutations: updates ctx.state +
+  // $storage, then best-effort fire-and-forget push to the gist (skipped in
+  // local mode or while drift is pending). Used by cleanOrphans, the entry
+  // delete handler (when autoCleanProgressOnDelete is on), and per-orphan
+  // deletes from the orphan list UI.
+  function persistProgress(next: ProgressDoc, updatedAt: number) {
+    progress.set(next);
+    progressUpdated.set(updatedAt);
+    $storage.set(K_PROGRESS, next);
+    $storage.set(K_PROGRESS_UPDATED, updatedAt);
+    const gistId = effectiveGistId();
+    if (hasToken() && gistId && !hasDrift()) {
+      pushProgress(client(), gistId, PROGRESS_FILENAME, next, updatedAt).catch(
+        (e: unknown) => {
+          console.warn("[local-catalog-manager] progress push failed:", e);
+        },
+      );
+    }
+    invalidateClientCaches({ progress: true });
+  }
+
+  function cleanOrphans() {
+    const catalogIds = new Set(entries.get().map((e) => e.id));
+    const orphans = detectOrphans(progress.get(), catalogIds);
+    if (!orphans.length) return;
+    const now = Date.now();
+    persistProgress(pruneOrphans(progress.get(), orphans, now), now);
+    progressStatus.set(`Cleaned ${orphans.length} orphan(s)`);
+  }
+
+  // Flush the sibling local-catalog custom-source's in-memory cache so the
+  // user sees the new entries in the next search WITHOUT waiting for the
+  // configured `cacheMinutes` TTL. The Provider class keeps a per-instance
+  // `this.cache` that survives across requests — the only way to reset it
+  // from outside its goja runtime is disable+enable, which re-instantiates
+  // the source. The persisted `extensionIdentifier` is preserved (seanime
+  // stores it in filecache), so existing mediaIds keep working. Slightly
+  // disruptive (~100-500ms gap) but invisible during a tray-driven push.
+  async function reloadCustomSource() {
+    try {
+      await ctx.extensions.disable(CUSTOM_SOURCE_ID);
+    } catch (e) {
+      console.warn(
+        `[local-catalog-manager] disable(${CUSTOM_SOURCE_ID}) failed:`,
+        e,
+      );
+    }
+    try {
+      await ctx.extensions.enable(CUSTOM_SOURCE_ID);
+    } catch (e) {
+      console.warn(
+        `[local-catalog-manager] enable(${CUSTOM_SOURCE_ID}) failed — source may be left disabled, re-enable manually:`,
+        e,
+      );
+    }
+  }
+
+  // Single-orphan delete from the per-orphan list. Same persistence/push
+  // path as cleanOrphans, just one id.
+  function deleteOrphan(localId: number) {
+    if (!progress.get().manga[String(localId)]) return;
+    const now = Date.now();
+    persistProgress(pruneOrphans(progress.get(), [localId], now), now);
+    progressStatus.set(`Deleted orphan #${localId}`);
+  }
+
+  // Apply a progress entry to seanime via $anilist.updateEntry. Works for any
+  // localId that has a record in progress.manga — used by both the per-row
+  // Compute the seanime mediaId for a given catalog localId using the cached
+  // extensionIdentifier. Returns null when the extId hasn't been discovered
+  // yet — callers should kick off discoverExtId() first (or fall through to
+  // the buildMediaIdLookup fallback). Pure sync function — usable from
+  // render to populate tooltips with the resolved mediaId.
+  function mediaIdFor(localId: number): number | null {
+    const extId = $storage.get<number>(K_EXT_ID);
+    if (extId == null) return null;
+    return EXT_OFFSET + extId * LOCAL_RANGE + localId;
+  }
+
+  // Discover the seanime-assigned extensionIdentifier (1-1023) for this
+  // custom-source and cache it in $storage. Three strategies, in order:
+  //   1. Already cached — fast path, return immediately.
+  //   2. Derive from the cached mediaIdLookup (any entry the user has added
+  //      reveals the extId via its mediaId encoding).
+  //   3. Probe by sweeping $anilist.getManga for each candidate extId until
+  //      one returns a manga whose siteUrl starts with our PREFIX_SITEURL.
+  //      Slow on first run (up to 1023 sync calls) but cached forever after.
+  // Probing requires at least one localId we expect the custom-source to
+  // know about — we pick the first catalog entry. Returns null if none of
+  // the strategies succeed (empty catalog + nothing in collection + probe
+  // exhausted = source isn't installed, or extId is invalid).
+  async function discoverExtId(): Promise<number | null> {
+    const cached = $storage.get<number>(K_EXT_ID);
+    if (cached != null) return cached;
+    // 2. From cached lookup.
+    const lookup = mediaIdLookup.get();
+    if (lookup && lookup.size > 0) {
+      const [, anyMediaId] = lookup.entries().next().value as [number, number];
+      const extId = Math.floor((anyMediaId - EXT_OFFSET) / LOCAL_RANGE);
+      $storage.set(K_EXT_ID, extId);
+      return extId;
+    }
+    // 3. Probe via $anilist.getManga sweep. Need a localId to probe with.
+    const probeLocalId = entries.get()[0]?.id;
+    if (probeLocalId == null) return null;
+    for (let extId = 1; extId <= 1023; extId++) {
+      if (extId % 64 === 0) {
+        // Yield to the goja scheduler so the tray stays responsive during
+        // the sweep. $sleep(0) is the only available yield primitive (no
+        // setTimeout / requestAnimationFrame in goja).
+        $sleep(0);
+      }
+      const candidate = EXT_OFFSET + extId * LOCAL_RANGE + probeLocalId;
+      try {
+        const m = $anilist.getManga(candidate);
+        if (m?.siteUrl && m.siteUrl.indexOf(PREFIX_SITEURL) === 0) {
+          $storage.set(K_EXT_ID, extId);
+          return extId;
+        }
+      } catch (_) {
+        // getManga throws for unknown mediaIds — keep probing.
+      }
+    }
+    return null;
+  }
+
+  // Resolve mediaId for any localId, kicking off discovery if needed. This
+  // is the single entry point used by navigateToMangaEntry, applyProgress,
+  // and the auto-add flow — none of them care whether the entry is in the
+  // user's collection yet; they just need the encoded id.
+  async function resolveMediaId(localId: number): Promise<number | null> {
+    const cached = mediaIdFor(localId);
+    if (cached != null) return cached;
+    const extId = await discoverExtId();
+    if (extId == null) return null;
+    return EXT_OFFSET + extId * LOCAL_RANGE + localId;
+  }
+
+  // "📤 Apply progress" button in the entries list (linked entry whose
+  // anilist state diverged from local) AND the orphan list "🔄" button
+  // (orphan that became linked again because the catalog entry was re-added).
+  // If the manga isn't in seanime's collection yet, we auto-add it via
+  // $anilist.addMediaToCollection (status defaults to PLANNING) and then
+  // overwrite with the local progress values via updateEntry.
+  async function applyProgress(localId: number) {
+    const entry = progress.get().manga[String(localId)];
+    if (!entry) return;
+    await runBusy(`apply-progress-${localId}`, async () => {
+      try {
+        const mediaId = await resolveMediaId(localId);
+        if (mediaId == null) {
+          ctx.toast.warning(
+            `Couldn't resolve seanime mediaId for #${localId}. Make sure the local-catalog custom-source is installed and has this entry.`,
+          );
+          return;
+        }
+        // If the manga isn't in the user's list yet, addMediaToCollection
+        // creates it as PLANNING — then updateEntry overwrites with the
+        // local progress values (status/score/progress). One-shot
+        // "add-to-list + apply" instead of forcing the user to do both
+        // manually from the manga page.
+        const inCollection = mediaIdLookup.get()?.has(localId) ?? false;
+        if (!inCollection) {
+          $anilist.addMediaToCollection([mediaId]);
+        }
+        $anilist.updateEntry(
+          mediaId,
+          entry.status,
+          entry.scoreRaw,
+          entry.progress,
+          undefined,
+          undefined,
+        );
+        // Refresh seanime's in-process anilist collection cache so getCollection
+        // sees the new entry / progress immediately. Required by the docs after
+        // any updateEntry / addMediaToCollection call. Also invalidates the
+        // client-side React Query caches so the frontend refetches.
+        try {
+          $anilist.refreshMangaCollection();
+        } catch (e) {
+          console.warn(
+            "[local-catalog-manager] refreshMangaCollection failed:",
+            e,
+          );
+        }
+        invalidateClientCaches({ progress: true });
+        ctx.toast.success(
+          inCollection
+            ? `Applied progress for #${localId} to seanime`
+            : `Added #${localId} to seanime + applied progress`,
+        );
+        // Refresh both lookups so subsequent renders see the just-applied
+        // state — mediaIdLookup so the row counts as "in list", and
+        // seanimeListDataLookup so the drift check matches and hides the
+        // push button (avoiding a stale "drift detected" badge right after
+        // a successful push).
+        // goja's Promise interop accepts `await` on getCollection's return
+        // but does NOT expose `.then` on it — keep this inline with await.
+        try {
+          const fresh = await ctx.manga.getCollection();
+          refreshLookupsFromCollection(fresh);
+        } catch (_) {
+          // best-effort refresh, ignore failure
+        }
+      } catch (e) {
+        ctx.toast.error(`Apply failed: ${(e as Error).message}`);
+      }
+    });
+  }
+
+  // Navigate the seanime UI to the manga entry page for this catalog entry.
+  // Uses resolveMediaId so the link works even for entries the user hasn't
+  // added to their list yet — the encoded mediaId is enough; seanime's
+  // /manga/entry page renders straight from the custom-source.
+  async function navigateToMangaEntry(localId: number) {
+    await runBusy(`open-manga-${localId}`, async () => {
+      try {
+        const mediaId = await resolveMediaId(localId);
+        if (mediaId == null) {
+          ctx.toast.warning(
+            `Couldn't resolve seanime mediaId for #${localId}. Make sure the local-catalog custom-source is installed and has this entry.`,
+          );
+          return;
+        }
+        ctx.screen.navigateTo("/manga/entry", { id: String(mediaId) });
+        tray.close();
+      } catch (e) {
+        ctx.toast.error(`Navigation failed: ${(e as Error).message}`);
+      }
+    });
+  }
 
   const fTitle = ctx.fieldRef<string>("");
   const fSynonyms = ctx.fieldRef<string>("");
@@ -45,11 +676,195 @@ export const register = (ctx: PluginContext) => {
   const fChapters = ctx.fieldRef<string>("");
   const fVolumes = ctx.fieldRef<string>("");
   const fYear = ctx.fieldRef<string>("");
+  const fMonth = ctx.fieldRef<string>("");
+  const fDay = ctx.fieldRef<string>("");
   const fIsAdult = ctx.fieldRef<boolean>(false);
   const fCountry = ctx.fieldRef<string>("");
   const fSiteUrl = ctx.fieldRef<string>("");
-  const fJsonOut = ctx.fieldRef<string>("");
   const fJsonIn = ctx.fieldRef<string>("");
+  const fGistLink = ctx.fieldRef<string>("");
+
+  // Armed state for the two-click "Delete remotely" confirmation. Stays armed
+  // until the user clicks confirm or any other action (disarmDelete()).
+  const deleteGistArmed = ctx.state<boolean>(false);
+
+  // Whether the gist-binding subline (short-id + owner + icon actions) is
+  // expanded. Defaults to collapsed; pencil toggle flips it.
+  const bindingExpanded = ctx.state<boolean>(false);
+
+  // Whether the orphan list (per-orphan delete + try-apply) is expanded under
+  // the READING PROGRESS section. Defaults collapsed; the ⚠️ N badge toggles.
+  const orphansExpanded = ctx.state<boolean>(false);
+
+  // Whether the read-only catalog / progress JSON blocks are expanded in
+  // local mode. Both default collapsed — the user opens whichever section
+  // they need (copy catalog vs. inspect progress backup).
+  const catalogJsonExpanded = ctx.state<boolean>(false);
+  const progressJsonExpanded = ctx.state<boolean>(false);
+
+  // localId → seanime mediaId map, refreshed on tray.onOpen. Lets renders
+  // show the resolved mediaId (in tooltips) and the navigation handler skip
+  // the per-click getCollection() cost in the common case. Falls back to a
+  // fresh lookup at click time if the cache is stale or missing.
+  const mediaIdLookup = ctx.state<Map<number, number> | null>(null);
+
+  // localId → seanime's tracked listData (status / progress / scoreRaw) for
+  // entries that are in the user's manga collection. The "📤 push" button
+  // on each entry row uses this to decide whether to render at all — we
+  // only show it when local progress drifts from seanime's tracked state
+  // (or the entry isn't in the user's list yet), not for already-in-sync
+  // rows where pushing is a no-op.
+  type SeanimeListData = {
+    status?: $app.AL_MediaListStatus;
+    progress?: number;
+    scoreRaw?: number;
+  };
+  const seanimeListDataLookup = ctx.state<Map<number, SeanimeListData> | null>(
+    null,
+  );
+
+  // Single-pass rebuild of both lookups from a freshly fetched collection.
+  // Prefers the cached extId for identifying our entries (works even when
+  // seanime ships entries without the wrapped siteUrl, which was the cause
+  // of the perpetual "📤 push" button on already-synced rows). Falls back
+  // to the siteUrl-prefix check when extId hasn't been discovered yet.
+  function refreshLookupsFromCollection(collection: MangaCollection) {
+    const extId = $storage.get<number>(K_EXT_ID) ?? undefined;
+    mediaIdLookup.set(
+      buildMediaIdLookup(collection, PREFIX_SITEURL, decodeLocalId, {
+        extId,
+      }),
+    );
+    const listData = new Map<number, SeanimeListData>();
+    for (const list of collection.lists ?? []) {
+      for (const e of list.entries ?? []) {
+        const mid = e.media?.id;
+        if (typeof mid !== "number" || mid < EXT_OFFSET) continue;
+        let isOurs = false;
+        if (extId != null) {
+          isOurs = Math.floor((mid - EXT_OFFSET) / LOCAL_RANGE) === extId;
+        } else {
+          const su = e.media?.siteUrl ?? "";
+          isOurs = su.indexOf(PREFIX_SITEURL) === 0;
+        }
+        if (!isOurs) continue;
+        listData.set(decodeLocalId(mid), e.listData ?? {});
+      }
+    }
+    seanimeListDataLookup.set(listData);
+  }
+
+  // Entries filter: substring match (case-insensitive) on resolved title.
+  // Empty string = no filter (show all).
+  const entrySearch = ctx.state<string>("");
+  const fEntrySearch = ctx.fieldRef<string>("");
+
+  // Drift detection state. Two flavors that can occur independently after
+  // linking an existing gist with non-trivial data on both sides:
+  //   - pendingDrift          → catalog disagreement (CatalogEntry[])
+  //   - pendingProgressDrift  → reading-progress disagreement (ProgressDoc)
+  // Until resolved (merge / local-wins / remote-wins / cancel), all sync ops
+  // are blocked to avoid clobber.
+  const pendingDrift = ctx.state<{
+    local: CatalogEntry[];
+    remote: CatalogEntry[];
+  } | null>(null);
+  const pendingProgressDrift = ctx.state<{
+    local: ProgressDoc;
+    remote: ProgressDoc;
+  } | null>(null);
+  // "Has any drift" — used everywhere we gate sync ops. The hooks read
+  // K_SYNC_PAUSED for the same effect (cross-runtime), but in-tray code uses
+  // this helper to also check the runtime states (in case storage hasn't
+  // been written yet on the very first drift transition).
+  const hasDrift = () =>
+    pendingDrift.get() !== null || pendingProgressDrift.get() !== null;
+
+  // Recompute K_SYNC_PAUSED from the persisted drift remotes. Called from
+  // both pauseSync (catalog) and pauseProgressSync (progress) so the flag
+  // stays correct when only one of two drifts resolves.
+  const recomputeSyncPause = () => {
+    const anyDrift =
+      $storage.has(K_DRIFT_REMOTE) || $storage.has(K_PROGRESS_DRIFT_REMOTE);
+    if (anyDrift) {
+      $storage.set(K_SYNC_PAUSED, true);
+    } else {
+      $storage.remove(K_SYNC_PAUSED);
+      // Clear the "drift toast notified" flag so the next drift session
+      // gets one fresh notification.
+      $store.remove("lcm:drift-notified");
+    }
+  };
+
+  // Persist/clear the CATALOG drift state in $storage so it survives plugin
+  // restart (pendingDrift itself is ctx.state — runtime-only).
+  // pauseSync(remote, opts):
+  //   remote = an array (possibly empty) → drift is active. Hooks fall back
+  //            to local-only writes. UI shows drift banner.
+  //   remote = null                       → clear drift state.
+  // freshGist flag is recorded so cancelDriftLink can also delete the gist
+  // we just created (if applicable).
+  const pauseSync = (
+    remote: CatalogEntry[] | null,
+    opts: { freshGist?: boolean } = {},
+  ) => {
+    if (remote !== null) {
+      $storage.set(K_DRIFT_REMOTE, remote);
+      if (opts.freshGist) $storage.set(K_DRIFT_FRESH_GIST, true);
+    } else {
+      $storage.remove(K_DRIFT_REMOTE);
+      $storage.remove(K_DRIFT_FRESH_GIST);
+    }
+    recomputeSyncPause();
+  };
+
+  // Sibling of pauseSync for PROGRESS drift. Same persistence contract.
+  const pauseProgressSync = (remote: ProgressDoc | null) => {
+    if (remote !== null) {
+      $storage.set(K_PROGRESS_DRIFT_REMOTE, remote);
+    } else {
+      $storage.remove(K_PROGRESS_DRIFT_REMOTE);
+    }
+    recomputeSyncPause();
+  };
+
+  // On (re)load: restore drift state if it was active before a restart.
+  // We check K_DRIFT_REMOTE / K_PROGRESS_DRIFT_REMOTE directly (the source
+  // of truth) rather than K_SYNC_PAUSED, so the two drift kinds can be
+  // restored independently.
+  if ($storage.has(K_DRIFT_REMOTE)) {
+    const persistedDriftRemote =
+      $storage.get<CatalogEntry[]>(K_DRIFT_REMOTE) ?? [];
+    pendingDrift.set({ local: entries.get(), remote: persistedDriftRemote });
+  }
+  if ($storage.has(K_PROGRESS_DRIFT_REMOTE)) {
+    const persistedProgressRemote = $storage.get<ProgressDoc>(
+      K_PROGRESS_DRIFT_REMOTE,
+    );
+    if (persistedProgressRemote) {
+      pendingProgressDrift.set({
+        local: progress.get(),
+        remote: persistedProgressRemote,
+      });
+    }
+  }
+
+  // Tag of the currently-running async action ("" when idle). Buttons swap
+  // their label to a loading text when their tag matches; second-click while
+  // busy short-circuits with a toast so we don't queue duplicate ops.
+  const busyAction = ctx.state<string>("");
+  const runBusy = async (tag: string, fn: () => Promise<void>) => {
+    if (busyAction.get()) {
+      ctx.toast.info("Another operation is running — try again in a moment");
+      return;
+    }
+    busyAction.set(tag);
+    try {
+      await fn();
+    } finally {
+      busyAction.set("");
+    }
+  };
 
   const token = () => ($getUserPreference("githubToken") ?? "").trim();
   const hasToken = () => token().length > 0;
@@ -66,23 +881,396 @@ export const register = (ctx: PluginContext) => {
     );
     return m ? m[1] : null;
   };
-  // User-provided gist URL (raw or share) from config. Takes priority over
-  // the auto-created gist stored in $storage (K_GIST).
-  const userGistUrl = () => ($getUserPreference("gistUrl") ?? "").trim();
-  const effectiveGistId = (): string => {
-    const u = userGistUrl();
-    if (u) {
-      const parsed = parseGistId(u);
-      if (parsed) return parsed;
+  // MIGRATION (one-shot): legacy `gistUrl` userConfig field is gone from the
+  // manifest. Existing installs may still have a value set; copy the parsed
+  // id into $storage so the modern code path picks it up. New installs hit
+  // the empty branch and stay there.
+  const legacyGistUrl = ($getUserPreference("gistUrl") ?? "").trim();
+  if (legacyGistUrl && !$storage.get<string>(K_GIST)) {
+    const parsed = parseGistId(legacyGistUrl);
+    if (parsed) {
+      $storage.set(K_GIST, parsed);
+      console.log(
+        "[local-catalog-manager] migrated legacy gistUrl config to $storage",
+      );
     }
-    return $storage.get<string>(K_GIST) ?? "";
-  };
-  // URL to display to the user (and to suggest pasting into the source's
-  // Catalog URL field). Prefers what they pasted in config; falls back to
-  // what we built when we created the gist ourselves.
-  const effectiveRawUrl = () => userGistUrl() || rawUrl.get();
+  }
+  // Gist binding lives entirely in $storage now (managed from the tray —
+  // create / link / unlink / delete remotely).
+  const effectiveGistId = (): string => $storage.get<string>(K_GIST) ?? "";
   // 1 entry vs 2 entries.
   const ent = (n: number) => `${n} ${n === 1 ? "entry" : "entries"}`;
+
+  // Reset the armed "Delete remotely" state. Called from every other event
+  // handler so accidental arms don't linger.
+  const disarmDelete = () => {
+    if (deleteGistArmed.get()) deleteGistArmed.set(false);
+  };
+
+  // Wipe all gist-related local state (cache + binding). Used by both
+  // unlinkGist and the post-delete cleanup. Catalog + progress are LOCAL data,
+  // not gist-derived — both survive an unlink or remote delete so the user
+  // can re-link to a different gist later without losing their work.
+  const clearGistLocalState = () => {
+    $storage.remove(K_GIST);
+    $storage.remove(K_OWNER);
+    $storage.remove(K_RAW);
+    rawUrl.set("");
+  };
+
+  async function createGistNow() {
+    disarmDelete();
+    if (!hasToken()) {
+      ctx.toast.error("Add a GitHub token first");
+      return;
+    }
+    if (effectiveGistId()) {
+      ctx.toast.info("Already linked — unlink first to create a new one");
+      return;
+    }
+    await runBusy("create-gist", async () => {
+      try {
+        const localEntries = entries.get();
+        // Seed with an empty catalog so the gist file is valid JSON immediately.
+        const initial = serializeCatalog([], Date.now());
+        const info = await client().createGist(FILENAME, initial);
+        $storage.set(K_GIST, info.id);
+        $storage.set(K_OWNER, info.owner);
+        $storage.set(K_RAW, info.rawUrl);
+        rawUrl.set(info.rawUrl);
+        if (localEntries.length > 0) {
+          // Local data exists — the new gist is empty, so the next push would
+          // overwrite that emptiness onto remote. Surface the drift UI so the
+          // user picks explicitly (and flag the gist as 'fresh' so Cancel can
+          // delete the empty orphan from GitHub).
+          pendingDrift.set({ local: localEntries, remote: [] });
+          pauseSync([], { freshGist: true });
+          ctx.toast.warning(
+            `Created gist ${info.id} — ${ent(localEntries.length)} local pending. Resolve in tray.`,
+          );
+        } else {
+          ctx.toast.success(`Created gist ${info.id}`);
+        }
+      } catch (e) {
+        ctx.toast.error(`Create failed: ${(e as Error).message}`);
+      }
+    });
+  }
+
+  async function linkExistingGist() {
+    disarmDelete();
+    if (!hasToken()) {
+      ctx.toast.error("Add a GitHub token first");
+      return;
+    }
+    const input = (fGistLink.current ?? "").trim();
+    if (!input) {
+      ctx.toast.error("Paste a gist URL or ID");
+      return;
+    }
+    const parsed = parseGistId(input);
+    if (!parsed) {
+      ctx.toast.error("Couldn't parse a gist ID from that input");
+      return;
+    }
+    await runBusy("link-gist", async () => {
+      // Fetch remote to detect drift vs local. We bind the gist BEFORE the
+      // fetch so users can see "linked" state even if the fetch errors;
+      // they can then use Pull / Unlink as appropriate.
+      $storage.set(K_GIST, parsed);
+      $storage.set(K_OWNER, "");
+      $storage.set(K_RAW, "");
+      rawUrl.set("");
+      fGistLink.setValue("");
+
+      let remote: CatalogEntry[] = [];
+      try {
+        // getGistFileWithInfo returns owner + computed raw URL in the same
+        // GET we'd already be making — persist them so "Show raw catalog
+        // URL" works right away (the empty K_RAW from the pre-fetch bind
+        // was the cause of "Raw URL not stored yet" after every link).
+        const info = await client().getGistFileWithInfo(parsed, FILENAME);
+        $storage.set(K_OWNER, info.owner);
+        $storage.set(K_RAW, info.rawUrl);
+        rawUrl.set(info.rawUrl);
+        remote = parseCatalog(info.content);
+      } catch (e) {
+        ctx.toast.error(
+          `Linked, but couldn't fetch remote catalog: ${(e as Error).message}. Use Pull to retry.`,
+        );
+        return;
+      }
+
+      const local = entries.get();
+      // Both empty → trivial silent link. Still pull progress in case there's
+      // remote reading-progress from a previous catalog state.
+      if (remote.length === 0 && local.length === 0) {
+        await syncProgressOnLink(parsed, "both empty");
+        return;
+      }
+      // Local empty + remote has entries → auto-pull (no data lost).
+      if (local.length === 0) {
+        persistLocal(remote, Date.now());
+        await syncProgressOnLink(
+          parsed,
+          `pulled ${ent(remote.length)} from remote`,
+        );
+        return;
+      }
+      // Any other state (both have, OR local-has + remote-empty) is a real
+      // mismatch — pushing/pulling would be destructive in one direction.
+      // Surface the drift UI so the user picks explicitly + pause sync so
+      // hooks don't clobber remote with local updates in the meantime.
+      // Progress sync is DEFERRED until drift resolves: applyRemote uses the
+      // catalog→mediaId lookup, which is unstable while drift is pending.
+      pendingDrift.set({ local, remote });
+      pauseSync(remote);
+      ctx.toast.warning(
+        `Drift detected: local ${ent(local.length)} vs remote ${ent(remote.length)}. Resolve in tray.`,
+      );
+    });
+  }
+
+  // Best-effort progress pull after a successful catalog link. Folds the
+  // result into a single user-facing toast so the link feels atomic. Failure
+  // here is non-fatal — the user can hit Reload progress later.
+  //
+  // Mirror of the catalog drift path: if BOTH local and remote progress
+  // have entries, defer auto-merge and surface the progress drift banner
+  // (let the user pick Merge / Local / Remote / Cancel explicitly). When
+  // only one side has data — or both are empty — we auto-merge silently
+  // since LWW per-entry can't lose information.
+  async function syncProgressOnLink(
+    gistId: string,
+    catalogSummary: string,
+  ): Promise<void> {
+    try {
+      const gistIdNow = effectiveGistId();
+      if (!gistIdNow) {
+        ctx.toast.success(`Linked to gist ${gistId} — ${catalogSummary}.`);
+        return;
+      }
+      // Pull remote without merging yet so we can compare.
+      let remoteRaw = "";
+      try {
+        remoteRaw = await client().getGistFile(gistIdNow, PROGRESS_FILENAME);
+      } catch (_) {
+        remoteRaw = "";
+      }
+      const remote = parseProgress(remoteRaw);
+      const local = progress.get();
+      const localCount = Object.keys(local.manga).length;
+      const remoteCount = Object.keys(remote.manga).length;
+      if (localCount > 0 && remoteCount > 0) {
+        // Drift candidate — surface the banner.
+        pendingProgressDrift.set({ local, remote });
+        pauseProgressSync(remote);
+        const d = diffProgress(local, remote);
+        ctx.toast.warning(
+          `Linked to gist ${gistId} — ${catalogSummary}. Progress drift: ${localCount} local vs ${remoteCount} remote (${d.conflicts} in conflict). Resolve in tray.`,
+        );
+        return;
+      }
+      // No drift — auto-merge + apply + push (existing path).
+      const res = await syncProgressInner();
+      const progSummary = `applied ${res.applied}${res.skipped ? `, skipped ${res.skipped} orphan(s)` : ""}`;
+      ctx.toast.success(
+        `Linked to gist ${gistId} — ${catalogSummary}. Progress ${progSummary}.`,
+      );
+    } catch (e) {
+      console.warn(
+        "[local-catalog-manager] progress sync after link failed:",
+        e,
+      );
+      ctx.toast.warning(
+        `Linked to gist ${gistId} — ${catalogSummary}. Progress sync failed: ${(e as Error).message}. Use Reload progress to retry.`,
+      );
+    }
+  }
+
+  function unlinkGist() {
+    disarmDelete();
+    if (!effectiveGistId()) return;
+    clearGistLocalState();
+    ctx.toast.success(
+      "Unlinked. Catalog + reading progress kept locally. Create or link a gist to push them.",
+    );
+  }
+
+  // Drift resolution: applies one of {merge, local-wins, remote-wins} to the
+  // pending drift, then clears the pendingDrift flag and pushes the chosen
+  // catalog to remote (so both sides converge immediately).
+  async function resolveDrift(mode: "merge" | "local" | "remote") {
+    const drift = pendingDrift.get();
+    if (!drift) return;
+    await runBusy("resolve-drift", async () => {
+      const now = Date.now();
+      let resolved: CatalogEntry[];
+      if (mode === "merge") resolved = mergeCatalog(drift.local, drift.remote);
+      else if (mode === "local") resolved = drift.local;
+      else resolved = drift.remote;
+      persistLocal(resolved, now);
+      pendingDrift.set(null);
+      pauseSync(null);
+      // Push the resolved catalog so remote matches local immediately
+      // (otherwise the next push could surprise the user again).
+      const gistId = effectiveGistId();
+      if (gistId) {
+        try {
+          await client().updateGistFile(
+            gistId,
+            FILENAME,
+            serializeCatalog(resolved, now),
+          );
+          ctx.toast.success(
+            `Drift resolved (${mode}) — ${ent(resolved.length)} on both sides`,
+          );
+          // Flush custom-source cache so the resolved catalog is visible
+          // immediately rather than after the configured `cacheMinutes` TTL.
+          await reloadCustomSource();
+        } catch (e) {
+          ctx.toast.error(
+            `Resolved locally but push failed: ${(e as Error).message}. Use Pull to retry.`,
+          );
+        }
+      } else {
+        ctx.toast.success(`Drift resolved (${mode})`);
+      }
+    });
+  }
+
+  // Progress drift resolution — sibling of resolveDrift, runs LWW merge OR
+  // takes one side wholesale, then applies remote-side changes to seanime
+  // and pushes the resolved doc to remote. Same Merge/Local/Remote/Cancel
+  // contract, but Cancel here just defers (leaves drift pending) rather
+  // than reverting the link — the gist link itself is fine, only the
+  // progress sync is undecided.
+  async function resolveProgressDrift(mode: "merge" | "local" | "remote") {
+    const drift = pendingProgressDrift.get();
+    if (!drift) return;
+    await runBusy("resolve-progress-drift", async () => {
+      const now = Date.now();
+      let resolved: ProgressDoc;
+      if (mode === "merge") {
+        resolved = mergeProgress(drift.local, drift.remote, now);
+      } else if (mode === "local") {
+        resolved = { ...drift.local, updatedAt: now };
+      } else {
+        resolved = { ...drift.remote, updatedAt: now };
+      }
+      try {
+        // Apply remote-side wins to seanime (only entries the resolution
+        // bumped past local). Same path as the regular Reload progress flow.
+        const collection = await ctx.manga.getCollection();
+        const lookup = buildMediaIdLookup(
+          collection,
+          PREFIX_SITEURL,
+          decodeLocalId,
+          { extId: $storage.get<number>(K_EXT_ID) ?? undefined },
+        );
+        const res = applyRemote(resolved, drift.local, {
+          updateEntry: applyEntryViaSeanime,
+          mediaIdByLocalId: lookup,
+        });
+        // Persist locally + push to gist. Clear drift state first so
+        // persistProgress doesn't get blocked by the paused-sync guard.
+        pendingProgressDrift.set(null);
+        pauseProgressSync(null);
+        persistProgress(resolved, now);
+        const gistId = effectiveGistId();
+        if (gistId) {
+          try {
+            await client().updateGistFile(
+              gistId,
+              PROGRESS_FILENAME,
+              serializeProgress(resolved),
+            );
+          } catch (e) {
+            console.warn(
+              "[local-catalog-manager] push after progress drift resolve failed:",
+              e,
+            );
+          }
+        }
+        ctx.toast.success(
+          `Progress drift resolved (${mode}) — applied ${res.applied}${res.skipped ? `, skipped ${res.skipped} orphan(s)` : ""}`,
+        );
+      } catch (e) {
+        ctx.toast.error(
+          `Progress drift resolve failed: ${(e as Error).message}`,
+        );
+      }
+    });
+  }
+
+  // Cancel the pending progress drift WITHOUT touching the gist link or
+  // local data. Hooks resume normal push behavior immediately. Used when
+  // the user wants to defer the decision (catalog drift cancel reverts
+  // the whole link; progress cancel is lighter — the catalog is already
+  // committed, only progress sync is on hold).
+  function cancelProgressDrift() {
+    if (!pendingProgressDrift.get()) return;
+    pendingProgressDrift.set(null);
+    pauseProgressSync(null);
+    ctx.toast.info(
+      "Progress drift dismissed. Local progress kept; remote untouched. Use Reload progress later to retry.",
+    );
+  }
+
+  function cancelDriftLink() {
+    // Revert the link entirely so the user's pre-link state is restored. If
+    // we just created the gist for this drift session (freshGist flag),
+    // also delete it from GitHub so we don't leave an empty orphan.
+    const wasFresh = $storage.get<boolean>(K_DRIFT_FRESH_GIST) === true;
+    const gistId = effectiveGistId();
+    pendingDrift.set(null);
+    pauseSync(null);
+    $storage.remove(K_GIST);
+    $storage.remove(K_OWNER);
+    $storage.remove(K_RAW);
+    rawUrl.set("");
+    if (wasFresh && gistId) {
+      // Fire-and-forget delete; user can clean up manually if it fails.
+      client()
+        .deleteGist(gistId)
+        .then(() => {
+          console.log(
+            `[local-catalog-manager] cleaned up fresh gist ${gistId}`,
+          );
+        })
+        .catch((e: unknown) => {
+          console.warn(
+            "[local-catalog-manager] cleanup of fresh gist failed:",
+            e,
+          );
+        });
+      ctx.toast.info(
+        "Link cancelled. Local catalog kept. Empty gist deleted from GitHub.",
+      );
+    } else {
+      ctx.toast.info("Link cancelled. Local catalog kept unchanged.");
+    }
+  }
+
+  async function deleteGistRemotely() {
+    const gistId = effectiveGistId();
+    if (!gistId || !hasToken()) {
+      deleteGistArmed.set(false);
+      return;
+    }
+    await runBusy("delete-gist", async () => {
+      try {
+        await client().deleteGist(gistId);
+        clearGistLocalState();
+        deleteGistArmed.set(false);
+        ctx.toast.success(
+          `Deleted gist ${gistId} from GitHub. Local catalog + progress kept.`,
+        );
+      } catch (e) {
+        ctx.toast.error(`Delete failed: ${(e as Error).message}`);
+      }
+    });
+  }
 
   const num = (s: string | undefined): number | undefined => {
     const v = Number((s ?? "").trim());
@@ -100,6 +1288,7 @@ export const register = (ctx: PluginContext) => {
     entries.set(next);
     $storage.set(K_CATALOG, next);
     $storage.set(K_UPDATED, updatedAt);
+    invalidateClientCaches({ catalog: true });
   }
 
   async function push(next: CatalogEntry[]) {
@@ -111,57 +1300,71 @@ export const register = (ctx: PluginContext) => {
       status.set(next.length > 0 ? `Saved ${ent(next.length)} locally` : "");
       return;
     }
-    // Reject an unparseable user-provided Gist URL early instead of silently
-    // falling back to auto-create (which would surprise the user).
-    const userUrl = userGistUrl();
-    if (userUrl && !parseGistId(userUrl)) {
-      ctx.toast.error(
-        `Couldn't parse a Gist ID from "${userUrl}". Use a gist URL or bare ID, or clear the field.`,
-      );
+    if (hasDrift()) {
+      ctx.toast.warning("Resolve catalog drift first (see banner at top)");
       return;
     }
-    const json = serializeCatalog(next, updatedAt);
-    try {
-      let gistId = effectiveGistId();
-      if (!gistId) {
-        const info = await client().createGist(FILENAME, json);
-        $storage.set(K_GIST, info.id);
-        $storage.set(K_OWNER, info.owner);
-        $storage.set(K_RAW, info.rawUrl);
-        rawUrl.set(info.rawUrl);
-        gistId = info.id;
-        ctx.toast.success("Created Gist. Copy the raw URL into the source.");
-      } else {
-        await client().updateGistFile(gistId, FILENAME, json);
+    await runBusy("push-catalog", async () => {
+      const json = serializeCatalog(next, updatedAt);
+      try {
+        let gistId = effectiveGistId();
+        if (!gistId) {
+          const info = await client().createGist(FILENAME, json);
+          $storage.set(K_GIST, info.id);
+          $storage.set(K_OWNER, info.owner);
+          $storage.set(K_RAW, info.rawUrl);
+          rawUrl.set(info.rawUrl);
+          gistId = info.id;
+          ctx.toast.success("Created Gist. Copy the raw URL into the source.");
+        } else {
+          await client().updateGistFile(gistId, FILENAME, json);
+        }
+        persistLocal(next, updatedAt);
+        status.set(`Synced ${ent(next.length)}`);
+        // Flush the custom-source cache so the next search reflects the
+        // pushed catalog without waiting for its `cacheMinutes` TTL.
+        await reloadCustomSource();
+      } catch (e) {
+        ctx.toast.error(`Sync failed: ${(e as Error).message}`);
       }
-      persistLocal(next, updatedAt);
-      status.set(`Synced ${ent(next.length)}`);
-    } catch (e) {
-      ctx.toast.error(`Sync failed: ${(e as Error).message}`);
-    }
+    });
   }
 
   async function pull() {
-    const userUrl = userGistUrl();
-    if (userUrl && !parseGistId(userUrl)) {
-      ctx.toast.error(
-        `Couldn't parse a Gist ID from "${userUrl}". Use a gist URL or bare ID, or clear the field.`,
-      );
-      return;
-    }
     const gistId = effectiveGistId();
     if (!token() || !gistId) {
       ctx.toast.info("Nothing to pull yet — add an entry to create the Gist.");
       return;
     }
-    try {
-      const content = await client().getGistFile(gistId, FILENAME);
-      const remote = parseCatalog(content);
-      persistLocal(remote, Date.now());
-      ctx.toast.success(`Pulled ${ent(remote.length)}`);
-    } catch (e) {
-      ctx.toast.error(`Pull failed: ${(e as Error).message}`);
+    if (hasDrift()) {
+      ctx.toast.warning("Resolve catalog drift first (see banner at top)");
+      return;
     }
+    await runBusy("pull-catalog", async () => {
+      try {
+        const content = await client().getGistFile(gistId, FILENAME);
+        const remote = parseCatalog(content);
+        persistLocal(remote, Date.now());
+        ctx.toast.success(`Pulled ${ent(remote.length)}`);
+      } catch (e) {
+        ctx.toast.error(`Pull failed: ${(e as Error).message}`);
+      }
+    });
+  }
+
+  // Delete a catalog entry. When userConfig.autoCleanProgressOnDelete is on
+  // (default), the entry's progress is pruned in the same op so we don't
+  // leave an orphan in progress.json. Users can opt out via the preference
+  // if they want to keep progress across deletes (e.g., re-add later with
+  // the same id and re-apply on next Reload).
+  function deleteEntry(id: number) {
+    const autoClean =
+      ($getUserPreference("autoCleanProgressOnDelete") ?? "true") === "true";
+    if (autoClean && progress.get().manga[String(id)]) {
+      const now = Date.now();
+      persistProgress(pruneOrphans(progress.get(), [id], now), now);
+    }
+    void push(removeEntry(entries.get(), id));
   }
 
   function openForm(id: number) {
@@ -178,19 +1381,121 @@ export const register = (ctx: PluginContext) => {
     fChapters.setValue(e?.chapters != null ? String(e.chapters) : "");
     fVolumes.setValue(e?.volumes != null ? String(e.volumes) : "");
     fYear.setValue(e?.year != null ? String(e.year) : "");
+    fMonth.setValue(e?.month != null ? String(e.month) : "");
+    fDay.setValue(e?.day != null ? String(e.day) : "");
     fIsAdult.setValue(!!e?.isAdult);
     fCountry.setValue(e?.country ?? "");
     fSiteUrl.setValue(e?.siteUrl ?? "");
     view.set("form");
   }
 
-  ctx.registerEventHandler("lmm-new", () => openForm(0));
-  ctx.registerEventHandler("lmm-cancel", () => view.set("list"));
-  ctx.registerEventHandler("lmm-pull", () => {
+  ctx.registerEventHandler("lcm-new", () => {
+    disarmDelete();
+    openForm(0);
+  });
+  ctx.registerEventHandler("lcm-cancel", () => {
+    disarmDelete();
+    view.set("list");
+  });
+  ctx.registerEventHandler("lcm-pull", () => {
+    disarmDelete();
     void pull();
   });
+  ctx.registerEventHandler("lcm-push-progress", () => {
+    disarmDelete();
+    void pushProgressNow();
+  });
+  ctx.registerEventHandler("lcm-pull-progress", () => {
+    disarmDelete();
+    void pullProgressNow();
+  });
+  ctx.registerEventHandler("lcm-reload-catalog", () => {
+    disarmDelete();
+    void reloadCatalog();
+  });
+  ctx.registerEventHandler("lcm-reload-progress", () => {
+    disarmDelete();
+    void reloadProgress();
+  });
+  ctx.registerEventHandler("lcm-clean-orphans", () => {
+    disarmDelete();
+    cleanOrphans();
+  });
+  ctx.registerEventHandler("lcm-create-gist", () => {
+    void createGistNow();
+  });
+  ctx.registerEventHandler("lcm-link-gist", () => {
+    void linkExistingGist();
+  });
+  ctx.registerEventHandler("lcm-drift-merge", () => {
+    void resolveDrift("merge");
+  });
+  ctx.registerEventHandler("lcm-drift-local-wins", () => {
+    void resolveDrift("local");
+  });
+  ctx.registerEventHandler("lcm-drift-remote-wins", () => {
+    void resolveDrift("remote");
+  });
+  ctx.registerEventHandler("lcm-drift-cancel", () => {
+    cancelDriftLink();
+  });
+  ctx.registerEventHandler("lcm-progress-drift-merge", () => {
+    void resolveProgressDrift("merge");
+  });
+  ctx.registerEventHandler("lcm-progress-drift-local-wins", () => {
+    void resolveProgressDrift("local");
+  });
+  ctx.registerEventHandler("lcm-progress-drift-remote-wins", () => {
+    void resolveProgressDrift("remote");
+  });
+  ctx.registerEventHandler("lcm-progress-drift-cancel", () => {
+    cancelProgressDrift();
+  });
+  ctx.registerEventHandler("lcm-unlink-gist", () => {
+    unlinkGist();
+  });
+  ctx.registerEventHandler("lcm-show-raw-url", () => {
+    disarmDelete();
+    const url = rawUrl.get();
+    if (!url) {
+      ctx.toast.info(
+        "Raw URL not stored yet — push once or pull to fetch it from GitHub",
+      );
+      return;
+    }
+    ctx.toast.info(url);
+  });
+  ctx.registerEventHandler("lcm-delete-gist-arm", () => {
+    deleteGistArmed.set(true);
+  });
+  ctx.registerEventHandler("lcm-delete-gist-confirm", () => {
+    void deleteGistRemotely();
+  });
+  ctx.registerEventHandler("lcm-toggle-binding", () => {
+    disarmDelete();
+    bindingExpanded.set(!bindingExpanded.get());
+  });
+  ctx.registerEventHandler("lcm-toggle-orphans", () => {
+    disarmDelete();
+    orphansExpanded.set(!orphansExpanded.get());
+  });
+  ctx.registerEventHandler("lcm-toggle-catalog-json", () => {
+    catalogJsonExpanded.set(!catalogJsonExpanded.get());
+  });
+  ctx.registerEventHandler("lcm-toggle-progress-json", () => {
+    progressJsonExpanded.set(!progressJsonExpanded.get());
+  });
+  ctx.registerEventHandler("lcm-entry-search", () => {
+    disarmDelete();
+    entrySearch.set((fEntrySearch.current ?? "").trim());
+  });
+  ctx.registerEventHandler("lcm-entry-search-clear", () => {
+    disarmDelete();
+    entrySearch.set("");
+    fEntrySearch.setValue("");
+  });
 
-  ctx.registerEventHandler("lmm-save", () => {
+  ctx.registerEventHandler("lcm-save", () => {
     const current = entries.get();
     const id = editingId.get() > 0 ? editingId.get() : nextId(current);
     const entry: CatalogEntry = {
@@ -212,6 +1517,8 @@ export const register = (ctx: PluginContext) => {
       chapters: num(fChapters.current),
       volumes: num(fVolumes.current),
       year: num(fYear.current),
+      month: num(fMonth.current),
+      day: num(fDay.current),
       isAdult: fIsAdult.current ? true : undefined,
       country: (fCountry.current ?? "").trim() || undefined,
       siteUrl: (fSiteUrl.current ?? "").trim() || undefined,
@@ -226,25 +1533,92 @@ export const register = (ctx: PluginContext) => {
     void push(next);
   });
 
-  ctx.registerEventHandler("lmm-import", () => {
+  // Import is split: Replace wipes local + uses imported as-is; Merge keeps
+  // Detect what shape of JSON was pasted into the import box. Catalog and
+  // progress both serialize to `{version, updatedAt, manga: ...}` but disagree
+  // on `manga`: an Array for catalog, an Object (id → entry) for progress.
+  // Legacy shapes supported: bare array (catalog), `entries` key (progress).
+  const detectImportKind = (
+    raw: string,
+  ): "catalog" | "progress" | "invalid" => {
+    let data: unknown;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return "invalid";
+    }
+    if (Array.isArray(data)) return "catalog";
+    if (!data || typeof data !== "object") return "invalid";
+    const obj = data as { manga?: unknown; entries?: unknown };
+    if (Array.isArray(obj.manga)) return "catalog";
+    if (obj.manga && typeof obj.manga === "object") return "progress";
+    if (obj.entries && typeof obj.entries === "object") return "progress";
+    return "invalid";
+  };
+
+  // Single import handler — auto-detects catalog vs progress and dispatches
+  // to the right merge / replace path. Merge semantics:
+  //   catalog → mergeCatalog(local, imported)  // local wins on id conflicts
+  //   progress → mergeProgress(local, imported) // per-entry LWW by updatedAt
+  // Replace wipes the corresponding doc and uses the imported one as-is.
+  const importFromField = (mode: "merge" | "replace") => {
     const raw = (fJsonIn.current ?? "").trim();
     if (!raw) {
-      ctx.toast.error("Paste a catalog JSON first.");
+      ctx.toast.error("Paste a catalog or progress JSON first.");
+      return;
+    }
+    const kind = detectImportKind(raw);
+    if (kind === "invalid") {
+      ctx.toast.error(
+        "Unrecognized JSON shape — expected a catalog or progress dump.",
+      );
       return;
     }
     try {
-      const imported = parseCatalog(raw);
-      if (imported.length === 0) {
-        ctx.toast.error("No valid entries in that JSON.");
-        return;
+      if (kind === "catalog") {
+        const imported = parseCatalog(raw);
+        if (imported.length === 0) {
+          ctx.toast.error("Catalog JSON has no valid entries.");
+          return;
+        }
+        const next =
+          mode === "merge" ? mergeCatalog(entries.get(), imported) : imported;
+        void push(next);
+        fJsonIn.setValue("");
+        ctx.toast.success(
+          mode === "merge"
+            ? `Catalog merged · ${ent(next.length)} total`
+            : `Catalog replaced · ${ent(next.length)}`,
+        );
+      } else {
+        const imported = parseProgress(raw);
+        const importedCount = Object.keys(imported.manga).length;
+        if (importedCount === 0) {
+          ctx.toast.error("Progress JSON has no entries.");
+          return;
+        }
+        const now = Date.now();
+        const next =
+          mode === "merge"
+            ? mergeProgress(progress.get(), imported, now)
+            : { ...imported, updatedAt: now };
+        persistProgress(next, now);
+        fJsonIn.setValue("");
+        const finalCount = Object.keys(next.manga).length;
+        ctx.toast.success(
+          mode === "merge"
+            ? `Progress merged · ${finalCount} entries (LWW)`
+            : `Progress replaced · ${finalCount} entries`,
+        );
       }
-      void push(imported);
-      fJsonIn.setValue("");
-      ctx.toast.success(`Imported ${ent(imported.length)}.`);
     } catch (e) {
       ctx.toast.error(`Import failed: ${(e as Error).message}`);
     }
-  });
+  };
+  ctx.registerEventHandler("lcm-import-merge", () => importFromField("merge"));
+  ctx.registerEventHandler("lcm-import-replace", () =>
+    importFromField("replace"),
+  );
 
   // Radix-UI Select forbids Select.Item value="" (reserved for the
   // "cleared" state shown via placeholder). Use a non-empty sentinel
@@ -265,118 +1639,505 @@ export const register = (ctx: PluginContext) => {
     { label: "One-shot", value: "ONE_SHOT" },
   ];
 
-  function renderSync() {
-    if (hasToken()) {
-      const url = effectiveRawUrl();
-      // status is runtime-only state — empty after a reload. Derive a
-      // meaningful fallback from persisted state (entries + gist) so the
-      // header doesn't lie with "not synced yet" when we are.
-      const count = entries.get().length;
-      const fallbackStatus =
-        effectiveGistId() && count > 0
-          ? `${ent(count)} synced`
-          : "not synced yet";
-      const statusLine = status.get() || fallbackStatus;
-      const items: unknown[] = [
-        // Header: icon + bold label + dim status line.
-        tray.div([
-          tray.span("☁ "),
-          tray.span("Gist mode", { style: { fontWeight: "600" } }),
-          tray.span(` · ${statusLine}`, {
-            style: { opacity: "0.65", fontSize: "0.85rem" },
-          }),
-        ]),
-      ];
-      // Catalog URL callout (only when we know it).
-      if (url) {
-        items.push(
-          tray.div(
-            [
-              tray.text("CATALOG URL", {
-                style: {
-                  fontSize: "0.7rem",
-                  fontWeight: "700",
-                  opacity: "0.55",
-                  letterSpacing: "0.08em",
-                  marginBottom: "4px",
-                },
-              }),
-              tray.text(url, {
-                style: {
-                  fontSize: "0.75rem",
-                  fontFamily: "monospace",
-                  wordBreak: "break-all",
-                  opacity: "0.9",
-                },
-              }),
-              tray.text(
-                "Paste this into the Local Catalog source's 'Catalog URL' setting.",
-                {
-                  style: {
-                    fontSize: "0.7rem",
-                    opacity: "0.6",
-                    marginTop: "4px",
-                  },
-                },
-              ),
-            ],
-            {
-              style: {
-                padding: "8px 10px",
-                borderRadius: "6px",
-                background: "rgba(255,255,255,0.04)",
-                borderLeft: "2px solid rgba(100,150,255,0.5)",
-              },
-            },
-          ),
-        );
-      }
-      items.push(
-        tray.flex([
-          tray.button("New entry", { onClick: "lmm-new", intent: "primary" }),
-          tray.button("🔄 Pull now", { onClick: "lmm-pull" }),
-        ]),
-      );
-      return tray.stack(items);
-    }
-    // Local-only mode (no GitHub token configured).
-    const items: unknown[] = [
-      // Headline: title + dim subtitle.
-      tray.div([
-        tray.span("🔒 "),
-        tray.span("Local mode", { style: { fontWeight: "600" } }),
-        tray.span(" · edits saved on this device", {
+  // Section header style — used for ENTRIES / READING PROGRESS / GIST BINDING.
+  const sectionHeader = (label: string) =>
+    tray.text(label, {
+      style: {
+        fontSize: "0.7rem",
+        fontWeight: "700",
+        opacity: "0.55",
+        letterSpacing: "0.1em",
+        marginBottom: "4px",
+      },
+    });
+  const sectionDivider = () =>
+    tray.div([], {
+      style: {
+        borderTop: "1px solid rgba(255,255,255,0.1)",
+        marginTop: "10px",
+        paddingTop: "8px",
+      },
+    });
+
+  // Pill / badge for inline status labels (linked, RELEASING, etc.).
+  // Single color palette indexed by intent name.
+  const PILL_PALETTE: Record<string, { bg: string; fg: string }> = {
+    success: { bg: "rgba(80,200,120,0.15)", fg: "rgba(140,220,160,1)" },
+    info: { bg: "rgba(120,170,255,0.15)", fg: "rgba(160,200,255,1)" },
+    warning: { bg: "rgba(255,200,0,0.15)", fg: "rgba(255,220,80,1)" },
+    alert: { bg: "rgba(255,120,120,0.15)", fg: "rgba(255,150,150,1)" },
+    gray: { bg: "rgba(255,255,255,0.06)", fg: "rgba(255,255,255,0.6)" },
+  };
+  const pill = (
+    label: string,
+    intent: "success" | "info" | "warning" | "alert" | "gray" = "gray",
+  ) => {
+    const { bg, fg } = PILL_PALETTE[intent] ?? PILL_PALETTE.gray;
+    return tray.span(label, {
+      style: {
+        fontSize: "0.7rem",
+        fontWeight: "500",
+        padding: "2px 8px",
+        borderRadius: "10px",
+        background: bg,
+        color: fg,
+      },
+    });
+  };
+
+  // AL_MediaStatus → pill color. NOT_YET_RELEASED defaults to gray.
+  const STATUS_INTENT: Record<
+    string,
+    "success" | "info" | "warning" | "alert" | "gray"
+  > = {
+    RELEASING: "success",
+    FINISHED: "info",
+    HIATUS: "warning",
+    CANCELLED: "alert",
+    NOT_YET_RELEASED: "gray",
+  };
+
+  // Mode header row: icon + bold title (+ optional dim subtitle), with an
+  // optional right-side actions list (pill, button, etc.). Shared by local
+  // and gist modes so both lead with a consistent compact strip.
+  const modeHeader = (
+    icon: string,
+    title: string,
+    opts: { subtitle?: string; right?: unknown[] } = {},
+  ) => {
+    const titleChildren: unknown[] = [
+      tray.span(`${icon} `),
+      tray.span(title, {
+        style: { fontWeight: "600", fontSize: "0.95rem" },
+      }),
+    ];
+    if (opts.subtitle) {
+      titleChildren.push(
+        tray.span(` · ${opts.subtitle}`, {
           style: { opacity: "0.65", fontSize: "0.85rem" },
         }),
-      ]),
-      // Callout: sandbox limitation + Gist recommendation.
-      tray.div(
+      );
+    }
+    return tray.flex(
+      [
+        tray.div(titleChildren, {
+          style: { flex: "1", alignSelf: "center", minWidth: "0" },
+        }),
+        ...(opts.right ?? []),
+      ],
+      { gap: 2, style: { alignItems: "center" } },
+    );
+  };
+
+  // Stat card: big number on top, small uppercase caption below.
+  const statCard = (value: string, label: string) =>
+    tray.div(
+      [
+        tray.text(value, {
+          style: {
+            fontWeight: "700",
+            fontSize: "1.3rem",
+            lineHeight: "1.3",
+          },
+        }),
+        tray.text(label, {
+          style: {
+            fontSize: "0.65rem",
+            opacity: "0.6",
+            textTransform: "uppercase",
+            letterSpacing: "0.08em",
+            marginTop: "2px",
+          },
+        }),
+      ],
+      {
+        style: {
+          flex: "1",
+          padding: "10px 12px",
+          borderRadius: "6px",
+          background: "rgba(255,255,255,0.03)",
+          border: "1px solid rgba(255,255,255,0.06)",
+          minWidth: "0",
+        },
+      },
+    );
+
+  // Alert callout — yellow accent panel for warnings / drift. `warning` is
+  // the stronger tinted-background variant (used for drift, where the user
+  // needs to act); `note` is the subtler variant (used for the local-mode
+  // sandbox limitation callout, which is always visible).
+  const ALERT_PALETTE: Record<
+    string,
+    { bg: string; border: string; borderW: string; padding: string }
+  > = {
+    warning: {
+      bg: "rgba(255,180,0,0.08)",
+      border: "rgba(255,180,0,0.7)",
+      borderW: "3px",
+      padding: "10px 12px",
+    },
+    note: {
+      bg: "rgba(255,255,255,0.04)",
+      border: "rgba(255,180,0,0.5)",
+      borderW: "2px",
+      padding: "8px 10px",
+    },
+  };
+  const alertBox = (
+    children: unknown[],
+    opts: { intent?: "warning" | "note" } = {},
+  ) => {
+    const p = ALERT_PALETTE[opts.intent ?? "warning"];
+    return tray.div(children, {
+      style: {
+        padding: p.padding,
+        borderRadius: "6px",
+        background: p.bg,
+        borderLeft: `${p.borderW} solid ${p.border}`,
+        marginBottom: "8px",
+      },
+    });
+  };
+
+  function renderProgressSection() {
+    // Header row: section title on left, reload (gist only) + orphan toggle
+    // on right. In local mode the stat cards still work (progress is cached
+    // in $storage by the hooks); the reload button hides because there's no
+    // remote to reload from.
+    const linked = hasToken() && !!effectiveGistId();
+    const oCount = orphanCount();
+    const oExpanded = orphansExpanded.get();
+    const headerActions: unknown[] = [];
+    if (linked) {
+      headerActions.push(
+        tray.button(
+          busyAction.get() === "reload-progress"
+            ? "⏳ Reloading…"
+            : "🔄 Reload",
+          { onClick: "lcm-reload-progress", size: "sm" },
+        ),
+      );
+    }
+    if (oCount > 0) {
+      headerActions.push(
+        tray.tooltip(
+          tray.button(`⚠️ ${oCount} orphan${oCount === 1 ? "" : "s"}`, {
+            onClick: "lcm-toggle-orphans",
+            size: "sm",
+            intent: "warning-subtle",
+          }),
+          {
+            text: oExpanded
+              ? "Collapse orphan list"
+              : "Expand to delete or apply each orphan",
+          },
+        ),
+      );
+    }
+    const sub: unknown[] = [
+      sectionDivider(),
+      tray.flex(
         [
-          tray.text(
-            "⚠ Plugin and source can't sync directly — seanime sandboxes extensions. Copy the JSON below into the source's Inline catalog JSON field after every edit.",
-            { style: { fontSize: "0.8rem" } },
-          ),
-          tray.text(
-            "💡 Tip: set a GitHub token in the plugin config to switch to Gist mode — automatic sync, no copy-paste.",
-            {
-              style: {
-                fontSize: "0.8rem",
-                marginTop: "4px",
-                opacity: "0.85",
+          tray.div([sectionHeader("📖 READING PROGRESS")], {
+            style: { flex: "1", alignSelf: "center" },
+          }),
+          ...headerActions,
+        ],
+        { gap: 2, style: { alignItems: "center", marginBottom: "6px" } },
+      ),
+      // Two stat cards: number of local entries + last updated timestamp.
+      tray.flex(
+        [
+          statCard(String(localEntryCount()), "local entries"),
+          statCard(formatTs(progressUpdated.get()), "last updated"),
+        ],
+        { gap: 2 },
+      ),
+    ];
+    // Orphan list (expandable). Each row: id + status/progress summary +
+    // [🔄 Try apply] [⛔ Delete]. Plus a bulk "Delete all" footer.
+    if (oCount > 0 && oExpanded) {
+      const catalogIds = new Set(entries.get().map((e) => e.id));
+      const orphanIds = detectOrphans(progress.get(), catalogIds);
+      const orphanRows = orphanIds.map((id) => {
+        const e = progress.get().manga[String(id)] ?? { updatedAt: 0 };
+        const parts: string[] = [];
+        if (e.status) parts.push(e.status.toLowerCase());
+        if (e.progress != null) parts.push(`prog ${e.progress}`);
+        if (e.scoreRaw != null) parts.push(`score ${e.scoreRaw}`);
+        const summary = parts.length > 0 ? parts.join(" · ") : "(no data)";
+        const applyBusy = busyAction.get() === `apply-progress-${id}`;
+        return tray.flex(
+          [
+            tray.div(
+              [
+                tray.span(`#${id}`, {
+                  style: { fontWeight: "600", fontSize: "0.8rem" },
+                }),
+                tray.span(`  ${summary}`, {
+                  style: { fontSize: "0.75rem", opacity: "0.65" },
+                }),
+              ],
+              { style: { flex: "1", alignSelf: "center", minWidth: "0" } },
+            ),
+            tray.tooltip(
+              tray.button(applyBusy ? "⏳" : "📤", {
+                onClick: ctx.eventHandler(`lcm-apply-progress-${id}`, () => {
+                  void applyProgress(id);
+                }),
+                size: "sm",
+              }),
+              {
+                text: "Try to apply this progress to seanime (works if catalog entry was re-added with same id)",
               },
+            ),
+            tray.tooltip(
+              tray.button("⛔", {
+                onClick: ctx.eventHandler(`lcm-orphan-delete-${id}`, () => {
+                  deleteOrphan(id);
+                }),
+                size: "sm",
+                intent: "alert-subtle",
+              }),
+              { text: "Delete this orphan from progress.json" },
+            ),
+          ],
+          {
+            gap: 2,
+            style: {
+              alignItems: "center",
+              padding: "4px 8px",
+              borderRadius: "4px",
+              background: "rgba(255,255,255,0.02)",
+            },
+          },
+        );
+      });
+      sub.push(
+        tray.stack(orphanRows, { style: { marginTop: "4px" } }),
+        tray.flex(
+          [
+            tray.button("⛔ Delete all orphans", {
+              onClick: "lcm-clean-orphans",
+              size: "sm",
+              intent: "alert-subtle",
+            }),
+          ],
+          { style: { marginTop: "4px", justifyContent: "flex-end" } },
+        ),
+      );
+    }
+    if (progressStatus.get()) {
+      sub.push(
+        tray.text(progressStatus.get(), {
+          style: {
+            fontSize: "0.75rem",
+            opacity: "0.6",
+            fontStyle: "italic",
+            marginTop: "4px",
+          },
+        }),
+      );
+    }
+    return tray.stack(sub);
+  }
+
+  function renderSync() {
+    if (hasToken()) {
+      // Compact header: title + linked/not-linked pill + pencil toggle.
+      // The binding details (short-id + owner + action icons) live inline
+      // below, collapsible via bindingExpanded.
+      const gid = effectiveGistId();
+      const owner = $storage.get<string>(K_OWNER) ?? "";
+      const expanded = bindingExpanded.get();
+      const headerRow = modeHeader("🌐", "Gist mode", {
+        right: [
+          gid ? pill("🔗 Linked", "success") : pill("🔓 Not linked", "gray"),
+          tray.tooltip(
+            tray.button(expanded ? "↑" : "✏️", {
+              onClick: "lcm-toggle-binding",
+              size: "sm",
+            }),
+            {
+              text: expanded ? "Collapse gist details" : "Manage gist binding",
             },
           ),
         ],
-        {
-          style: {
-            padding: "8px 10px",
-            borderRadius: "6px",
-            background: "rgba(255,255,255,0.04)",
-            borderLeft: "2px solid rgba(255,180,0,0.5)",
-          },
-        },
-      ),
+      });
+      const items: unknown[] = [headerRow];
+      // Status line — only when there's an explicit op result ("Synced N
+      // entries", "Reloaded · N entries", etc.). The static "N entries
+      // synced" fallback was removed because the ENTRIES section header
+      // already shows the count and the Linked pill already signals the
+      // sync state.
+      const statusLine = status.get();
+      if (statusLine) {
+        items.push(
+          tray.text(statusLine, {
+            style: {
+              fontSize: "0.75rem",
+              opacity: "0.6",
+              marginTop: "2px",
+            },
+          }),
+        );
+      }
+      // Collapsible binding details.
+      if (expanded) {
+        if (gid) {
+          const deleteBusy = busyAction.get() === "delete-gist";
+          const shortId = gid.length > 12 ? `${gid.slice(0, 12)}…` : gid;
+          items.push(
+            tray.flex(
+              [
+                tray.div(
+                  [
+                    tray.span(shortId, {
+                      style: {
+                        fontFamily: "monospace",
+                        fontSize: "0.8rem",
+                        opacity: "0.85",
+                      },
+                    }),
+                    owner
+                      ? tray.span(`  ${owner}`, {
+                          style: { fontSize: "0.8rem", opacity: "0.55" },
+                        })
+                      : tray.span(""),
+                  ],
+                  { style: { flex: "1", alignSelf: "center", minWidth: "0" } },
+                ),
+                tray.tooltip(
+                  tray.button("📋", {
+                    onClick: "lcm-show-raw-url",
+                    size: "sm",
+                  }),
+                  { text: "Show raw catalog URL" },
+                ),
+                tray.tooltip(
+                  tray.button("🔓", {
+                    onClick: "lcm-unlink-gist",
+                    size: "sm",
+                  }),
+                  { text: "Unlink gist (keep on GitHub)" },
+                ),
+                tray.tooltip(
+                  tray.button(
+                    deleteBusy
+                      ? "⏳"
+                      : deleteGistArmed.get()
+                        ? "⚠️️ Confirm"
+                        : "⛔",
+                    {
+                      onClick: deleteGistArmed.get()
+                        ? "lcm-delete-gist-confirm"
+                        : "lcm-delete-gist-arm",
+                      size: "sm",
+                    },
+                  ),
+                  {
+                    text: deleteGistArmed.get()
+                      ? "Click to confirm — this is irreversible"
+                      : "Delete gist remotely (irreversible)",
+                  },
+                ),
+              ],
+              {
+                gap: 2,
+                style: {
+                  alignItems: "center",
+                  marginTop: "6px",
+                  padding: "6px 8px",
+                  borderRadius: "4px",
+                  background: "rgba(255,255,255,0.03)",
+                },
+              },
+            ),
+          );
+        } else {
+          const createBusy = busyAction.get() === "create-gist";
+          items.push(
+            tray.flex(
+              [
+                tray.button(createBusy ? "⏳ Creating…" : "+ Create new gist", {
+                  onClick: "lcm-create-gist",
+                  intent: "primary",
+                  size: "sm",
+                }),
+              ],
+              { style: { marginTop: "6px" } },
+            ),
+            tray.flex(
+              [
+                tray.div(
+                  [
+                    tray.input("Paste gist URL or ID", {
+                      fieldRef: fGistLink,
+                    }),
+                  ],
+                  { style: { flex: "1", minWidth: "0" } },
+                ),
+                tray.button(
+                  busyAction.get() === "link-gist" ? "⏳ Linking…" : "🔗 Link",
+                  { onClick: "lcm-link-gist", size: "sm" },
+                ),
+              ],
+              { gap: 2, style: { alignItems: "end" } },
+            ),
+          );
+        }
+      }
+      return tray.stack(items);
+    }
+    // Local-only mode (no GitHub token configured).
+    const localCount = entries.get().length;
+    const jsonOut = serializeCatalog(
+      entries.get(),
+      $storage.get<number>(K_UPDATED) ?? Date.now(),
+    );
+    const expanded = bindingExpanded.get();
+    const items: unknown[] = [
+      modeHeader("🔒", "Local mode", {
+        right: [
+          pill("💻 this device only", "gray"),
+          tray.tooltip(
+            tray.button(expanded ? "↑" : "⚠️", {
+              onClick: "lcm-toggle-binding",
+              size: "sm",
+            }),
+            {
+              text: expanded
+                ? "Collapse local limitation"
+                : "Show local limitation",
+            },
+          ),
+        ],
+      }),
     ];
+    if (expanded) {
+      items.push(
+        // Callout: sandbox limitation + Gist recommendation.
+        alertBox(
+          [
+            tray.text(
+              "⚠️ Plugin and custom-source can't sync directly — seanime sandboxes extensions. Copy the JSON below into the custom-source's Inline catalog JSON field after every edit.",
+              { style: { fontSize: "0.8rem" } },
+            ),
+            tray.text(
+              "💡 Tip: set a GitHub token in the plugin config to switch to Gist mode — automatic sync, no copy-paste.",
+              {
+                style: {
+                  fontSize: "0.8rem",
+                  marginTop: "4px",
+                  opacity: "0.85",
+                },
+              },
+            ),
+          ],
+          { intent: "note" },
+        ),
+      );
+    }
     if (status.get()) {
       items.push(
         tray.text(status.get(), {
@@ -389,107 +2150,649 @@ export const register = (ctx: PluginContext) => {
       opacity: "0.6",
       marginTop: "-4px",
     };
+    // Output: two read-only monospace code blocks (catalog + progress), both
+    // collapsible. tray.input has no readOnly prop, so we render as styled
+    // text + userSelect:all so a single click inside selects the whole JSON
+    // ready for ⌘C / Ctrl+C. Helper keeps both sections symmetric.
+    const renderCodeBlockSection = (opts: {
+      label: string;
+      content: string;
+      expanded: boolean;
+      toggleEvent: string;
+      expandTooltip: string;
+      hint: string;
+    }): unknown[] => {
+      const out: unknown[] = [
+        tray.flex(
+          [
+            tray.div([sectionHeader(opts.label)], {
+              style: { flex: "1", alignSelf: "center" },
+            }),
+            tray.tooltip(
+              tray.button(opts.expanded ? "↑" : "↓", {
+                onClick: opts.toggleEvent,
+                size: "sm",
+              }),
+              {
+                text: opts.expanded ? "Collapse" : opts.expandTooltip,
+              },
+            ),
+          ],
+          { gap: 2, style: { alignItems: "center", marginTop: "10px" } },
+        ),
+      ];
+      if (opts.expanded) {
+        out.push(
+          tray.div(
+            [
+              tray.text(opts.content, {
+                style: {
+                  fontFamily: "monospace",
+                  fontSize: "0.7rem",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-all",
+                  userSelect: "all",
+                  cursor: "text",
+                },
+              }),
+            ],
+            {
+              style: {
+                padding: "8px 10px",
+                borderRadius: "4px",
+                background: "rgba(255,255,255,0.04)",
+                maxHeight: "160px",
+                overflow: "auto",
+              },
+            },
+          ),
+          tray.text(opts.hint, { style: hintStyle }),
+        );
+      }
+      return out;
+    };
+    // Section 1: catalog JSON. The user copies this into the custom-source's
+    // 'Inline catalog JSON' setting (primary purpose of local mode).
     items.push(
-      // Output section: generated JSON + "New entry" + hint.
+      ...renderCodeBlockSection({
+        label: "{...} GENERATED INLINE CATALOG JSON",
+        content: jsonOut,
+        expanded: catalogJsonExpanded.get(),
+        toggleEvent: "lcm-toggle-catalog-json",
+        expandTooltip:
+          "Expand catalog JSON (copy & paste into custom-source's Inline catalog JSON setting)",
+        hint: "Copy the content and paste into the custom-source's <Inline catalog JSON> setting.",
+      }),
+    );
+    // Section 2: progress JSON. The custom-source doesn't read this — it's
+    // the plugin's local cache of reading state (kept in sync by hooks even
+    // without a gist). Surfaced here for manual save / cross-device backup.
+    items.push(
+      ...renderCodeBlockSection({
+        label: "{...} GENERATED INLINE PROGRESS JSON",
+        content: serializeProgress(progress.get()),
+        expanded: progressJsonExpanded.get(),
+        toggleEvent: "lcm-toggle-progress-json",
+        expandTooltip:
+          "Expand progress JSON (backup / inspection — not consumed by the custom-source)",
+        hint: "Backup / inspection only — the custom-source doesn't consume this file. Reading state lives here regardless of gist mode.",
+      }),
+    );
+    // Section 3: smart import. Auto-detects catalog vs progress JSON and
+    // routes to the right merge / replace path (see detectImportKind +
+    // importFromField above). Single field for both shapes — simpler UX,
+    // user just pastes whatever they have.
+    const localProgressCount = Object.keys(progress.get().manga).length;
+    const hasLocalData = localCount > 0 || localProgressCount > 0;
+    const importButtons: unknown[] = hasLocalData
+      ? [
+          tray.tooltip(
+            tray.button("🔀 Merge", { onClick: "lcm-import-merge" }),
+            {
+              text: "Auto-detect catalog/progress: catalog keeps local on id conflicts; progress uses per-entry LWW by updatedAt",
+            },
+          ),
+          tray.tooltip(
+            tray.button("⤵️ Replace", {
+              onClick: "lcm-import-replace",
+              intent: "alert-subtle",
+            }),
+            {
+              text: "Auto-detect catalog/progress: wipe local and use the JSON instead",
+            },
+          ),
+        ]
+      : [
+          tray.button("📥 Import", {
+            onClick: "lcm-import-replace",
+            intent: "primary",
+          }),
+        ];
+    items.push(
       tray.flex(
         [
           tray.div(
             [
-              tray.input("📤 Generated Inline catalog JSON", {
-                fieldRef: fJsonOut,
+              tray.input("{...} Paste a catalog or progress JSON", {
+                fieldRef: fJsonIn,
               }),
             ],
             { style: { flex: "1", minWidth: "0" } },
           ),
-          tray.button("New entry", { onClick: "lmm-new", intent: "primary" }),
+          ...importButtons,
         ],
-        { gap: 2, style: { alignItems: "end" } },
+        { gap: 2, style: { alignItems: "end", marginTop: "10px" } },
       ),
       tray.text(
-        "Copy the content to the Local Catalog source's 'Inline catalog JSON' setting.",
+        hasLocalData
+          ? "Type is auto-detected. Merge keeps local data on conflicts; Replace wipes the corresponding doc only."
+          : "Paste a catalog OR progress JSON — the type is auto-detected.",
         { style: hintStyle },
       ),
-      // Input section: paste JSON + "Import" + hint.
-      tray.flex(
-        [
-          tray.div(
-            [tray.input("📥 Paste a catalog JSON", { fieldRef: fJsonIn })],
-            { style: { flex: "1", minWidth: "0" } },
-          ),
-          tray.button("Import", { onClick: "lmm-import" }),
-        ],
-        { gap: 2, style: { alignItems: "end" } },
-      ),
-      tray.text("Click Import to replace the current catalog with this JSON.", {
-        style: hintStyle,
-      }),
     );
     return tray.stack(items);
   }
 
   function renderList() {
-    const list = entries.get();
-    const rows = list.map((e) =>
-      tray.flex(
-        [
-          tray.div(
-            [
-              tray.span(`#${e.id} `, {
-                style: { opacity: "0.5", fontSize: "0.85rem" },
-              }),
-              tray.span(resolveUserPreferred(e.title) ?? "(untitled)", {
-                style: { fontWeight: "500" },
-              }),
-            ],
-            { style: { flex: "1", minWidth: "0" } },
-          ),
-          tray.button("Edit", {
-            onClick: ctx.eventHandler(`lmm-edit-${e.id}`, () => openForm(e.id)),
-            size: "sm",
+    const allEntries = entries.get();
+    const drifting = hasDrift();
+    // Filter entries by the active search query (case-insensitive substring
+    // match on the resolved title or any synonym).
+    const q = entrySearch.get().toLowerCase();
+    const list = q
+      ? allEntries.filter((e) => {
+          const title = (resolveUserPreferred(e.title) ?? "").toLowerCase();
+          if (title.includes(q)) return true;
+          const syns = e.synonyms ?? [];
+          return syns.some((s) => s.toLowerCase().includes(q));
+        })
+      : allEntries;
+    const rows = list.map((e) => {
+      const title = resolveUserPreferred(e.title) ?? "(untitled)";
+      // Cover thumbnail or fallback box. Pattern lifted from mangaupdates-sync.
+      const coverBox = e.cover
+        ? tray.img({
+            src: e.cover,
+            style: {
+              width: "44px",
+              height: "62px",
+              objectFit: "cover",
+              borderRadius: "4px",
+              flexShrink: "0",
+            },
+          })
+        : tray.div([], {
+            style: {
+              width: "44px",
+              height: "62px",
+              background: "rgba(255,255,255,0.05)",
+              borderRadius: "4px",
+              flexShrink: "0",
+            },
+          });
+      // Middle column: title (bold) + sub-line: YYYY · Status · c.N · Open →
+      // Each segment is dropped if absent (no awkward "·  · c.5"). Separator
+      // is a thin centered dot styled to read as metadata rather than UI.
+      const dotSep = () =>
+        tray.span("·", {
+          style: {
+            opacity: "0.35",
+            fontSize: "0.75rem",
+            margin: "0 2px",
+          },
+        });
+      const subSegments: unknown[] = [];
+      if (e.year) {
+        subSegments.push(
+          tray.span(String(e.year), {
+            style: { opacity: "0.55", fontSize: "0.75rem" },
           }),
-          tray.button("Delete", {
-            onClick: ctx.eventHandler(`lmm-del-${e.id}`, () => {
-              void push(removeEntry(entries.get(), e.id));
+        );
+      }
+      if (e.status) {
+        const intent = STATUS_INTENT[e.status as string] ?? "gray";
+        subSegments.push(
+          pill(e.status.replace(/_/g, " ").toLowerCase(), intent),
+        );
+      }
+      const rowProg = progress.get().manga[String(e.id)]?.progress;
+      if (rowProg != null) {
+        subSegments.push(
+          tray.span(`c.${rowProg}`, {
+            style: { opacity: "0.7", fontSize: "0.75rem" },
+          }),
+        );
+      }
+      // Inline "Open →" navigation link — uses the cached mediaIdLookup
+      // (with fresh-fetch fallback at click time) to jump to
+      // /manga/entry?id=<mediaId>. Hidden during drift. Tooltip surfaces
+      // the resolved mediaId so the user can confirm what id is in flight.
+      if (!drifting) {
+        // Prefer collection lookup (proves the manga is in user's list) →
+        // fall back to extId-cached computation (works even when not added).
+        const inListMediaId = mediaIdLookup.get()?.get(e.id);
+        const computedMediaId = mediaIdFor(e.id);
+        const resolvedMediaId = inListMediaId ?? computedMediaId;
+        const openBusy = busyAction.get() === `open-manga-${e.id}`;
+        const tooltipText = openBusy
+          ? `Opening…`
+          : resolvedMediaId
+            ? `Open in seanime · media #${resolvedMediaId}${inListMediaId == null ? " · not in your list" : ""}`
+            : `Open in seanime · resolves on click`;
+        subSegments.push(
+          tray.tooltip(
+            tray.button(openBusy ? "⏳ Opening…" : "Open →", {
+              onClick: ctx.eventHandler(`lcm-open-manga-${e.id}`, () => {
+                void navigateToMangaEntry(e.id);
+              }),
+              size: "sm",
+              intent: "gray-subtle",
+              style: {
+                background: "transparent",
+                border: "none",
+                padding: "0 2px",
+                fontSize: "0.75rem",
+                fontWeight: "500",
+                textDecoration: "underline",
+                opacity: "0.75",
+              },
             }),
-            size: "sm",
-            intent: "alert-subtle",
+            { text: tooltipText },
+          ),
+        );
+      }
+      // Interleave separator dots between segments.
+      const subLineChildren: unknown[] = [];
+      subSegments.forEach((seg, i) => {
+        if (i > 0) subLineChildren.push(dotSep());
+        subLineChildren.push(seg);
+      });
+      const middle = tray.stack(
+        [
+          tray.text(title, {
+            style: {
+              fontWeight: "600",
+              fontSize: "0.9rem",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            },
+          }),
+          tray.flex(subLineChildren, {
+            gap: 0,
+            style: { alignItems: "center", marginTop: "2px" },
           }),
         ],
-        {
-          gap: 2,
-          style: {
-            alignItems: "center",
-            padding: "6px 8px",
-            borderRadius: "4px",
-            background: "rgba(255,255,255,0.02)",
-          },
+        { style: { flex: "1", minWidth: "0" } },
+      );
+      const rowChildren: unknown[] = [coverBox, middle];
+      // While drift is pending, hide Edit/Delete/Apply — they trigger push
+      // and would clobber the side the user hasn't chosen yet.
+      if (!drifting) {
+        // Apply-progress button: rendered ONLY when local progress for this
+        // entry drifts from seanime's tracked state (or the entry isn't in
+        // the user's list yet). When local matches seanime exactly the
+        // push would be a no-op, so we hide the button rather than offering
+        // a useless click target.
+        const rowProgress = progress.get().manga[String(e.id)];
+        if (rowProgress) {
+          const seanimeData = seanimeListDataLookup.get()?.get(e.id);
+          const inListForApply = seanimeData != null;
+          const lookupReady = seanimeListDataLookup.get() != null;
+          const applyRowBusy = busyAction.get() === `apply-progress-${e.id}`;
+          // A field counts as drifted only when LOCAL has a defined value
+          // that differs from seanime's. Skipping local-undefined avoids
+          // false positives when the pre-hook doesn't capture a field.
+          //
+          // Explicit String() / Number() coercion is REQUIRED: seanimeData
+          // fields come from a Go-bound object (ctx.manga.getCollection
+          // returns e.listData) and goja-wrapped Go strings are NOT === to
+          // JS string primitives, even when both serialize to the same
+          // value ("CURRENT" !== <goja-wrapped>"CURRENT" → true). Without
+          // coercion, every row showed perpetual status drift.
+          //
+          // For numeric fields we additionally treat 0 and undefined as
+          // equivalent: AniList's listData OMITS scoreRaw when un-rated
+          // but our pre-hook may capture event.scoreRaw=0 and persist it.
+          // Without this, every un-rated row would show drift forever.
+          const stringDiff = (
+            local: string | undefined,
+            remote: string | undefined,
+          ): boolean => {
+            if (local === undefined) return false;
+            return String(local) !== String(remote ?? "");
+          };
+          const numericDiff = (
+            local: number | undefined,
+            remote: number | undefined,
+          ): boolean => {
+            if (local === undefined) return false;
+            return Number(local) !== Number(remote ?? 0);
+          };
+          const hasDrift =
+            !lookupReady ||
+            !seanimeData ||
+            stringDiff(rowProgress.status, seanimeData.status) ||
+            numericDiff(rowProgress.progress, seanimeData.progress) ||
+            numericDiff(rowProgress.scoreRaw, seanimeData.scoreRaw);
+          // Keep the button visible during the busy window even when drift
+          // resolves to false mid-flight (applyProgress refreshes the lookup
+          // synchronously after updateEntry — without this guard the loading
+          // ⏳ would disappear before the user notices it).
+          if (hasDrift || applyRowBusy) {
+            const progSummary = [
+              rowProgress.status?.toLowerCase(),
+              rowProgress.progress != null
+                ? `prog ${rowProgress.progress}`
+                : "",
+              rowProgress.scoreRaw != null
+                ? `score ${rowProgress.scoreRaw}`
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" · ");
+            const applyTooltip = inListForApply
+              ? `Push local progress to seanime · drift detected · ${progSummary || "(no data)"}`
+              : `Add to your list + push local progress · ${progSummary || "(no data)"}`;
+            rowChildren.push(
+              tray.tooltip(
+                tray.button(applyRowBusy ? "⏳" : "📤", {
+                  onClick: ctx.eventHandler(
+                    `lcm-apply-progress-${e.id}`,
+                    () => {
+                      void applyProgress(e.id);
+                    },
+                  ),
+                  size: "sm",
+                }),
+                { text: applyTooltip },
+              ),
+            );
+          }
+        }
+        rowChildren.push(
+          tray.tooltip(
+            tray.button("✏️", {
+              onClick: ctx.eventHandler(`lcm-edit-${e.id}`, () =>
+                openForm(e.id),
+              ),
+              size: "sm",
+            }),
+            { text: "Edit" },
+          ),
+        );
+        rowChildren.push(
+          tray.tooltip(
+            tray.button("⛔", {
+              onClick: ctx.eventHandler(`lcm-del-${e.id}`, () =>
+                deleteEntry(e.id),
+              ),
+              size: "sm",
+              intent: "alert-subtle",
+            }),
+            { text: "Delete" },
+          ),
+        );
+      }
+      return tray.flex(rowChildren, {
+        gap: 2,
+        style: {
+          alignItems: "center",
+          padding: "6px 8px",
+          borderRadius: "4px",
+          background: "rgba(255,255,255,0.02)",
+          // Visually de-emphasize rows while drift is pending.
+          opacity: drifting ? "0.5" : "1",
         },
-      ),
-    );
-    // Section header + rows — only when there are entries.
-    const listSection: unknown[] = [];
-    if (list.length > 0) {
-      listSection.push(
-        tray.div([], {
-          style: {
-            borderTop: "1px solid rgba(255,255,255,0.15)",
-            marginTop: "12px",
-            marginBottom: "4px",
-          },
-        }),
-        tray.text(`ENTRIES (${list.length})`, {
-          style: {
-            fontSize: "0.7rem",
-            fontWeight: "700",
-            opacity: "0.55",
-            letterSpacing: "0.1em",
-            marginBottom: "4px",
-          },
-        }),
-        ...rows,
+      });
+    });
+    // ENTRIES section: header with inline "+ New" + "Pull" buttons, then
+    // the rows. Always shown (empty placeholder if no entries).
+    const inlineActions: unknown[] = drifting
+      ? []
+      : [
+          tray.button("+ New", {
+            onClick: "lcm-new",
+            intent: "primary",
+            size: "sm",
+          }),
+        ];
+    if (!drifting && hasToken() && effectiveGistId()) {
+      inlineActions.push(
+        tray.button(
+          busyAction.get() === "reload-catalog" ? "⏳ Reloading…" : "🔄 Reload",
+          { onClick: "lcm-reload-catalog", size: "sm" },
+        ),
       );
     }
-    return tray.stack([renderSync(), tray.stack(listSection)]);
+    const searchActive = q.length > 0;
+    const headerCount = searchActive
+      ? `${list.length} / ${allEntries.length}`
+      : `${list.length}`;
+    const entriesHeader = tray.flex(
+      [
+        tray.div(
+          [
+            tray.text(`ENTRIES (${headerCount})`, {
+              style: {
+                fontSize: "0.7rem",
+                fontWeight: "700",
+                opacity: "0.55",
+                letterSpacing: "0.1em",
+              },
+            }),
+          ],
+          { style: { flex: "1", alignSelf: "center" } },
+        ),
+        ...inlineActions,
+      ],
+      {
+        gap: 2,
+        style: {
+          alignItems: "center",
+          marginTop: "10px",
+          marginBottom: "6px",
+        },
+      },
+    );
+    const entriesSection: unknown[] = [sectionDivider(), entriesHeader];
+    // Search row: input + Search button (+ Clear when active). Only shown
+    // when there's anything to filter — empty catalog hides it.
+    if (!drifting && allEntries.length > 0) {
+      const searchRowChildren: unknown[] = [
+        tray.div(
+          [
+            tray.input("Search entries…", {
+              fieldRef: fEntrySearch,
+            }),
+          ],
+          { style: { flex: "1", minWidth: "0" } },
+        ),
+        tray.button("🔍 Search", {
+          onClick: "lcm-entry-search",
+          size: "sm",
+        }),
+      ];
+      if (searchActive) {
+        searchRowChildren.push(
+          tray.tooltip(
+            tray.button("✕", {
+              onClick: "lcm-entry-search-clear",
+              size: "sm",
+            }),
+            { text: "Clear search" },
+          ),
+        );
+      }
+      entriesSection.push(
+        tray.flex(searchRowChildren, {
+          gap: 2,
+          style: { alignItems: "end", marginBottom: "6px" },
+        }),
+      );
+    }
+    if (allEntries.length === 0) {
+      entriesSection.push(
+        tray.text("No entries yet. Click + New to add one.", {
+          style: {
+            fontSize: "0.8rem",
+            opacity: "0.5",
+            textAlign: "center",
+            padding: "10px 0",
+          },
+        }),
+      );
+    } else if (list.length === 0) {
+      // Search has filtered every entry out.
+      entriesSection.push(
+        tray.text(`No entries match "${q}".`, {
+          style: {
+            fontSize: "0.8rem",
+            opacity: "0.5",
+            textAlign: "center",
+            padding: "10px 0",
+          },
+        }),
+      );
+    } else {
+      entriesSection.push(...rows);
+    }
+    // Gist mode: drift banner (if any) → header → entries → progress → gist binding.
+    // Local mode: header (with its own callouts + JSON I/O) → entries.
+    if (hasToken()) {
+      const layers: unknown[] = [];
+      const drift = pendingDrift.get();
+      if (drift) {
+        const d = diffCatalog(drift.local, drift.remote);
+        const resolveBusy = busyAction.get() === "resolve-drift";
+        layers.push(
+          alertBox([
+            tray.text("⚠️ DRIFT DETECTED", {
+              style: {
+                fontSize: "0.75rem",
+                fontWeight: "700",
+                letterSpacing: "0.1em",
+                marginBottom: "4px",
+              },
+            }),
+            tray.text(
+              `Local has ${ent(drift.local.length)}, remote has ${ent(drift.remote.length)}. ${d.conflicts > 0 ? `${d.conflicts} id(s) in conflict.` : "No id conflicts."}`,
+              {
+                style: { fontSize: "0.8rem", opacity: "0.85" },
+              },
+            ),
+            tray.text("Sync is paused until you resolve. Pick one:", {
+              style: {
+                fontSize: "0.75rem",
+                opacity: "0.7",
+                marginTop: "6px",
+              },
+            }),
+            // 2×2 button grid (compact, square-ish layout).
+            tray.flex(
+              [
+                tray.button(resolveBusy ? "⏳ Working…" : "🔀 Merge", {
+                  onClick: "lcm-drift-merge",
+                  intent: "primary",
+                }),
+                tray.button("↑ Local wins", {
+                  onClick: "lcm-drift-local-wins",
+                }),
+              ],
+              { gap: 2, style: { marginTop: "8px" } },
+            ),
+            tray.flex(
+              [
+                tray.button("↓ Remote wins", {
+                  onClick: "lcm-drift-remote-wins",
+                }),
+                tray.button("✕ Cancel link", {
+                  onClick: "lcm-drift-cancel",
+                }),
+              ],
+              { gap: 2, style: { marginTop: "4px" } },
+            ),
+          ]),
+        );
+      }
+      // Progress drift banner — same UX shape as the catalog one. Only the
+      // progress section is hidden while it's pending (catalog is fine,
+      // catalog edits + entry CRUD stay enabled).
+      const progressDrift = pendingProgressDrift.get();
+      if (progressDrift && !drift) {
+        const pd = diffProgress(progressDrift.local, progressDrift.remote);
+        const localCount = Object.keys(progressDrift.local.manga).length;
+        const remoteCount = Object.keys(progressDrift.remote.manga).length;
+        const resolveProgBusy = busyAction.get() === "resolve-progress-drift";
+        layers.push(
+          alertBox([
+            tray.text("⚠️ READING PROGRESS DRIFT", {
+              style: {
+                fontSize: "0.75rem",
+                fontWeight: "700",
+                letterSpacing: "0.1em",
+                marginBottom: "4px",
+              },
+            }),
+            tray.text(
+              `Local has ${localCount} ${localCount === 1 ? "entry" : "entries"}, remote has ${remoteCount}. ${pd.conflicts > 0 ? `${pd.conflicts} id(s) in conflict.` : "No id conflicts."}${pd.localOnly + pd.remoteOnly > 0 ? ` ${pd.localOnly} local-only · ${pd.remoteOnly} remote-only.` : ""}`,
+              { style: { fontSize: "0.8rem", opacity: "0.85" } },
+            ),
+            tray.text(
+              "Progress sync paused. Merge uses per-entry LWW (recommended); Local/Remote take one side wholesale.",
+              {
+                style: {
+                  fontSize: "0.75rem",
+                  opacity: "0.7",
+                  marginTop: "6px",
+                },
+              },
+            ),
+            tray.flex(
+              [
+                tray.button(resolveProgBusy ? "⏳ Working…" : "🔀 Merge", {
+                  onClick: "lcm-progress-drift-merge",
+                  intent: "primary",
+                }),
+                tray.button("↑ Local wins", {
+                  onClick: "lcm-progress-drift-local-wins",
+                }),
+              ],
+              { gap: 2, style: { marginTop: "8px" } },
+            ),
+            tray.flex(
+              [
+                tray.button("↓ Remote wins", {
+                  onClick: "lcm-progress-drift-remote-wins",
+                }),
+                tray.button("✕ Dismiss", {
+                  onClick: "lcm-progress-drift-cancel",
+                }),
+              ],
+              { gap: 2, style: { marginTop: "4px" } },
+            ),
+          ]),
+        );
+      }
+      layers.push(renderSync());
+      // READING PROGRESS goes BEFORE entries — it's the "live state"
+      // surface (stats, drift, orphans). Hidden while any drift is pending
+      // (catalog drift first, progress drift second — both have their own
+      // banner above and the section's buttons would bail anyway).
+      if (!drift && !progressDrift) {
+        layers.push(renderProgressSection());
+      }
+      layers.push(tray.stack(entriesSection));
+      return tray.stack(layers);
+    }
+    // Local mode: header + callout + JSON I/O → progress section → entries.
+    // Progress works locally (hooks save to $storage); the reload button
+    // hides itself in local mode but stat cards + orphan cleanup remain.
+    return tray.stack([
+      renderSync(),
+      renderProgressSection(),
+      tray.stack(entriesSection),
+    ]);
   }
 
   function renderForm() {
@@ -525,25 +2828,60 @@ export const register = (ctx: PluginContext) => {
       tray.input("Banner URL", { fieldRef: fBanner }),
       tray.input("Description", { fieldRef: fDescription }),
       tray.input("Genres (comma-separated)", { fieldRef: fGenres }),
-      tray.select("Status", { options: STATUS_OPTS, fieldRef: fStatus }),
-      tray.select("Format", { options: FORMAT_OPTS, fieldRef: fFormat }),
+      tray.flex(
+        [
+          tray.div(
+            [
+              tray.select("Status", {
+                options: STATUS_OPTS,
+                fieldRef: fStatus,
+              }),
+            ],
+            { style: { flex: "1", minWidth: "0" } },
+          ),
+          tray.div(
+            [
+              tray.select("Format", {
+                options: FORMAT_OPTS,
+                fieldRef: fFormat,
+              }),
+            ],
+            { style: { flex: "1", minWidth: "0" } },
+          ),
+        ],
+        { gap: 2 },
+      ),
       tray.input("Chapters", { fieldRef: fChapters }),
       tray.input("Volumes", { fieldRef: fVolumes }),
-      tray.input("Year", { fieldRef: fYear }),
+      // Start date stacked as a 3-col row — matches AL_BaseManga_StartDate
+      // (year/month/day). Passing only Year shows "Jan YYYY" in seanime's
+      // entry header (its date format defaults month to January when
+      // missing), so set Month + Day too when known to get the right label.
+      tray.flex(
+        [
+          tray.div([tray.input("Year", { fieldRef: fYear })], {
+            style: { flex: "1", minWidth: "0" },
+          }),
+          tray.div([tray.input("Month (1-12)", { fieldRef: fMonth })], {
+            style: { flex: "1", minWidth: "0" },
+          }),
+          tray.div([tray.input("Day (1-31)", { fieldRef: fDay })], {
+            style: { flex: "1", minWidth: "0" },
+          }),
+        ],
+        { gap: 2 },
+      ),
       tray.switch("Adult", { fieldRef: fIsAdult }),
       tray.input("Country (e.g. JP)", { fieldRef: fCountry }),
       tray.input("Site URL", { fieldRef: fSiteUrl }),
       tray.flex([
-        tray.button("Save", { onClick: "lmm-save", intent: "primary" }),
-        tray.button("Cancel", { onClick: "lmm-cancel" }),
+        tray.button("Save", { onClick: "lcm-save", intent: "primary" }),
+        tray.button("Cancel", { onClick: "lcm-cancel" }),
       ]),
     ]);
   }
 
   // ---- detect our open entry on the manga page ----
-  const EXT_OFFSET = 0x80000000;
-  const LOCAL_RANGE = 0x10000000000;
-  const PREFIX = "ext_custom_source_local-catalog";
   const currentLocalId = ctx.state<number>(0);
 
   const localIdFromMediaId = (mediaId: number): number => {
@@ -555,7 +2893,7 @@ export const register = (ctx: PluginContext) => {
       m = undefined;
     }
     const siteUrl = m?.siteUrl ?? "";
-    if (siteUrl.indexOf(PREFIX) !== 0) return 0;
+    if (siteUrl.indexOf(PREFIX_SITEURL) !== 0) return 0;
     return (mediaId - EXT_OFFSET) % LOCAL_RANGE;
   };
 
@@ -577,6 +2915,14 @@ export const register = (ctx: PluginContext) => {
     const id = e.searchParams?.id ? parseInt(e.searchParams.id, 10) : 0;
     const local = id > 0 ? localIdFromMediaId(id) : 0;
     currentLocalId.set(local);
+    // When the user navigates to a local-catalog manga entry (the page
+    // that hosts the reader), pull any remote progress changes first so
+    // the chapter list / "continue reading" position reflects the latest
+    // cross-device state. Cooldown inside avoids re-firing on rapid
+    // back-and-forth navigation.
+    if (local > 0) {
+      void pullProgressSilent("opened entry");
+    }
   });
   ctx.screen.loadCurrent();
 
@@ -592,11 +2938,20 @@ export const register = (ctx: PluginContext) => {
   });
   const refreshPalette = () => {
     const base = [
-      { label: "➕ New entry", value: "new", onSelect: () => openForm(0) },
-      { label: "⟳ Pull now", value: "pull", onSelect: () => void pull() },
+      { label: "+ New entry", value: "new", onSelect: () => openForm(0) },
+      {
+        label: "🔄 Reload catalog",
+        value: "lcm-reload-catalog",
+        onSelect: () => void reloadCatalog(),
+      },
+      {
+        label: "🔄 Reload progress",
+        value: "lcm-reload-progress",
+        onSelect: () => void reloadProgress(),
+      },
     ];
     const items = entries.get().map((en) => ({
-      label: `✎ #${en.id} ${resolveUserPreferred(en.title) ?? ""}`,
+      label: `✏️ #${en.id} ${resolveUserPreferred(en.title) ?? ""}`,
       value: `edit-${en.id}`,
       filterType: "includes" as const,
       onSelect: () => openForm(en.id),
@@ -605,15 +2960,6 @@ export const register = (ctx: PluginContext) => {
   };
   ctx.effect(() => refreshPalette(), [entries]);
   palette.onOpen(() => refreshPalette());
-
-  // Keep the read-only "copy" input in sync with the current catalog so the
-  // user can copy the serialized JSON into the source's Inline field.
-  ctx.effect(() => {
-    if (!hasToken()) {
-      const updatedAt = $storage.get<number>(K_UPDATED) ?? Date.now();
-      fJsonOut.setValue(serializeCatalog(entries.get(), updatedAt));
-    }
-  }, [entries]);
 
   // ---- scheduled pull ----
   const autoSync = ($getUserPreference("autoSync") ?? "false") === "true";
@@ -626,14 +2972,83 @@ export const register = (ctx: PluginContext) => {
     const expr =
       mins < 60 ? `*/${mins} * * * *` : `0 */${Math.round(mins / 60)} * * *`;
     try {
-      ctx.cron.add("lmm-auto-pull", expr, () => {
-        if (effectiveGistId()) void pull();
+      ctx.cron.add("lcm-auto-pull", expr, () => {
+        // Auto-sync = reload (pull + merge + push) on both files. Bails
+        // internally if drift is pending.
+        if (effectiveGistId()) {
+          void reloadCatalog();
+          void reloadProgress();
+        }
       });
       ctx.cron.start();
     } catch (e) {
       ctx.toast.error(`Auto-sync schedule failed: ${(e as Error).message}`);
     }
   }
+
+  // Refresh progress state from $storage every time the tray opens. Hooks
+  // (onPostUpdateEntry / onPostUpdateEntryProgress) run in separate goja
+  // runtimes and write directly to $storage; the tray's ctx.state was
+  // initialized once at register() time so it doesn't observe those writes
+  // until we re-read here.
+  tray.onOpen(() => {
+    progress.set(loadProgressDoc());
+    progressUpdated.set($storage.get<number>(K_PROGRESS_UPDATED) ?? 0);
+    // Refresh localId → mediaId cache + discover extId if needed. goja's
+    // Promise interop supports `await` on getCollection / discoverExtId
+    // but the values they return do NOT expose `.then()` directly —
+    // calling `.then` throws "Object has no member 'then'". Wrap the
+    // fire-and-forget work in an async IIFE so we can use await.
+    void (async () => {
+      try {
+        const collection = await ctx.manga.getCollection();
+        refreshLookupsFromCollection(collection);
+      } catch (e) {
+        console.warn(
+          "[local-catalog-manager] mediaIdLookup refresh failed:",
+          e,
+        );
+      }
+      // Discover the extId in the background if we haven't cached it yet —
+      // makes the first "Open →" / "Push local progress" click feel instant
+      // for entries that aren't in the user's list yet. discoverExtId may
+      // probe via $anilist.getManga (up to 1023 sync calls) on first run.
+      if ($storage.get<number>(K_EXT_ID) == null) {
+        try {
+          const result = await discoverExtId();
+          // After discovery, refresh lookups so the extId-based filter
+          // actually applies (the prior refresh ran with extId=undefined
+          // and fell back to siteUrl). Without this, the first tray.onOpen
+          // leaves seanimeListDataLookup populated via the buggy path.
+          if (result != null) {
+            try {
+              const fresh = await ctx.manga.getCollection();
+              refreshLookupsFromCollection(fresh);
+            } catch (_) {
+              // best-effort
+            }
+          }
+        } catch (e) {
+          console.warn("[local-catalog-manager] extId discovery failed:", e);
+        }
+      }
+      // After lookups are warm, pull any remote progress changes silently.
+      // Cooldown inside pullProgressSilent prevents spamming when this fires
+      // back-to-back with screen.onNavigate (e.g., user clicks Open → in the
+      // tray, which closes+opens the tray AND triggers navigation).
+      await pullProgressSilent("tray opened");
+    })();
+  });
+
+  // Collapse all expandable sections whenever the tray closes — the next
+  // open starts with a clean compact view.
+  tray.onClose(() => {
+    bindingExpanded.set(false);
+    orphansExpanded.set(false);
+    catalogJsonExpanded.set(false);
+    progressJsonExpanded.set(false);
+    disarmDelete();
+  });
 
   tray.render(() => {
     if (view.get() === "form") return renderForm();

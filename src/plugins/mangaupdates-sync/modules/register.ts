@@ -1,3 +1,4 @@
+import { GITHUB_RAW_WORKSPACE } from "../../../_utils/constants";
 import { MUClient } from "../utils/mu-client";
 
 interface MULink {
@@ -25,8 +26,7 @@ export const register = (ctx: PluginContext) => {
     // SeaImage (seanime's image component) silently blocks non-raster
     // suffixes, and `.ico` falls into that bucket — points at the
     // extension's own `icon.png` from the github raw URL instead.
-    iconUrl:
-      "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/mangaupdates-sync/assets/icon.png",
+    iconUrl: `${GITHUB_RAW_WORKSPACE}/src/plugins/mangaupdates-sync/assets/icon.png`,
     withContent: true,
   });
 

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+  diffCatalog,
+  mergeCatalog,
   parseCatalog,
   resolveUserPreferred,
   serializeCatalog,
@@ -104,6 +106,99 @@ describe("serializeCatalog", () => {
       version: 1,
       updatedAt: 1234,
       manga: [{ id: 1, title: "a" }],
+    });
+  });
+});
+
+describe("mergeCatalog", () => {
+  test("disjoint ids: both sides survive, sorted by id", () => {
+    const out = mergeCatalog(
+      [{ id: 1, title: "local-1" }],
+      [{ id: 2, title: "remote-2" }],
+    );
+    expect(out).toEqual([
+      { id: 1, title: "local-1" },
+      { id: 2, title: "remote-2" },
+    ]);
+  });
+
+  test("conflict on same id: local wins (tie-break)", () => {
+    const out = mergeCatalog(
+      [{ id: 1, title: "local-version" }],
+      [{ id: 1, title: "remote-version" }],
+    );
+    expect(out).toEqual([{ id: 1, title: "local-version" }]);
+  });
+
+  test("empty local: returns remote (sorted)", () => {
+    const out = mergeCatalog(
+      [],
+      [
+        { id: 5, title: "e" },
+        { id: 1, title: "a" },
+      ],
+    );
+    expect(out.map((e) => e.id)).toEqual([1, 5]);
+  });
+
+  test("empty remote: returns local (sorted)", () => {
+    const out = mergeCatalog([{ id: 3, title: "c" }], []);
+    expect(out).toEqual([{ id: 3, title: "c" }]);
+  });
+
+  test("both empty: empty array", () => {
+    expect(mergeCatalog([], [])).toEqual([]);
+  });
+
+  test("mixed: disjoint + conflict, local wins ties", () => {
+    const out = mergeCatalog(
+      [
+        { id: 1, title: "local-1" },
+        { id: 2, title: "local-2" },
+      ],
+      [
+        { id: 2, title: "remote-2" },
+        { id: 3, title: "remote-3" },
+      ],
+    );
+    expect(out).toEqual([
+      { id: 1, title: "local-1" },
+      { id: 2, title: "local-2" },
+      { id: 3, title: "remote-3" },
+    ]);
+  });
+});
+
+describe("diffCatalog", () => {
+  test("counts localOnly / remoteOnly / conflicts", () => {
+    const out = diffCatalog(
+      [
+        { id: 1, title: "a" },
+        { id: 2, title: "b" },
+      ],
+      [
+        { id: 2, title: "b" },
+        { id: 3, title: "c" },
+      ],
+    );
+    expect(out).toEqual({ localOnly: 1, remoteOnly: 1, conflicts: 1 });
+  });
+
+  test("identical lists: only conflicts", () => {
+    const out = diffCatalog([{ id: 1, title: "a" }], [{ id: 1, title: "a" }]);
+    expect(out).toEqual({ localOnly: 0, remoteOnly: 0, conflicts: 1 });
+  });
+
+  test("disjoint lists: no conflicts", () => {
+    const out = diffCatalog([{ id: 1, title: "a" }], [{ id: 2, title: "b" }]);
+    expect(out).toEqual({ localOnly: 1, remoteOnly: 1, conflicts: 0 });
+  });
+
+  test("empty / empty: all zero", () => {
+    expect(diffCatalog([], [])).toEqual({
+      localOnly: 0,
+      remoteOnly: 0,
+      conflicts: 0,
     });
   });
 });

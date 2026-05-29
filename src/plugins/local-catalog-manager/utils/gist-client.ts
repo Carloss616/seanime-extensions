@@ -33,7 +33,7 @@ export class GistClient {
       headers: this.headers(),
       body: JSON.stringify({
         public: false,
-        description: "local-catalog catalog",
+        description: "[seanime] local-catalog — entries + reading progress",
         files: { [filename]: { content } },
       }),
     });
@@ -61,6 +61,33 @@ export class GistClient {
     return data.files?.[filename]?.content ?? "";
   }
 
+  /** Single GET that returns owner + computed raw URL + file content — used
+   *  by the link-existing-gist flow so we can persist K_OWNER and K_RAW
+   *  without a follow-up request (and so "Show raw catalog URL" works
+   *  immediately after linking, not only after the first push/pull). */
+  async getGistFileWithInfo(
+    id: string,
+    filename: string,
+  ): Promise<{ owner: string; rawUrl: string; content: string }> {
+    const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+      method: "GET",
+      headers: this.headers(),
+    });
+    if (!res.ok) {
+      throw new Error(`getGist failed: ${res.status} ${res.text()}`);
+    }
+    const data = res.json<{
+      files?: Record<string, { content?: string }>;
+      owner?: { login?: string };
+    }>();
+    const owner = data.owner?.login ?? "";
+    return {
+      owner,
+      rawUrl: this.rawUrl(owner, id, filename),
+      content: data.files?.[filename]?.content ?? "",
+    };
+  }
+
   async updateGistFile(
     id: string,
     filename: string,
@@ -73,6 +100,17 @@ export class GistClient {
     });
     if (!res.ok) {
       throw new Error(`updateGist failed: ${res.status} ${res.text()}`);
+    }
+  }
+
+  async deleteGist(id: string): Promise<void> {
+    const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+      method: "DELETE",
+      headers: this.headers(),
+    });
+    // 204 No Content on success; 404 if already gone (treat as success).
+    if (!res.ok && res.status !== 404) {
+      throw new Error(`deleteGist failed: ${res.status} ${res.text()}`);
     }
   }
 }

@@ -254,6 +254,9 @@ var onPreUpdateEntry = (...args) => {
 
 // src/plugins/mangaupdates-sync/modules/register.ts
 var register = (...args) => {
+  var GITHUB_RAW_WORKSPACE =
+    "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main";
+
   class MUTokenExpiredError extends Error {
     constructor() {
       super("MU session expired");
@@ -373,8 +376,7 @@ var register = (...args) => {
   var register2 = (ctx) => {
     const tray = ctx.newTray({
       tooltipText: "MangaUpdates Sync — linking",
-      iconUrl:
-        "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/mangaupdates-sync/assets/icon.png",
+      iconUrl: `${GITHUB_RAW_WORKSPACE}/src/plugins/mangaupdates-sync/assets/icon.png`,
       withContent: true,
     });
     const currentMediaId = ctx.state(0);

@@ -30,6 +30,12 @@ Then regenerates [marketplace.json](marketplace.json) by projecting `MARKETPLACE
 
 No bundling-to-string: goja has no module system, so `code.js` IS the payload (fetched lazily via `payloadURI`).
 
+### Build constraint: avoid the `export` substring in source
+
+The `isolate-modules` plugin in [scripts/build.ts](scripts/build.ts) splits each `modules/*.ts` output on the literal string `"export"` expecting exactly TWO parts (body + the single `export { name }`). Any extra occurrence of the substring `export` — inside a string literal, comment, identifier, or template tag — adds a third split and the build fails with `Unexpected number of exports for modules/<file>.ts` at line 0.
+
+Affects only `modules/*.ts` (not the entry `code.ts`, `utils/*`, or non-module files). When writing strings or comments that need a synonym for "export", pick `dump`, `surface`, `save`, `output` — anything that doesn't contain the 6-char sequence `export`. The identifier `expected` is safe (different substring).
+
 ## Splitting an extension across multiple files
 
 Goja has no module loader (`import`/`export` is forbidden at runtime), AND the relevant top-level callbacks — `$app.on*` hooks and the `$ui.register` callback — do NOT see module scope at runtime. seanime serializes each callback via `.toString()` and re-evals it in a **fresh isolated runtime**; the docs are explicit that a callback reading a module-scope or `init()`-scope variable gets `undefined`. So any helper a callback needs must end up *physically inside the serialized function's own body*.
@@ -91,9 +97,56 @@ Then `bun run build` and commit the source + `code.js`. The build accepts any `s
 Extensions run inside seanime under **goja** (Go's JS engine, no Node, no browser). The only globals available are the ones declared in [types/core.d.ts](types/core.d.ts) and the per-type `.d.ts` files. Notably:
 
 - `fetch(url, options)` returns a `FetchResponse` whose `text()` / `json()` are **synchronous methods** (not Promises) — even though the outer `fetch` returns a Promise. See how [src/custom-source/mangaupdates/code.ts](src/custom-source/mangaupdates/code.ts) calls `res.json()` without `await`.
-- `$sleep`, `$clone`, `$replace`, `$toString`, `$getUserPreference` are runtime helpers (not Node/browser builtins).
+- `$sleep`, `$clone`, `$replace`, `$toString`, `$getUserPreference` are runtime helpers (not Node/browser builtins). **`$sleep(0)` is the only yield primitive** — there is no `setTimeout`, `setInterval`, or `requestAnimationFrame`. Use `$sleep(0)` mid-loop to keep the runtime responsive during long sync sequences (e.g., the 1023-call extId probe in [src/plugins/local-catalog-manager/modules/register.ts](src/plugins/local-catalog-manager/modules/register.ts)).
 - Plugins additionally get `$app` (lifecycle hooks), `$anilist` (in-process AniList lookups), `$storage` (per-extension persistence) — declared in [types/plugin.d.ts](types/plugin.d.ts).
 - `tsconfig.json` targets ES2018 for IDE/typecheck strictness, but `Bun.build` does not down-convert syntax — modern output (native class fields, optional chaining, etc.) passes through. Recent goja accepts it; if a feature ever trips goja, avoid it in source.
+
+### Goja Promise interop: `await` only, no `.then()` on Go-bound APIs
+
+Go-bound APIs (`ctx.manga.getCollection`, `ctx.fetch`, etc.) return values that work with `await` but do NOT expose `.then()` / `.catch()` chains. Calling `.then` throws `TypeError: Object has no member 'then'` at runtime — the value is awaitable but not a real JS Promise object.
+
+```ts
+// ✗ Crashes the plugin at runtime
+ctx.manga.getCollection().then(c => ...).catch(e => ...)
+
+// ✓ Wrap fire-and-forget work in an async IIFE
+void (async () => {
+  try {
+    const collection = await ctx.manga.getCollection()
+    // ...
+  } catch (e) {
+    console.warn("...", e)
+  }
+})()
+```
+
+`async function` results in your own code (e.g., helpers from `$shared.use`) **do** expose `.then` / `.catch` correctly — async functions always return real Promises regardless of body. The quirk only affects Go-bound returns. When in doubt, use `await`.
+
+### Goja value comparison: coerce before `===` against Go-bound fields
+
+Strings (and numbers) returned from Go-bound objects (`e.listData.status`, `e.media.id`, `m.siteUrl`, anything reached through a `ctx.manga.getCollection()` / `$anilist.getManga()` result) are NOT `===` to JS string/number primitives — even when both serialize to the same JSON value. Comparing a goja-wrapped Go string against a JS string with strict equality always returns `false`:
+
+```ts
+// e.listData.status = "CURRENT" (Go-wrapped), local.status = "CURRENT" (JS string)
+local.status !== seanimeData.status   // → true (false-positive drift)
+JSON.stringify(seanimeData.status)    // → '"CURRENT"' (looks identical)
+String(seanimeData.status) === local.status  // → true
+```
+
+Caught in the wild in `local-catalog-manager`'s drift detector: status comparison reported drift on every row even when both sides held `"CURRENT"`, because the seanime side was a Go-wrapped string. Fix is explicit coercion when comparing across the boundary:
+
+```ts
+const stringDiff = (local: string | undefined, remote: string | undefined) => {
+    if (local === undefined) return false
+    return String(local) !== String(remote ?? "")
+}
+const numericDiff = (local: number | undefined, remote: number | undefined) => {
+    if (local === undefined) return false
+    return Number(local) !== Number(remote ?? 0)
+}
+```
+
+Anywhere you compare a field that crosses the goja ↔ Go boundary (collection lookups, hook event payloads, AniList API responses), wrap each side in `String()` / `Number()` before `===`/`!==`. The serialization is a one-way trip — `JSON.stringify` unwraps the Go value transparently, but `===` does not.
 
 TypeScript picks up `types/**/*.d.ts` via `tsconfig.json`'s `include`, so the goja globals (`$app`, `$anilist`, `$storage`, `CustomSource`, `CatalogEntry`, …) are in scope in every source file automatically — no triple-slash `/// <reference path="…" />` needed.
 
@@ -119,6 +172,18 @@ Plugin extensions use a top-level `init()` function (declared in [types/plugin.d
 Convention used by `mangaupdates-sync`: capture the payload in the **pre**-hook into `$store` (the cross-runtime in-memory channel — hook runtimes can't share closures), then consume it in the **post**-hook. The post-hook only fires when the underlying AniList update succeeds, so this keeps the external service (MU) and AniList in lock-step without a transaction. The hooks live in [modules/](src/plugins/mangaupdates-sync/modules/) and are wired up in [code.ts](src/plugins/mangaupdates-sync/code.ts) `init()`.
 
 Every hook callback must call `event.next()` — even on error paths.
+
+### Sharing helpers across hook runtimes — `$shared`
+
+When multiple hook callbacks need the same helper (class, function), use `$shared.define(name, factory)` in `init()` and `$shared.use<T>(name)` in each callback. The factory must be SELF-CONTAINED (helpers declared inside its body), exactly like an isolated callback module — seanime serializes `factory.toString()` and re-evals it in each runtime that calls `use()`. A factory that closes over module-scope identifiers will fail with `ReferenceError` at runtime in the consumer.
+
+Convention in this repo: put the factory under [modules/shared-lib.ts](src/plugins/local-catalog-manager/modules/shared-lib.ts). The existing build self-containerization (which already inlines imports into the body of every `modules/*.ts` export) handles inlining the factory's imports automatically — no build changes needed.
+
+**Reference plugin:** see [src/plugins/local-catalog-manager/](src/plugins/local-catalog-manager/) — `code.ts:init()` calls `$shared.define("local-catalog", sharedLib)` BEFORE registering any hooks / UI; every hook + the UI register module destructures its helpers via `$shared.use<ReturnType<typeof sharedLib>>("local-catalog")`.
+
+**Bundle-size win:** without `$shared`, each callback module that uses `GistClient` would inline the class (~80 lines) into its own wrapper — 5 callbacks × 80 lines = 400 duplicated lines. With `$shared`, the class lives ONCE in the shared-lib wrapper.
+
+**Runtime caveat:** `$shared.use()` re-evaluates the factory in each runtime, so the result is RUNTIME-LOCAL. The factory must be pure code (classes + functions). Live state belongs in `$store` or `$storage`.
 
 ## Plugin manifest extras
 
@@ -197,3 +262,15 @@ localId      = 609,190,176,800,191  % 2^40    = 60,735,012,287
 `60735012287` is the MU `series_id`. Verified via `GET https://api.mangaupdates.com/v1/series/60735012287` returning the same title and a `url` of `.../series/rwg23en/the-beginning-after-the-end` — and `rwg23en` happens to be `60735012287` in base36 (MU's URL slug convention; the numeric id is the API contract).
 
 See [src/plugins/mangaupdates-sync/code.ts](src/plugins/mangaupdates-sync/code.ts) `decodeCustomSourceLocalId` for the implementation used in production.
+
+### Encoding a mediaId (the reverse direction)
+
+Going the other way — `localId → mediaId` — requires the `extensionIdentifier`, which seanime assigns randomly (1-1023) the first time a custom-source loads and persists in its own filecache (see seanime's `internal/extension_repo/external_custom_source.go:generateExtensionIdentifier`). It is **stable across plugin reloads but NOT across reinstalls** and **not exposed to extensions** — there is no `$extension.id` API.
+
+When you need to compute `mediaId` for entries not yet in the user's list (e.g., an "Open in seanime" link or an auto-add flow via `$anilist.addMediaToCollection`), discover and cache the `extId` once. Three-strategy pattern from [src/plugins/local-catalog-manager/modules/register.ts](src/plugins/local-catalog-manager/modules/register.ts) (`discoverExtId`):
+
+1. **`$storage` cache** — fast path. Once discovered, `mediaId = EXT_OFFSET + extId * 2^40 + localId` is pure arithmetic.
+2. **Derive from collection** — call `await ctx.manga.getCollection()` and check `buildMediaIdLookup` (any single entry from your custom-source reveals the extId via `Math.floor((mediaId - EXT_OFFSET) / 2^40)`). Free when the user has at least one entry added.
+3. **Probe via `$anilist.getManga`** — last resort for cold start (user has zero entries in their list). Iterate `extId` from 1 to 1023, call `$anilist.getManga(EXT_OFFSET + extId * 2^40 + firstLocalId)`, accept the one whose `siteUrl` starts with `ext_custom_source_<your-manifest-id>`. Yield with `$sleep(0)` every ~64 iterations to avoid blocking the runtime. ~1-3s on first run, cached forever after.
+
+Auto-add then apply: `$anilist.addMediaToCollection([mediaId])` adds the entry as `PLANNING`; immediately follow with `$anilist.updateEntry(mediaId, status, scoreRaw, progress, ...)` to overwrite with the real values. Without `addMediaToCollection`, `updateEntry` against a mediaId not in the user's list is a silent no-op.

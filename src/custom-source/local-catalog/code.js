@@ -1,4 +1,4 @@
-// src/_shared/local-catalog/parse.ts
+// src/_utils/local-catalog/parse.ts
 function resolveUserPreferred(title) {
   if (typeof title === "string") {
     return title.trim() || undefined;
@@ -77,7 +77,15 @@ function normalizeEntry(entry) {
     isAdult: entry.isAdult,
     countryOfOrigin: entry.country,
     startDate:
-      typeof entry.year === "number" ? { year: entry.year } : undefined,
+      typeof entry.year === "number" ||
+      typeof entry.month === "number" ||
+      typeof entry.day === "number"
+        ? {
+            year: typeof entry.year === "number" ? entry.year : undefined,
+            month: typeof entry.month === "number" ? entry.month : undefined,
+            day: typeof entry.day === "number" ? entry.day : undefined,
+          }
+        : undefined,
   };
 }
 function matchesSearch(entry, q) {

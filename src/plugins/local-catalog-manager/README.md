@@ -14,11 +14,16 @@ A seanime **plugin** companion to the `local-catalog` custom-source. It lets you
 3. Open the plugin tray. On first save it creates a secret Gist and shows its **raw URL** — copy it into the `local-catalog` source's **Catalog URL**.
 4. Manage entries from the tray (or the "Edit local entry" button on a manga page, or the command palette). Changes are pushed to the Gist automatically.
 
-#### Pointing at an existing Gist (e.g. from another device)
+#### Managing the gist binding (from the tray)
 
-If you already have a Gist (you created it from another device, or by hand), paste its raw URL — or just the gist ID — into the **Existing Gist raw URL or ID** config field. The plugin will read/write that gist instead of auto-creating a new one. Leave the field empty to fall back to auto-create on first save.
+The tray has a **🔗 GIST BINDING** section with three states / actions:
 
-Accepted formats: `https://gist.githubusercontent.com/<user>/<id>/raw/catalog.json`, `https://gist.github.com/<user>/<id>`, or the bare `<id>` hex string.
+- **Not linked:** **🆕 Create new gist** (auto-creates a secret gist seeded with an empty catalog) or paste a URL/ID into the **Link** input.
+- **Linked:** **📋 Show raw URL** (toast with the raw URL — copy from there), **🔓 Unlink** (forget the gist locally, leave it on GitHub, clears local progress cache), **🗑 Delete remotely** (two-click confirm: first click arms the button, second click runs `DELETE /gists/:id` on GitHub and clears local state).
+
+Accepted link formats: `https://gist.githubusercontent.com/<user>/<id>/raw/catalog.json`, `https://gist.github.com/<user>/<id>`, or the bare `<id>` hex string.
+
+Legacy installs with the old `gistUrl` config field set: the plugin migrates the value into local storage on first load — no action required.
 
 ### Local mode (single device, inline JSON)
 
@@ -39,6 +44,40 @@ Accepted formats: `https://gist.githubusercontent.com/<user>/<id>/raw/catalog.js
   field, but it is informational — edit from one device at a time, or **Pull
   now** before editing on a second device, to avoid clobbering changes.
 
+## Reading progress sync (V2-B)
+
+In Gist mode, this plugin also syncs your reading position (chapter, status,
+score) across devices via a second file `progress.json` in the same gist.
+
+- Every progress / entry update for a `local-catalog` manga is captured by
+  hooks (`onPre/PostUpdateEntry` + `onPre/PostUpdateEntryProgress`) and pushed
+  to the gist (fire-and-forget; failures are logged but don't block the
+  underlying update).
+- **Pull progress** (tray button or command palette `lcm-pull-progress`)
+  re-applies the remote progress to your local library via
+  `$anilist.updateEntry`.
+- Auto-sync (existing toggle) now pulls both `catalog.json` AND `progress.json`.
+- **Dates are not synced literally** — `startedAt` / `completedAt` are
+  auto-managed per device by seanime based on status transitions (e.g.
+  status → `CURRENT` sets `startedAt` on this device).
+- **Conflict resolution**: per-entry last-write-wins by `updatedAt`. Edits on
+  different devices to *different* entries both survive; edits on the *same*
+  entry, the most recent wins. Ties → local.
+- **Orphan progress**: if you delete a catalog entry but its progress remains
+  in `progress.json`, a "🧹 Clean orphans (N)" button appears in the tray.
+- In Local mode (no GitHub token), progress sync is a no-op — the tray shows
+  a hint that Gist mode is required.
+
+### Limitations
+
+- `mediaId` lookup uses `ctx.manga.getCollection()`. If you've never opened a
+  manga page on a freshly-installed device, the collection may be empty and
+  the first pull-progress is a no-op. Open any manga page once, then pull.
+- Push is fire-and-forget per update event. GitHub Gist's rate limit is
+  5000 requests/hour for authenticated tokens; for normal reading this is
+  fine.
+
 ## Notes
 
-This plugin only manages catalog **metadata**. Reading-progress sync across devices is a separate planned plugin (V2 sub-project B).
+This plugin manages catalog **metadata** (V2-A) AND reading-progress sync (V2-B).
+Both share the same secret Gist (`catalog.json` + `progress.json`).

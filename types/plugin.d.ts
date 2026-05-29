@@ -106,6 +106,27 @@ declare namespace $app {
   }
 
   function onPostUpdateEntry(cb: (event: PostUpdateEntryEvent) => void): void;
+
+  /** Triggered every time seanime fetches the user's manga collection
+   *  (manga library page load, Refresh source, Reload sources, etc.).
+   *  `mangaCollection` is mutable so the hook can patch what seanime
+   *  hands to the frontend; we don't mutate it — just use the firing as
+   *  a cross-device-sync trigger.
+   *  See seanime: internal/platforms/platform/hook_events.go */
+  interface GetMangaCollectionEvent {
+    next(): void;
+    mangaCollection?: AL_MangaCollection;
+  }
+
+  function onGetMangaCollection(
+    cb: (event: GetMangaCollectionEvent) => void,
+  ): void;
+
+  /** Invalidate one or more client-side React Query caches so the seanime
+   *  frontend refetches them. Keys are the endpoint constants from
+   *  internal/events/endpoints.go (e.g., "MANGA-get-manga-collection",
+   *  "CUSTOM-SOURCE-custom-source-list-manga", "MANGA-get-manga-entry"). */
+  function invalidateClientQuery(keys: string[]): void;
 }
 
 declare namespace $anilist {
@@ -114,6 +135,41 @@ declare namespace $anilist {
 
   /** Lookup a single manga by AniList id. */
   function getManga(id: number): $app.AL_BaseManga;
+
+  /** Update a manga entry's list data. For custom-source mediaIds, seanime
+   *  routes to local storage instead of the AniList GraphQL API
+   *  (see internal/platforms/anilist_platform/anilist_platform.go:UpdateEntry). */
+  function updateEntry(
+    mediaId: number,
+    status: $app.AL_MediaListStatus | undefined,
+    scoreRaw: number | undefined,
+    progress: number | undefined,
+    startedAt: { year?: number; month?: number; day?: number } | undefined,
+    completedAt: { year?: number; month?: number; day?: number } | undefined,
+  ): void;
+
+  /** Update only the progress (and optional status) of a manga entry.
+   *  Same custom-source routing as updateEntry. */
+  function updateEntryProgress(
+    mediaId: number,
+    progress: number,
+    status?: $app.AL_MediaListStatus,
+  ): void;
+
+  /** Add media to the user's list with the default status (PLANNING). Works
+   *  for AniList ids and custom-source mediaIds. The anime/manga collection
+   *  should be refreshed afterwards to see the new entry. */
+  function addMediaToCollection(mediaIds: number[]): void;
+
+  /** Refresh the in-process AniList manga collection cache. Call after any
+   *  mutation that affects the user's list (updateEntry, addMediaToCollection)
+   *  so subsequent $anilist.getMangaCollection / ctx.manga.getCollection
+   *  reflect the change. */
+  function refreshMangaCollection(): void;
+
+  /** Clear the in-process cache for fetched anime/manga entries (per-entry
+   *  data fetched via getManga / getMangaDetails). */
+  function clearCache(): void;
 }
 
 declare namespace $storage {
@@ -149,6 +205,19 @@ declare namespace $store {
  *    /plugins/ui/user-interface/screen   (ctx.screen.onNavigate, loadCurrent)
  *    /plugins/example                    (banner-images example — patterns)
  */
+
+/** Cross-runtime shared modules. `define()` is called in init(); the factory
+ *  must be SELF-CONTAINED (helpers declared inside its body), because seanime
+ *  re-evaluates `factory.toString()` in every runtime that calls `use()`.
+ *
+ *  Convention in this repo: put the factory under `modules/shared-lib.ts` so
+ *  the existing build self-containerization (which already inlines imports
+ *  into `modules/*.ts` exports) handles it without build changes. */
+declare namespace $shared {
+  function define<T>(name: string, factory: () => T): void;
+  function use<T>(name: string): T;
+}
+
 declare namespace $ui {
   function register(callback: (ctx: PluginContext) => void): void;
 }
@@ -226,12 +295,21 @@ interface MangaManager {
   getCollection(): Promise<MangaCollection>;
 }
 
+/** Control over installed extensions by id. Disable + immediate enable is
+ *  the only way to flush another extension's in-memory state from outside
+ *  its goja runtime (e.g., a custom-source's per-instance cache). */
+interface ExtensionsManager {
+  disable(extensionId: string): Promise<void>;
+  enable(extensionId: string): Promise<void>;
+}
+
 interface PluginContext {
   action: ActionManager;
   screen: ScreenManager;
   toast: ToastManager;
   dom: DOMManager;
   manga: MangaManager;
+  extensions: ExtensionsManager;
 
   /** Reactive state. Re-runs effects and tray.render when set() is called. */
   state<T>(initial: T): State<T>;
@@ -438,6 +516,11 @@ interface Tray {
     className?: string;
     style?: Record<string, string>;
   }): unknown;
+  /** Wrap any element with a hover tooltip. The wrapped element MUST have
+   *  CSS positioning that allows the tooltip to anchor (e.g. `relative`)
+   *  per the seanime docs — `tray.button` already does, so common usage is
+   *  `tray.tooltip(tray.button("✎", { onClick: "..." }), { text: "Edit" })`. */
+  tooltip(child: unknown, opts: { text: string }): unknown;
   input(label: string, opts: { fieldRef: FieldRef<string> }): unknown;
   button(
     label: string,

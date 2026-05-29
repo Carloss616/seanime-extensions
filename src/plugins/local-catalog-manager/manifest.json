@@ -14,7 +14,7 @@
   "plugin": {
     "version": "1",
     "permissions": {
-      "scopes": ["storage", "anilist", "cron"],
+      "scopes": ["storage", "anilist", "cron", "extensions"],
       "allow": {
         "networkAccess": {
           "allowedDomains": ["api.github.com", "gist.githubusercontent.com"],
@@ -30,13 +30,7 @@
       {
         "type": "text",
         "name": "githubToken",
-        "label": "GitHub token (PAT with the 'gist' scope) — used to store your catalog in a secret Gist",
-        "default": ""
-      },
-      {
-        "type": "text",
-        "name": "gistUrl",
-        "label": "Existing Gist raw URL or ID (optional) — point at an existing gist (e.g. from another device); leave empty to auto-create one on first save",
+        "label": "GitHub token (PAT with the 'gist' scope) — used to store your catalog in a secret Gist. Manage the gist binding (create / link / unlink / delete) from the plugin tray.",
         "default": ""
       },
       {
@@ -50,6 +44,12 @@
         "name": "syncIntervalMinutes",
         "label": "Auto-sync interval (minutes)",
         "default": "30"
+      },
+      {
+        "type": "switch",
+        "name": "autoCleanProgressOnDelete",
+        "label": "Auto-clean progress when deleting a catalog entry (prevents orphan progress entries)",
+        "default": "true"
       }
     ]
   },
