@@ -172,7 +172,7 @@ export class Provider implements CustomSource {
       if (!res.ok) {
         throw new Error(`catalog fetch failed: ${res.status}`);
       }
-      return await res.json();
+      return res.json();
     }
     const inline = ($getUserPreference("catalog") || "").trim();
     if (inline) {

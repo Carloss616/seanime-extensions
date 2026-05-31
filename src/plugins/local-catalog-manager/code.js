@@ -387,6 +387,283 @@ var onPreUpdateEntryProgress = (...args) => {
 
 // src/plugins/local-catalog-manager/modules/register.ts
 var register = (...args) => {
+  var ALERT_PALETTE = {
+    warning: {
+      bg: "rgba(255,180,0,0.08)",
+      border: "rgba(255,180,0,0.7)",
+      borderW: "3px",
+      padding: "10px 12px",
+    },
+    note: {
+      bg: "rgba(255,255,255,0.04)",
+      border: "rgba(255,180,0,0.5)",
+      borderW: "2px",
+      padding: "8px 10px",
+    },
+  };
+  function alertBox(tray, children, opts = {}) {
+    const p = ALERT_PALETTE[opts.intent ?? "warning"];
+    return tray.div(children, {
+      style: {
+        padding: p.padding,
+        borderRadius: "6px",
+        background: p.bg,
+        borderLeft: `${p.borderW} solid ${p.border}`,
+        marginBottom: "8px",
+      },
+    });
+  }
+  function divider(tray) {
+    return tray.div([], {
+      style: {
+        borderTop: "1px solid rgba(255,255,255,0.1)",
+        marginTop: "10px",
+        paddingTop: "8px",
+      },
+    });
+  }
+  var PILL_PALETTE = {
+    success: { bg: "rgba(80,200,120,0.15)", fg: "rgba(140,220,160,1)" },
+    info: { bg: "rgba(120,170,255,0.15)", fg: "rgba(160,200,255,1)" },
+    warning: { bg: "rgba(255,200,0,0.15)", fg: "rgba(255,220,80,1)" },
+    alert: { bg: "rgba(255,120,120,0.15)", fg: "rgba(255,150,150,1)" },
+    gray: { bg: "rgba(255,255,255,0.06)", fg: "rgba(255,255,255,0.6)" },
+  };
+  function pill(tray, label, intent = "gray") {
+    const { bg, fg } = PILL_PALETTE[intent] ?? PILL_PALETTE.gray;
+    return tray.span(label, {
+      style: {
+        fontSize: "0.7rem",
+        fontWeight: "500",
+        padding: "2px 8px",
+        borderRadius: "10px",
+        background: bg,
+        color: fg,
+      },
+    });
+  }
+  function renderEntryListSection(tray, cfg) {
+    const coverBox = (src) =>
+      src
+        ? tray.img({
+            src,
+            style: {
+              width: "44px",
+              height: "62px",
+              objectFit: "cover",
+              borderRadius: "4px",
+              flexShrink: "0",
+            },
+          })
+        : tray.div([], {
+            style: {
+              width: "44px",
+              height: "62px",
+              background: "rgba(255,255,255,0.05)",
+              borderRadius: "4px",
+              flexShrink: "0",
+            },
+          });
+    const dotSep = () =>
+      tray.span("·", {
+        style: { opacity: "0.35", fontSize: "0.75rem", margin: "0 2px" },
+      });
+    const subLineSegments = (row) => {
+      const segs = [];
+      if (row.year != null) {
+        segs.push(
+          tray.span(String(row.year), {
+            style: { opacity: "0.55", fontSize: "0.75rem" },
+          }),
+        );
+      }
+      if (row.status) {
+        segs.push(pill(tray, row.status.label, row.status.intent));
+      }
+      if (row.chapter != null && row.chapter !== "") {
+        segs.push(
+          tray.span(`c.${row.chapter}`, {
+            style: { opacity: "0.7", fontSize: "0.75rem" },
+          }),
+        );
+      }
+      const linkStyle = {
+        background: "transparent",
+        border: "none",
+        padding: "0",
+        height: "auto",
+        minHeight: "0",
+        fontSize: "0.75rem",
+        fontWeight: "500",
+        opacity: "0.75",
+        textDecoration: "underline",
+        whiteSpace: "nowrap",
+      };
+      if (row.openExternal) {
+        const link = tray.a([tray.span("Open ↗")], {
+          href: row.openExternal.href,
+          target: "_blank",
+          rel: "noopener noreferrer",
+          style: linkStyle,
+        });
+        segs.push(
+          row.openExternal.tooltip
+            ? tray.tooltip(link, { text: row.openExternal.tooltip })
+            : link,
+        );
+      }
+      if (row.openInPlace) {
+        const button = tray.button("Open →", {
+          onClick: row.openInPlace.onClick,
+          size: "sm",
+          intent: "gray-subtle",
+          style: linkStyle,
+        });
+        segs.push(
+          row.openInPlace.tooltip
+            ? tray.tooltip(button, { text: row.openInPlace.tooltip })
+            : button,
+        );
+      }
+      return segs;
+    };
+    const entryRow = (row) => {
+      const segs = subLineSegments(row);
+      const subLineChildren = [];
+      segs.forEach((seg, i) => {
+        if (i > 0) subLineChildren.push(dotSep());
+        subLineChildren.push(seg);
+      });
+      const middle = tray.stack(
+        [
+          tray.text(row.title, {
+            style: {
+              fontWeight: "600",
+              fontSize: "0.9rem",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            },
+          }),
+          tray.flex(subLineChildren, {
+            gap: 0,
+            style: { alignItems: "center", marginTop: "2px" },
+          }),
+        ],
+        { style: { flex: "1", minWidth: "0" } },
+      );
+      const rowChildren = [coverBox(row.cover), middle];
+      for (const a of row.actions ?? []) rowChildren.push(a);
+      return tray.flex(rowChildren, {
+        gap: 2,
+        style: {
+          alignItems: "center",
+          padding: "6px 8px",
+          borderRadius: "4px",
+          background: "rgba(255,255,255,0.02)",
+          opacity: row.opacity != null ? String(row.opacity) : "1",
+        },
+      });
+    };
+    const headerCount = cfg.searchActive
+      ? `${cfg.rows.length} / ${cfg.totalCount}`
+      : `${cfg.totalCount}`;
+    const header = tray.flex(
+      [
+        tray.div(
+          [
+            tray.text(`${cfg.headerLabel} (${headerCount})`, {
+              style: {
+                fontSize: "0.7rem",
+                fontWeight: "700",
+                opacity: "0.55",
+                letterSpacing: "0.1em",
+              },
+            }),
+          ],
+          { style: { flex: "1", alignSelf: "center" } },
+        ),
+        ...(cfg.inlineActions ?? []),
+      ],
+      {
+        gap: 2,
+        style: { alignItems: "center", marginTop: "10px", marginBottom: "6px" },
+      },
+    );
+    const out = [];
+    if (cfg.leadingDivider !== false) out.push(divider(tray));
+    out.push(header);
+    if (cfg.showSearchRow !== false && cfg.totalCount > 0) {
+      const searchRowChildren = [
+        tray.div(
+          [
+            tray.input(cfg.searchPlaceholder, {
+              fieldRef: cfg.searchFieldRef,
+            }),
+          ],
+          { style: { flex: "1", minWidth: "0" } },
+        ),
+        tray.button(cfg.searchButtonLabel ?? "\uD83D\uDD0D Search", {
+          onClick: cfg.onSearch,
+          size: "sm",
+        }),
+      ];
+      if (cfg.searchActive) {
+        searchRowChildren.push(
+          tray.tooltip(
+            tray.button("✕", { onClick: cfg.onClearSearch, size: "sm" }),
+            { text: "Clear search" },
+          ),
+        );
+      }
+      out.push(
+        tray.flex(searchRowChildren, {
+          gap: 2,
+          style: { alignItems: "end", marginBottom: "6px" },
+        }),
+      );
+    }
+    if (cfg.totalCount === 0) {
+      out.push(
+        tray.text(cfg.emptyText, {
+          style: {
+            fontSize: "0.8rem",
+            opacity: "0.5",
+            textAlign: "center",
+            padding: "10px 0",
+          },
+        }),
+      );
+    } else if (cfg.rows.length === 0 && cfg.searchActive) {
+      out.push(
+        tray.text(cfg.noMatchText, {
+          style: {
+            fontSize: "0.8rem",
+            opacity: "0.5",
+            textAlign: "center",
+            padding: "10px 0",
+          },
+        }),
+      );
+    } else {
+      for (const row of cfg.rows) out.push(entryRow(row));
+    }
+    return out;
+  }
+  var STATUS_INTENT = {
+    RELEASING: "success",
+    FINISHED: "info",
+    HIATUS: "warning",
+    CANCELLED: "alert",
+    NOT_YET_RELEASED: "gray",
+  };
+  function statusToPill(status) {
+    if (!status) return;
+    return {
+      label: status.replace(/_/g, " ").toLowerCase(),
+      intent: STATUS_INTENT[status] ?? "gray",
+    };
+  }
   var GITHUB_RAW_WORKSPACE =
     "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main";
   var SHARED_LIB_NAME = "local-catalog";
@@ -1646,6 +1923,23 @@ var register = (...args) => {
       { label: "Novel", value: "NOVEL" },
       { label: "One-shot", value: "ONE_SHOT" },
     ];
+    const MONTH_OPTS = [
+      { label: "—", value: NONE },
+      ...[
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+      ].map((label, i) => ({ label, value: String(i + 1) })),
+    ];
     const sectionHeader = (label) =>
       tray.text(label, {
         style: {
@@ -1656,41 +1950,7 @@ var register = (...args) => {
           marginBottom: "4px",
         },
       });
-    const sectionDivider = () =>
-      tray.div([], {
-        style: {
-          borderTop: "1px solid rgba(255,255,255,0.1)",
-          marginTop: "10px",
-          paddingTop: "8px",
-        },
-      });
-    const PILL_PALETTE = {
-      success: { bg: "rgba(80,200,120,0.15)", fg: "rgba(140,220,160,1)" },
-      info: { bg: "rgba(120,170,255,0.15)", fg: "rgba(160,200,255,1)" },
-      warning: { bg: "rgba(255,200,0,0.15)", fg: "rgba(255,220,80,1)" },
-      alert: { bg: "rgba(255,120,120,0.15)", fg: "rgba(255,150,150,1)" },
-      gray: { bg: "rgba(255,255,255,0.06)", fg: "rgba(255,255,255,0.6)" },
-    };
-    const pill = (label, intent = "gray") => {
-      const { bg, fg } = PILL_PALETTE[intent] ?? PILL_PALETTE.gray;
-      return tray.span(label, {
-        style: {
-          fontSize: "0.7rem",
-          fontWeight: "500",
-          padding: "2px 8px",
-          borderRadius: "10px",
-          background: bg,
-          color: fg,
-        },
-      });
-    };
-    const STATUS_INTENT = {
-      RELEASING: "success",
-      FINISHED: "info",
-      HIATUS: "warning",
-      CANCELLED: "alert",
-      NOT_YET_RELEASED: "gray",
-    };
+    const sectionDivider = () => divider(tray);
     const modeHeader = (icon, title, opts = {}) => {
       const titleChildren = [
         tray.span(`${icon} `),
@@ -1746,32 +2006,6 @@ var register = (...args) => {
           },
         },
       );
-    const ALERT_PALETTE = {
-      warning: {
-        bg: "rgba(255,180,0,0.08)",
-        border: "rgba(255,180,0,0.7)",
-        borderW: "3px",
-        padding: "10px 12px",
-      },
-      note: {
-        bg: "rgba(255,255,255,0.04)",
-        border: "rgba(255,180,0,0.5)",
-        borderW: "2px",
-        padding: "8px 10px",
-      },
-    };
-    const alertBox = (children, opts = {}) => {
-      const p = ALERT_PALETTE[opts.intent ?? "warning"];
-      return tray.div(children, {
-        style: {
-          padding: p.padding,
-          borderRadius: "6px",
-          background: p.bg,
-          borderLeft: `${p.borderW} solid ${p.border}`,
-          marginBottom: "8px",
-        },
-      });
-    };
     function renderProgressSection() {
       const linked = hasToken() && !!effectiveGistId();
       const oCount = orphanCount();
@@ -1915,8 +2149,8 @@ var register = (...args) => {
         const headerRow = modeHeader("\uD83C\uDF10", "Gist mode", {
           right: [
             gid
-              ? pill("\uD83D\uDD17 Linked", "success")
-              : pill("\uD83D\uDD13 Not linked", "gray"),
+              ? pill(tray, "\uD83D\uDD17 Linked", "success")
+              : pill(tray, "\uD83D\uDD13 Not linked", "gray"),
             tray.tooltip(
               tray.button(expanded2 ? "↑" : "✏️", {
                 onClick: "lcm-toggle-binding",
@@ -2065,7 +2299,7 @@ var register = (...args) => {
       const items = [
         modeHeader("\uD83D\uDD12", "Local mode", {
           right: [
-            pill("\uD83D\uDCBB this device only", "gray"),
+            pill(tray, "\uD83D\uDCBB this device only", "gray"),
             tray.tooltip(
               tray.button(expanded ? "↑" : "⚠️", {
                 onClick: "lcm-toggle-binding",
@@ -2083,6 +2317,7 @@ var register = (...args) => {
       if (expanded) {
         items.push(
           alertBox(
+            tray,
             [
               tray.text(
                 "⚠️ Plugin and custom-source can't sync directly — seanime sandboxes extensions. Copy the JSON below into the custom-source's Inline catalog JSON field after every edit.",
@@ -2253,112 +2488,33 @@ var register = (...args) => {
         : allEntries;
       const rows = list2.map((e) => {
         const title = resolveUserPreferred(e.title) ?? "(untitled)";
-        const coverBox = e.cover
-          ? tray.img({
-              src: e.cover,
-              style: {
-                width: "44px",
-                height: "62px",
-                objectFit: "cover",
-                borderRadius: "4px",
-                flexShrink: "0",
-              },
-            })
-          : tray.div([], {
-              style: {
-                width: "44px",
-                height: "62px",
-                background: "rgba(255,255,255,0.05)",
-                borderRadius: "4px",
-                flexShrink: "0",
-              },
-            });
-        const dotSep = () =>
-          tray.span("·", {
-            style: {
-              opacity: "0.35",
-              fontSize: "0.75rem",
-              margin: "0 2px",
-            },
-          });
-        const subSegments = [];
-        if (e.year) {
-          subSegments.push(
-            tray.span(String(e.year), {
-              style: { opacity: "0.55", fontSize: "0.75rem" },
-            }),
-          );
-        }
-        if (e.status) {
-          const intent = STATUS_INTENT[e.status] ?? "gray";
-          subSegments.push(
-            pill(e.status.replace(/_/g, " ").toLowerCase(), intent),
-          );
-        }
         const rowProg = progress.get().manga[String(e.id)]?.progress;
-        if (rowProg != null) {
-          subSegments.push(
-            tray.span(`c.${rowProg}`, {
-              style: { opacity: "0.7", fontSize: "0.75rem" },
-            }),
-          );
-        }
+        const row = {
+          cover: e.cover,
+          title,
+          year: e.year,
+          chapter: rowProg ?? undefined,
+          opacity: drifting ? 0.5 : 1,
+        };
+        row.status = statusToPill(e.status);
         if (!drifting) {
           const inListMediaId = mediaIdLookup.get()?.get(e.id);
           const computedMediaId = mediaIdFor(e.id);
           const resolvedMediaId = inListMediaId ?? computedMediaId;
           const openBusy = busyAction.get() === `open-manga-${e.id}`;
           const tooltipText = openBusy
-            ? `Opening…`
+            ? "Opening …"
             : resolvedMediaId
               ? `Open in seanime · media #${resolvedMediaId}${inListMediaId == null ? " · not in your list" : ""}`
               : `Open in seanime · resolves on click`;
-          subSegments.push(
-            tray.tooltip(
-              tray.button(openBusy ? "⏳ Opening…" : "Open →", {
-                onClick: ctx.eventHandler(`lcm-open-manga-${e.id}`, () => {
-                  navigateToMangaEntry(e.id);
-                }),
-                size: "sm",
-                intent: "gray-subtle",
-                style: {
-                  background: "transparent",
-                  border: "none",
-                  padding: "0 2px",
-                  fontSize: "0.75rem",
-                  fontWeight: "500",
-                  textDecoration: "underline",
-                  opacity: "0.75",
-                },
-              }),
-              { text: tooltipText },
-            ),
-          );
+          row.openInPlace = {
+            onClick: ctx.eventHandler(`lcm-open-manga-${e.id}`, () => {
+              navigateToMangaEntry(e.id);
+            }),
+            tooltip: tooltipText,
+          };
         }
-        const subLineChildren = [];
-        subSegments.forEach((seg, i) => {
-          if (i > 0) subLineChildren.push(dotSep());
-          subLineChildren.push(seg);
-        });
-        const middle = tray.stack(
-          [
-            tray.text(title, {
-              style: {
-                fontWeight: "600",
-                fontSize: "0.9rem",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              },
-            }),
-            tray.flex(subLineChildren, {
-              gap: 0,
-              style: { alignItems: "center", marginTop: "2px" },
-            }),
-          ],
-          { style: { flex: "1", minWidth: "0" } },
-        );
-        const rowChildren = [coverBox, middle];
+        const actions = [];
         if (!drifting) {
           const rowProgress = progress.get().manga[String(e.id)];
           if (rowProgress) {
@@ -2374,13 +2530,13 @@ var register = (...args) => {
               if (local === undefined) return false;
               return Number(local) !== Number(remote ?? 0);
             };
-            const hasDrift2 =
+            const hasDriftRow =
               !lookupReady ||
               !seanimeData ||
               stringDiff(rowProgress.status, seanimeData.status) ||
               numericDiff(rowProgress.progress, seanimeData.progress) ||
               numericDiff(rowProgress.scoreRaw, seanimeData.scoreRaw);
-            if (hasDrift2 || applyRowBusy) {
+            if (hasDriftRow || applyRowBusy) {
               const progSummary = [
                 rowProgress.status?.toLowerCase(),
                 rowProgress.progress != null
@@ -2395,7 +2551,7 @@ var register = (...args) => {
               const applyTooltip = inListForApply
                 ? `Push local progress to seanime · drift detected · ${progSummary || "(no data)"}`
                 : `Add to your list + push local progress · ${progSummary || "(no data)"}`;
-              rowChildren.push(
+              actions.push(
                 tray.tooltip(
                   tray.button(applyRowBusy ? "⏳" : "\uD83D\uDCE4", {
                     onClick: ctx.eventHandler(
@@ -2411,7 +2567,7 @@ var register = (...args) => {
               );
             }
           }
-          rowChildren.push(
+          actions.push(
             tray.tooltip(
               tray.button("✏️", {
                 onClick: ctx.eventHandler(`lcm-edit-${e.id}`, () =>
@@ -2422,7 +2578,7 @@ var register = (...args) => {
               { text: "Edit" },
             ),
           );
-          rowChildren.push(
+          actions.push(
             tray.tooltip(
               tray.button("⛔", {
                 onClick: ctx.eventHandler(`lcm-del-${e.id}`, () =>
@@ -2435,16 +2591,8 @@ var register = (...args) => {
             ),
           );
         }
-        return tray.flex(rowChildren, {
-          gap: 2,
-          style: {
-            alignItems: "center",
-            padding: "6px 8px",
-            borderRadius: "4px",
-            background: "rgba(255,255,255,0.02)",
-            opacity: drifting ? "0.5" : "1",
-          },
-        });
+        row.actions = actions;
+        return row;
       });
       const inlineActions = drifting
         ? []
@@ -2465,95 +2613,20 @@ var register = (...args) => {
           ),
         );
       }
-      const searchActive = q.length > 0;
-      const headerCount = searchActive
-        ? `${list2.length} / ${allEntries.length}`
-        : `${list2.length}`;
-      const entriesHeader = tray.flex(
-        [
-          tray.div(
-            [
-              tray.text(`ENTRIES (${headerCount})`, {
-                style: {
-                  fontSize: "0.7rem",
-                  fontWeight: "700",
-                  opacity: "0.55",
-                  letterSpacing: "0.1em",
-                },
-              }),
-            ],
-            { style: { flex: "1", alignSelf: "center" } },
-          ),
-          ...inlineActions,
-        ],
-        {
-          gap: 2,
-          style: {
-            alignItems: "center",
-            marginTop: "10px",
-            marginBottom: "6px",
-          },
-        },
-      );
-      const entriesSection = [sectionDivider(), entriesHeader];
-      if (!drifting && allEntries.length > 0) {
-        const searchRowChildren = [
-          tray.div(
-            [
-              tray.input("Search entries…", {
-                fieldRef: fEntrySearch,
-              }),
-            ],
-            { style: { flex: "1", minWidth: "0" } },
-          ),
-          tray.button("\uD83D\uDD0D Search", {
-            onClick: "lcm-entry-search",
-            size: "sm",
-          }),
-        ];
-        if (searchActive) {
-          searchRowChildren.push(
-            tray.tooltip(
-              tray.button("✕", {
-                onClick: "lcm-entry-search-clear",
-                size: "sm",
-              }),
-              { text: "Clear search" },
-            ),
-          );
-        }
-        entriesSection.push(
-          tray.flex(searchRowChildren, {
-            gap: 2,
-            style: { alignItems: "end", marginBottom: "6px" },
-          }),
-        );
-      }
-      if (allEntries.length === 0) {
-        entriesSection.push(
-          tray.text("No entries yet. Click + New to add one.", {
-            style: {
-              fontSize: "0.8rem",
-              opacity: "0.5",
-              textAlign: "center",
-              padding: "10px 0",
-            },
-          }),
-        );
-      } else if (list2.length === 0) {
-        entriesSection.push(
-          tray.text(`No entries match "${q}".`, {
-            style: {
-              fontSize: "0.8rem",
-              opacity: "0.5",
-              textAlign: "center",
-              padding: "10px 0",
-            },
-          }),
-        );
-      } else {
-        entriesSection.push(...rows);
-      }
+      const entriesSection = renderEntryListSection(tray, {
+        headerLabel: "ENTRIES",
+        rows,
+        totalCount: allEntries.length,
+        searchActive: q.length > 0,
+        searchFieldRef: fEntrySearch,
+        searchPlaceholder: "Search entries…",
+        onSearch: "lcm-entry-search",
+        onClearSearch: "lcm-entry-search-clear",
+        inlineActions,
+        emptyText: "No entries yet. Click + New to add one.",
+        noMatchText: `No entries match "${q}".`,
+        showSearchRow: !drifting,
+      });
       if (hasToken()) {
         const layers = [];
         const drift = pendingDrift.get();
@@ -2561,7 +2634,7 @@ var register = (...args) => {
           const d = diffCatalog(drift.local, drift.remote);
           const resolveBusy = busyAction.get() === "resolve-drift";
           layers.push(
-            alertBox([
+            alertBox(tray, [
               tray.text("⚠️ DRIFT DETECTED", {
                 style: {
                   fontSize: "0.75rem",
@@ -2619,7 +2692,7 @@ var register = (...args) => {
           const remoteCount = Object.keys(progressDrift.remote.manga).length;
           const resolveProgBusy = busyAction.get() === "resolve-progress-drift";
           layers.push(
-            alertBox([
+            alertBox(tray, [
               tray.text("⚠️ READING PROGRESS DRIFT", {
                 style: {
                   fontSize: "0.75rem",
@@ -2742,9 +2815,10 @@ var register = (...args) => {
             tray.div([tray.input("Year", { fieldRef: fYear })], {
               style: { flex: "1", minWidth: "0" },
             }),
-            tray.div([tray.input("Month (1-12)", { fieldRef: fMonth })], {
-              style: { flex: "1", minWidth: "0" },
-            }),
+            tray.div(
+              [tray.select("Month", { options: MONTH_OPTS, fieldRef: fMonth })],
+              { style: { flex: "1", minWidth: "0" } },
+            ),
             tray.div([tray.input("Day (1-31)", { fieldRef: fDay })], {
               style: { flex: "1", minWidth: "0" },
             }),

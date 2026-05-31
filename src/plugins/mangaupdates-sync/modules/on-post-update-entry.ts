@@ -1,4 +1,6 @@
-import { MUClient } from "../utils/mu-client";
+import { SHARED_LIB_NAME } from "../utils/constants";
+import { getMULink, setMULink } from "../utils/link-store";
+import type { sharedLib } from "./shared-lib";
 
 export const onPostUpdateEntry = (
   event: $app.PostUpdateEntryProgressEvent | $app.PostUpdateEntryEvent,
@@ -21,15 +23,14 @@ export const onPostUpdateEntry = (
     }
     $store.remove(key);
 
+    // MUClient is shared across runtimes via $shared (defined in code.ts
+    // init()) — resolved only once we know there's a pending update to push.
+    const { MUClient } =
+      $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
+
     (async () => {
       const EXT_ID_OFFSET = 0x80000000;
       const LOCAL_ID_RANGE = 0x10000000000;
-
-      interface MUSearchResponse {
-        results?: Array<{
-          record?: { series_id?: number };
-        }>;
-      }
 
       let manga: $app.AL_BaseManga | undefined;
       try {
@@ -39,7 +40,6 @@ export const onPostUpdateEntry = (
       }
 
       const mu = new MUClient((url, init) => fetch(url, init));
-      const token = await mu.ensureToken();
 
       // Resolve MU series_id.
       let externalId: string | undefined;
@@ -69,18 +69,13 @@ export const onPostUpdateEntry = (
       //    is the cross-runtime in-memory channel used to pass Pre→Post
       //    payloads.
       if (!externalId) {
-        const link = $storage.get<{
-          seriesId: string;
-          seriesTitle?: string;
-          linkedAt: number;
-          source: string;
-        }>(`mu_link_${mediaId}`);
-        if (link?.seriesId) externalId = link.seriesId;
+        const link = getMULink(mediaId);
+        if (link?.id) externalId = link.id;
       }
 
       // 3. Opt-in title-search fallback. Default OFF for new installs (safer).
-      //    Caches the first hit as source: "auto" — surfaced in the button as
-      //    "MU: ? (verify)" so the user knows it wasn't manually confirmed.
+      //    Caches the first hit as a link (top match — may be wrong, since it's
+      //    an unconfirmed title guess rather than a manual pick).
       if (
         !externalId &&
         ($getUserPreference("autoMatchFallback") ?? "false") === "true"
@@ -91,20 +86,10 @@ export const onPostUpdateEntry = (
             manga.title.romaji ||
             manga.title.userPreferred);
         if (title) {
-          const data = await mu.req<MUSearchResponse>(
-            token,
-            "POST",
-            "/series/search",
-            { search: title, perpage: 25 },
-          );
-          const sid = data?.results?.[0]?.record?.series_id;
-          if (sid) {
-            externalId = String(sid);
-            $storage.set(`mu_link_${mediaId}`, {
-              seriesId: externalId,
-              linkedAt: Date.now(),
-              source: "auto",
-            });
+          const match = (await mu.search(title, 25))[0];
+          if (match) {
+            externalId = match.id;
+            setMULink(mediaId, { ...match, linkedAt: Date.now() });
           }
         }
       }
@@ -120,14 +105,14 @@ export const onPostUpdateEntry = (
       }
 
       const seriesIdNum = Number(externalId);
-      await mu.pushListEntry(token, seriesIdNum, {
+      await mu.pushListEntry(seriesIdNum, {
         status: update.status,
         progress: update.progress,
       });
 
       const syncScore = ($getUserPreference("syncScore") ?? "true") !== "false";
       if (syncScore && update.scoreRaw != null) {
-        await mu.pushRating(token, seriesIdNum, update.scoreRaw);
+        await mu.pushRating(seriesIdNum, update.scoreRaw);
       }
 
       console.log(

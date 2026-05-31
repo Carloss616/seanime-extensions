@@ -1,14 +1,20 @@
+import { divider } from "../../../_components/divider";
+import {
+  type EntryListRow,
+  renderEntryListSection,
+} from "../../../_components/entry-list";
+import { statusToPill } from "../../../_utils/anilist-status";
 import { GITHUB_RAW_WORKSPACE } from "../../../_utils/constants";
-import { MUClient } from "../utils/mu-client";
-
-interface MULink {
-  seriesId: string;
-  seriesTitle?: string;
-  seriesUrl?: string;
-  seriesCover?: string;
-  linkedAt: number;
-  source: "manual" | "auto";
-}
+import { SHARED_LIB_NAME } from "../utils/constants";
+import {
+  getMULink,
+  listMULinkIds,
+  type MULink,
+  removeMULink,
+  setMULink,
+} from "../utils/link-store";
+import type { MUResult } from "../utils/mu-client";
+import type { sharedLib } from "./shared-lib";
 
 // UI: explicit AniList ↔ MangaUpdates linking.
 //
@@ -21,6 +27,10 @@ interface MULink {
 //     ctx.eventHandler, ctx.toast, ctx.screen.{onNavigate, loadCurrent}
 //   - $storage, $anilist (per-plugin storage + AniList lookup)
 export const register = (ctx: PluginContext) => {
+  // MUClient is shared across runtimes via $shared (defined in code.ts init()).
+  const { MUClient } =
+    $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
+
   const tray = ctx.newTray({
     tooltipText: "MangaUpdates Sync — linking",
     // SeaImage (seanime's image component) silently blocks non-raster
@@ -30,25 +40,32 @@ export const register = (ctx: PluginContext) => {
     withContent: true,
   });
 
-  interface MUResult {
-    id: string;
-    title: string;
-    year?: number;
-    cover?: string;
-    url?: string;
-  }
-
   // Reactive state
   const currentMediaId = ctx.state(0);
   const searchInputRef = ctx.fieldRef<string>("");
   const searchResults = ctx.state<MUResult[]>([]);
   const isSearching = ctx.state(false);
+  // Local filter over the linked-mangas list (Section B in tray.render).
+  // Separate from the MU API search above — this only narrows what's already
+  // linked, it never hits the network.
+  const linkedFilter = ctx.state("");
+  const fLinkedFilter = ctx.fieldRef<string>("");
+  // $storage is NOT reactive: tray.render only re-runs when a ctx.state read
+  // inside it changes. Bump this after every link/unlink so the linked list
+  // re-reads the mu_link_* keys.
+  const linkedRefresh = ctx.state(0);
+  const bumpLinked = () => linkedRefresh.set(linkedRefresh.get() + 1);
+  // When on a manga entry the tray shows just that entry's link + search; this
+  // toggles to the full "LINKED (N)" list (and hides the search). Reset to
+  // collapsed on every navigation so each entry opens in entry-mode.
+  const showAllLinked = ctx.state(false);
 
   // Track current entry via screen.onNavigate. We don't filter by
   // pathname — any navigation event carrying an `id` searchParam is
   // treated as a media entry. The button click handler also seeds
   // currentMediaId from `event.media.id` as a belt-and-suspenders.
   ctx.screen.onNavigate((e) => {
+    showAllLinked.set(false);
     const id = e.searchParams?.id;
     if (id) {
       const parsed = parseInt(id, 10);
@@ -92,18 +109,13 @@ export const register = (ctx: PluginContext) => {
       return;
     }
     btn.mount();
-    const link = $storage.get<MULink>(`mu_link_${id}`);
+    const link = getMULink(id);
     if (!link) {
       btn.setLabel("Link to MangaUpdates");
-      tray.updateBadge({ number: 0 });
-    } else if (link.source === "manual") {
-      btn.setLabel(`Linked: ${link.seriesTitle || `#${link.seriesId}`}`);
-      tray.updateBadge({ number: 0 });
     } else {
-      // "auto" — title-search fallback, unverified.
-      btn.setLabel("Linked: ? (verify)");
-      tray.updateBadge({ number: 1, intent: "warning" });
+      btn.setLabel(`Linked: ${link.title || `#${link.id}`}`);
     }
+    tray.updateBadge({ number: 0 });
   }, [currentMediaId]);
 
   // MU icon injected next to the AniList icon on the manga entry page.
@@ -150,12 +162,9 @@ export const register = (ctx: PluginContext) => {
     if (media.siteUrl && media.siteUrl.indexOf(customPrefix) === 0) {
       return {};
     }
-    const link = $storage.get<MULink>(`mu_link_${mediaId}`);
+    const link = getMULink(mediaId);
     if (!link) return {};
-    const url =
-      link.seriesUrl ||
-      `https://www.mangaupdates.com/series.html?id=${link.seriesId}`;
-    return { url, title: link.seriesTitle };
+    return { url: link.url, title: link.title };
   };
 
   const [, refetchEntryPage] = ctx.dom.observe(
@@ -223,14 +232,34 @@ export const register = (ctx: PluginContext) => {
     { withInnerHTML: true, identifyChildren: true },
   );
 
+  // Shared unlink logic for both the current-entry "Unlink" button (Section A,
+  // via the static "mu-clear-link" handler) and the per-row ⛔ buttons
+  // (Section B, via minted `mu-unlink-<id>` handlers). They differ only in how
+  // the id is bound — singular current entry vs per-row closure — so the body
+  // lives here once.
+  const unlinkMedia = (id: number) => {
+    removeMULink(id);
+    ctx.toast.info("Link cleared");
+    bumpLinked();
+    // If we just unlinked the entry we're viewing, drop its stale picker,
+    // refresh its button label (re-setting currentMediaId re-runs the effect)
+    // and re-run the icon observer so the MU icon vanishes without a
+    // navigate-away-and-back.
+    if (id === currentMediaId.get()) {
+      searchResults.set([]);
+      currentMediaId.set(id);
+      refetchEntryPage();
+    }
+  };
+
   const mu = new MUClient((url, init) => ctx.fetch(url, init));
 
   // Pushes the current AniList listData (status / progress / score) to
   // the linked MU series. Used at link-time so MU mirrors AL immediately;
   // subsequent AL edits are handled by the post-update hook.
   async function syncStatsToMU(mediaId: number): Promise<boolean> {
-    const link = $storage.get<MULink>(`mu_link_${mediaId}`);
-    if (!link?.seriesId) return false;
+    const link = getMULink(mediaId);
+    if (!link?.id) return false;
 
     // Locate the listData by scanning the manga collection. Cheaper than
     // refetching from AniList — the collection is already cached client-side.
@@ -251,22 +280,21 @@ export const register = (ctx: PluginContext) => {
     // Nothing on the AL list yet — nothing to mirror.
     if (!listData) return false;
 
-    const token = await mu.ensureToken();
-    const seriesIdNum = Number(link.seriesId);
-    await mu.pushListEntry(token, seriesIdNum, {
+    const seriesIdNum = Number(link.id);
+    await mu.pushListEntry(seriesIdNum, {
       status: listData.status,
       progress: listData.progress,
     });
 
     const syncScore = ($getUserPreference("syncScore") ?? "true") !== "false";
     if (syncScore && listData.scoreRaw != null) {
-      await mu.pushRating(token, seriesIdNum, listData.scoreRaw);
+      await mu.pushRating(seriesIdNum, listData.scoreRaw);
     }
     return true;
   }
 
-  // Search MangaUpdates. Uses ctx.fetch (UI-context) — the doc requires
-  // it inside $ui.register, and the domain is whitelisted in the manifest.
+  // Search MangaUpdates. The HTTP + response-shaping lives in MUClient
+  // (mu.searchSeries); this wrapper just drives the reactive UI state.
   async function runSearch(query: string) {
     const q = (query || "").trim();
     if (q.length < 2) {
@@ -275,44 +303,7 @@ export const register = (ctx: PluginContext) => {
     }
     isSearching.set(true);
     try {
-      const token = $storage.get<string>("mu_session_token") || "";
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      };
-      if (token) headers.Authorization = `Bearer ${token}`;
-      const res = await ctx.fetch(
-        "https://api.mangaupdates.com/v1/series/search",
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ search: q, perpage: 10 }),
-        },
-      );
-      if (!res.ok) {
-        ctx.toast.alert(`MangaUpdates search failed (${res.status})`);
-        searchResults.set([]);
-        return;
-      }
-      const data = res.json<MUSearchResponse>();
-      const out: MUResult[] = [];
-      const arr = data?.results || [];
-      for (const r of arr) {
-        const sid = r?.record?.series_id;
-        if (!sid) continue;
-        const rec = r.record;
-        const year = rec.year ? parseInt(rec.year, 10) : undefined;
-        out.push({
-          id: String(sid),
-          title: rec.title || "(untitled)",
-          year: !Number.isNaN(year as number) ? year : undefined,
-          cover: rec.image?.url
-            ? rec.image.url.thumb || rec.image.url.original
-            : undefined,
-          url: rec.url,
-        });
-      }
-      searchResults.set(out);
+      searchResults.set(await mu.search(q));
     } catch (e) {
       ctx.toast.alert(
         `MangaUpdates search error: ${e instanceof Error ? e.message : "Unknown error"}`,
@@ -327,18 +318,22 @@ export const register = (ctx: PluginContext) => {
     await runSearch(searchInputRef.current || "");
   });
 
-  ctx.registerEventHandler("mu-clear-link", () => {
-    const id = currentMediaId.get();
-    if (!id) return;
-    $storage.remove(`mu_link_${id}`);
-    searchResults.set([]);
-    ctx.toast.info("Link cleared");
-    // Force a re-render of the effect above by re-setting the state.
-    currentMediaId.set(id);
-    // Re-run the icon observer so the MU button vanishes immediately,
-    // without requiring the user to navigate away and back.
-    refetchEntryPage();
+  ctx.registerEventHandler("mu-linked-search", () => {
+    linkedFilter.set((fLinkedFilter.current || "").trim());
   });
+  ctx.registerEventHandler("mu-linked-search-clear", () => {
+    linkedFilter.set("");
+    fLinkedFilter.setValue("");
+  });
+  ctx.registerEventHandler("mu-clear-search", () => {
+    searchInputRef.setValue("");
+    searchResults.set([]);
+  });
+
+  // Toggle between entry-mode (this entry's link + search) and the full
+  // "LINKED (N)" list. See `showAllLinked`.
+  ctx.registerEventHandler("mu-show-all", () => showAllLinked.set(true));
+  ctx.registerEventHandler("mu-show-current", () => showAllLinked.set(false));
 
   // Button click: seed the input, run an initial search, and try to open
   // the tray (works only if the user has pinned it — documented limitation).
@@ -348,6 +343,7 @@ export const register = (ctx: PluginContext) => {
   btn.onClick(async (event) => {
     const media = event.media;
     if (!media) return;
+    showAllLinked.set(false);
     if (media.id) currentMediaId.set(media.id);
     // English title takes priority — MangaUpdates is an English-language
     // database, so matches are most reliable against English titles.
@@ -361,9 +357,7 @@ export const register = (ctx: PluginContext) => {
     // Auto-search only when the entry isn't linked yet. For already-linked
     // entries the user is usually checking the link, not relinking, so
     // hold the results until they explicitly press Search.
-    const existingLink = media.id
-      ? $storage.get<MULink>(`mu_link_${media.id}`)
-      : undefined;
+    const existingLink = media.id ? getMULink(media.id) : undefined;
     if (!existingLink) {
       await runSearch(title);
     } else {
@@ -377,84 +371,130 @@ export const register = (ctx: PluginContext) => {
   });
   btn.mount();
 
-  // Tray content — the actual picker.
-  tray.render(() => {
-    const id = currentMediaId.get();
-    if (!id) {
-      return tray.stack([
-        tray.text("Open a manga entry page to link it to MangaUpdates."),
-      ]);
-    }
-    let media: $app.AL_BaseManga | undefined;
-    try {
-      media = $anilist.getManga(id);
-    } catch (_) {
-      media = undefined;
-    }
-    if (!media) {
-      return tray.stack([tray.text(`Unknown media #${id}`)]);
-    }
-    if (
-      media.siteUrl &&
-      media.siteUrl.indexOf("ext_custom_source_mangaupdates|END|") === 0
-    ) {
-      return tray.stack([
-        tray.text(
-          "This entry already comes from the MangaUpdates custom-source.",
-        ),
-        tray.text("Sync uses the embedded series_id — no linking needed."),
-      ]);
-    }
-    const link = $storage.get<MULink>(`mu_link_${id}`);
-    // Display title: english-first too (matches the search priority).
-    const title =
-      (media.title &&
-        (media.title.english ||
-          media.title.userPreferred ||
-          media.title.romaji)) ||
-      `#${id}`;
+  // ---- Reusable render helpers (kept DRY across the tray's two modes) ----
 
-    const items = [tray.text(`Manga: ${title}`)];
-    if (link) {
-      // "Linked: X (source)" sits next to an Unlink button so the
-      // remove action is co-located with the linked-state indicator.
-      items.push(
-        tray.flex(
-          [
-            tray.text(
-              "Linked: " +
-                (link.seriesTitle || `#${link.seriesId}`) +
-                " (" +
-                link.source +
-                ")",
-              {
-                style: { flex: "1", minWidth: "0" },
-              },
-            ),
-            tray.button("Unlink", {
-              onClick: "mu-clear-link",
-              intent: "alert-subtle",
-              size: "sm",
-            }),
-          ],
-          { gap: 2, style: { alignItems: "center" } },
-        ),
-      );
-    } else {
-      items.push(tray.text("Not linked yet."));
+  // One linked-manga row. Used both for the single current-entry item (entry
+  // mode) and every row of the full LINKED (N) list. Publication status + year
+  // come from AniList's clean enum (the $storage key IS the AniList mediaId),
+  // not from MU.
+  const buildLinkedRow = (mediaId: number, link: MULink): EntryListRow => {
+    let alMedia: $app.AL_BaseManga | undefined;
+    try {
+      alMedia = $anilist.getManga(mediaId);
+    } catch (_) {
+      alMedia = undefined;
     }
-    items.push(
-      tray.input("Search MangaUpdates", { fieldRef: searchInputRef }),
+    return {
+      cover: link.cover,
+      title: link.title || `#${link.id}`,
+      year: alMedia?.startDate?.year,
+      status: statusToPill(alMedia?.status),
+      openExternal: { href: link.url, tooltip: "View on MangaUpdates" },
+      openInPlace: {
+        // The $storage key IS the seanime mediaId — navigate directly,
+        // no extId decode needed.
+        onClick: ctx.eventHandler(`mu-open-${mediaId}`, () => {
+          ctx.screen.navigateTo("/manga/entry", { id: String(mediaId) });
+          tray.close();
+        }),
+        tooltip: "Open in seanime",
+      },
+      actions: [
+        tray.tooltip(
+          tray.button("⛔", {
+            onClick: ctx.eventHandler(`mu-unlink-${mediaId}`, () =>
+              unlinkMedia(mediaId),
+            ),
+            size: "sm",
+            intent: "alert-subtle",
+          }),
+          { text: "Unlink" },
+        ),
+      ],
+    };
+  };
+
+  // The full, locally-filterable "LINKED (N)" list. `inlineActions` lets the
+  // caller drop a header button (e.g. the "Show current" collapse toggle).
+  // `leadingDivider` is suppressed when the list is the first thing rendered.
+  const renderLinkedList = (
+    inlineActions: unknown[] = [],
+    leadingDivider = true,
+  ): unknown[] => {
+    const filter = linkedFilter.get().toLowerCase();
+    // listMULinkIds() enumerates only top-level `mu_link_<id>` keys — it skips
+    // the dotted sub-keys $storage produces for object values
+    // (mu_link_<id>.cover, …) and dedupes them back to the parent id.
+    const allLinked = listMULinkIds()
+      .map((mediaId) => ({ mediaId, link: getMULink(mediaId) }))
+      .filter(
+        (x): x is { mediaId: number; link: MULink } =>
+          !!x.link && Number.isFinite(x.mediaId),
+      );
+    allLinked.sort((a, b) =>
+      (a.link.title || "").localeCompare(b.link.title || ""),
+    );
+    const filtered = filter
+      ? allLinked.filter((x) =>
+          (x.link.title || `#${x.link.id}`).toLowerCase().includes(filter),
+        )
+      : allLinked;
+    return renderEntryListSection(tray, {
+      headerLabel: "LINKED",
+      rows: filtered.map((x) => buildLinkedRow(x.mediaId, x.link)),
+      totalCount: allLinked.length,
+      searchActive: filter.length > 0,
+      searchFieldRef: fLinkedFilter,
+      searchPlaceholder: "Filter linked manga…",
+      onSearch: "mu-linked-search",
+      onClearSearch: "mu-linked-search-clear",
+      inlineActions,
+      leadingDivider,
+      emptyText:
+        "No linked manga yet. Open a manga entry page and use the “Link to MangaUpdates” button.",
+      noMatchText: `No linked manga match "${linkedFilter.get()}".`,
+    });
+  };
+
+  // Search-MangaUpdates UI for the current entry: search row + "Search as"
+  // title shortcuts + the results picker (rendered through the shared
+  // component so it matches the LINKED list visually).
+  const renderSearchUI = (
+    media: $app.AL_BaseManga,
+    id: number,
+    link: MULink | undefined,
+  ): unknown[] => {
+    const out: unknown[] = [];
+    const currentInput = (searchInputRef.current || "").trim();
+
+    // Separator between the current entry's link and the search section
+    // (same divider renderEntryListSection draws above its sections).
+    out.push(divider(tray));
+
+    // Search row: input + Search + Clear on one row.
+    const searchRow: unknown[] = [
+      tray.div(
+        [tray.input("Search MangaUpdates", { fieldRef: searchInputRef })],
+        { style: { flex: "1", minWidth: "0" } },
+      ),
       tray.button(isSearching.get() ? "Searching..." : "Search", {
         onClick: "mu-do-search",
         intent: "primary",
+        size: "sm",
       }),
-    );
+    ];
+    if (searchResults.get().length > 0 || currentInput) {
+      searchRow.push(
+        tray.tooltip(
+          tray.button("✕", { onClick: "mu-clear-search", size: "sm" }),
+          { text: "Clear search" },
+        ),
+      );
+    }
+    out.push(tray.flex(searchRow, { gap: 2, style: { alignItems: "end" } }));
 
-    // "Search as:" shortcuts for the remaining AniList titles, deduped
-    // and minus whatever is already in the input box. MU often indexes
-    // a series under its romaji or original title only, so giving the
-    // user one click to retry is much faster than retyping.
+    // "Search as" label + per-title buttons (English / Romaji / Preferred),
+    // deduped and minus whatever is already in the input box.
     const allTitles: Array<{ label: string; value: string }> = [];
     if (media.title) {
       if (media.title.english)
@@ -467,7 +507,6 @@ export const register = (ctx: PluginContext) => {
           value: media.title.userPreferred,
         });
     }
-    const currentInput = (searchInputRef.current || "").trim();
     const seen: Record<string, boolean> = {};
     const altTitles = allTitles.filter((t) => {
       const v = (t.value || "").trim();
@@ -478,119 +517,67 @@ export const register = (ctx: PluginContext) => {
       return true;
     });
     if (altTitles.length > 0) {
-      const altRow = tray.flex(
-        altTitles.map((t) =>
-          tray.button(`Search as ${t.label}`, {
-            onClick: ctx.eventHandler(`mu-search-as-${t.label}`, () => {
-              searchInputRef.setValue(t.value);
-              runSearch(t.value).catch((e) =>
-                console.error("[mangaupdates-sync] alt search failed:", e),
-              );
+      out.push(
+        tray.flex(
+          [
+            tray.text("Search as", {
+              style: {
+                fontSize: "0.8rem",
+                opacity: "0.6",
+                alignSelf: "center",
+              },
             }),
-            intent: "gray-subtle",
-            size: "sm",
-          }),
+            ...altTitles.map((t) =>
+              tray.button(t.label, {
+                onClick: ctx.eventHandler(`mu-search-as-${t.label}`, () => {
+                  searchInputRef.setValue(t.value);
+                  runSearch(t.value).catch((e) =>
+                    console.error("[mangaupdates-sync] alt search failed:", e),
+                  );
+                }),
+                intent: "gray-subtle",
+                size: "sm",
+              }),
+            ),
+          ],
+          { gap: 1, style: { flexWrap: "wrap", alignItems: "center" } },
         ),
-        { gap: 1, style: { flexWrap: "wrap" } },
       );
-      items.push(altRow);
     }
+
+    // Results picker. Each result maps to an opinionated row: year + "Open ↗"
+    // external link, with Pick / Linked as the trailing action. No in-place
+    // open (the series isn't in seanime yet) and no search row.
     const results = searchResults.get();
     if (results.length > 0) {
-      items.push(tray.text("Pick the matching series:"));
-      for (const r of results) {
-        const titleLine = r.title + (r.year ? ` (${r.year})` : "");
-        const subLine = `#${r.id}`;
-        // Official MangaUpdates series page, so the user can open it and
-        // confirm the match before picking. Falls back to the legacy
-        // id-query URL when the search record didn't include a `url`.
-        const openUrl =
-          r.url || `https://www.mangaupdates.com/series.html?id=${r.id}`;
-        const row = tray.flex(
-          [
-            r.cover
-              ? tray.img({
-                  src: r.cover,
-                  style: {
-                    width: "44px",
-                    height: "62px",
-                    objectFit: "cover",
-                    borderRadius: "4px",
-                    flexShrink: "0",
-                  },
-                })
-              : tray.div([], {
-                  style: {
-                    width: "44px",
-                    height: "62px",
-                    background: "rgba(255,255,255,0.05)",
-                    borderRadius: "4px",
-                    flexShrink: "0",
-                  },
-                }),
-            tray.stack(
-              [
-                tray.text(titleLine, { style: { fontWeight: "600" } }),
-                tray.flex(
-                  [
-                    // `tray.span` (not `tray.text`) — text renders as a
-                    // `w-full` <p>, which would stretch and shove the link to
-                    // the far edge. span is inline so the id + link sit
-                    // together on the left.
-                    tray.span(subLine, {
-                      style: { opacity: "0.6", fontSize: "0.8rem" },
-                    }),
-                    tray.a([tray.span("Open ↗")], {
-                      href: openUrl,
-                      target: "_blank",
-                      rel: "noopener noreferrer",
-                      style: {
-                        fontSize: "0.8rem",
-                        opacity: "0.85",
-                        textDecoration: "underline",
-                        whiteSpace: "nowrap",
-                      },
-                    }),
-                  ],
-                  { gap: 3, style: { alignItems: "center" } },
-                ),
-              ],
-              { style: { flex: "1", minWidth: "0" } },
-            ),
-            link && link.seriesId === r.id
+      const resultRows = results.map((r): EntryListRow => {
+        const alreadyLinked = !!link && link.id === r.id;
+        return {
+          cover: r.cover,
+          title: r.title,
+          year: r.year,
+          openExternal: { href: r.url, tooltip: "View on MangaUpdates" },
+          actions: [
+            alreadyLinked
               ? tray.button("Linked", {
-                  // Already the current link — give explicit visual
-                  // feedback (success intent + pointer-events off so
-                  // the button looks/feels disabled). No onClick.
                   intent: "success-subtle",
                   size: "sm",
                   style: { opacity: "0.7", pointerEvents: "none" },
                 })
               : tray.button("Pick", {
-                  // ctx.eventHandler with a unique id key per item is the
-                  // documented pattern for inline handlers (Tray doc).
                   onClick: ctx.eventHandler(`mu-pick-${r.id}`, () => {
-                    const linkValue: MULink = {
-                      seriesId: r.id,
-                      seriesTitle: r.title,
-                      seriesUrl: r.url,
-                      seriesCover: r.cover,
-                      linkedAt: Date.now(),
-                      source: "manual",
-                    };
-                    $storage.set(`mu_link_${id}`, linkValue);
+                    const linkValue: MULink = { ...r, linkedAt: Date.now() };
+                    setMULink(id, linkValue);
                     ctx.toast.success(`Linked to ${r.title}`);
                     searchResults.set([]);
-                    // Re-render the button label
+                    bumpLinked();
+                    // Re-render the button label.
                     currentMediaId.set(id);
-                    // Re-run the icon observer so the MU icon
-                    // appears next to the AL one immediately.
+                    // Re-run the icon observer so the MU icon appears next
+                    // to the AL one immediately.
                     refetchEntryPage();
                     tray.close();
-                    // Fire-and-forget: mirror the current AL
-                    // listData (status / progress / score) to
-                    // MU right away, so the user doesn't have
-                    // to re-save the AL entry just to seed MU.
+                    // Fire-and-forget: mirror current AL listData to MU.
                     syncStatsToMU(id)
                       .then((pushed) => {
                         if (pushed)
@@ -610,11 +597,127 @@ export const register = (ctx: PluginContext) => {
                   size: "sm",
                 }),
           ],
-          { gap: 2, style: { alignItems: "center", padding: "6px 0" } },
-        );
-        items.push(row);
+        };
+      });
+      out.push(
+        ...renderEntryListSection(tray, {
+          headerLabel: "RESULTS",
+          rows: resultRows,
+          totalCount: results.length,
+          searchActive: false,
+          searchFieldRef: searchInputRef,
+          searchPlaceholder: "",
+          onSearch: "",
+          onClearSearch: "",
+          emptyText: "",
+          noMatchText: "",
+          showSearchRow: false,
+        }),
+      );
+    }
+    return out;
+  };
+
+  // Tray content. Two modes:
+  //   - On a linkable manga entry: that entry's link + Search MangaUpdates,
+  //     with a "Show all (N)" toggle that expands into the full LINKED (N)
+  //     list (and hides the search).
+  //   - Otherwise (no entry / custom-source / load failure): just the full
+  //     LINKED (N) list.
+  tray.render(() => {
+    // Subscribe to the non-$storage-reactive signals so pick/unlink/toggle
+    // re-render ($storage itself isn't reactive).
+    linkedRefresh.get();
+    const expanded = showAllLinked.get();
+    const items: unknown[] = [];
+
+    const id = currentMediaId.get();
+    let media: $app.AL_BaseManga | undefined;
+    if (id) {
+      try {
+        media = $anilist.getManga(id);
+      } catch (_) {
+        media = undefined;
       }
     }
+    const customPrefix = "ext_custom_source_mangaupdates|END|";
+    const isCustomSource =
+      !!media?.siteUrl && media.siteUrl.indexOf(customPrefix) === 0;
+    const onEntry = !!id && !!media && !isCustomSource;
+
+    if (onEntry && media && !expanded) {
+      // ---- Entry mode (collapsed): this entry's link + search ----
+      const link = getMULink(id);
+      const title =
+        (media.title &&
+          (media.title.english ||
+            media.title.userPreferred ||
+            media.title.romaji)) ||
+        `#${id}`;
+      items.push(
+        tray.text(`Manga: ${title}`, { style: { fontWeight: "600" } }),
+      );
+
+      const totalLinked = listMULinkIds().length;
+      const showAllBtn = tray.button(`Show all (${totalLinked})`, {
+        onClick: "mu-show-all",
+        size: "sm",
+        intent: "gray-subtle",
+      });
+
+      if (link) {
+        // The current entry's link as a single-row section, with the
+        // "Show all (N)" toggle in its header.
+        items.push(
+          ...renderEntryListSection(tray, {
+            headerLabel: "LINKED",
+            rows: [buildLinkedRow(id, link)],
+            totalCount: 1,
+            searchActive: false,
+            searchFieldRef: fLinkedFilter,
+            searchPlaceholder: "",
+            onSearch: "",
+            onClearSearch: "",
+            inlineActions: totalLinked > 1 ? [showAllBtn] : [],
+            emptyText: "",
+            noMatchText: "",
+            showSearchRow: false,
+          }),
+        );
+      } else {
+        items.push(tray.text("Not linked yet."));
+        if (totalLinked > 0) items.push(showAllBtn);
+      }
+
+      items.push(...renderSearchUI(media, id, link));
+    } else {
+      // ---- Full-list mode: not a linkable entry, or expanded via toggle ----
+      if (id && media && isCustomSource) {
+        items.push(
+          tray.text(
+            "This entry already comes from the MangaUpdates custom-source.",
+          ),
+          tray.text("Sync uses the embedded series_id — no linking needed."),
+        );
+      } else if (id && !media) {
+        items.push(tray.text(`Could not load entry #${id}.`));
+      }
+      const collapseBtn =
+        onEntry && expanded
+          ? [
+              tray.button("Show current", {
+                onClick: "mu-show-current",
+                size: "sm",
+                intent: "gray-subtle",
+              }),
+            ]
+          : [];
+      // Suppress the leading divider when the list is the first thing in the
+      // tray (no custom-source/load note above it) — else it shows as an
+      // empty top line.
+      items.push(...renderLinkedList(collapseBtn, items.length > 0));
+    }
+
     return tray.stack(items);
   });
 };

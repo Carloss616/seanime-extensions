@@ -14,6 +14,17 @@ class MUTokenExpiredError extends Error {
   }
 }
 
+// A normalized MangaUpdates series — the shape the UI and the link store both
+// consume. Produced by `MUClient.searchSeries` from the raw MUSearch.Response.
+// `MULink` (utils/link-store.ts) extends this with `linkedAt`.
+export interface MUResult {
+  id: string;
+  title: string;
+  year?: number;
+  cover?: string;
+  url: string;
+}
+
 export class MUClient {
   // `declare` makes these fields TYPE-ONLY (zero runtime emit). Defensive:
   // some transpiler targets lower bare field declarations to `__publicField`
@@ -51,26 +62,67 @@ export class MUClient {
   }
 
   async req<T = unknown>(
-    token: string,
     method: string,
     path: string,
-    body?: unknown,
+    options: {
+      token?: string;
+      body?: unknown;
+    },
   ): Promise<T | null> {
+    const attempt = "attempt" in options ? Number(options.attempt) : 1;
     const headers: Record<string, string> = { Accept: "application/json" };
-    if (token) headers.Authorization = `Bearer ${token}`;
-    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (options.token) headers.Authorization = `Bearer ${options.token}`;
+    if (options.body !== undefined)
+      headers["Content-Type"] = "application/json";
     const res = await this.fetchFn(this.base + path, {
       method,
       headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body:
+        options.body !== undefined ? JSON.stringify(options.body) : undefined,
     });
-    if (res.status === 401) throw new MUTokenExpiredError();
+    if (res.status === 401) {
+      if (attempt >= 2) throw new MUTokenExpiredError();
+      const token = await this.ensureToken(true);
+      const _options = { ...options, token, attempt: attempt + 1 };
+      return this.req<T>(method, path, _options);
+    }
     if (!res.ok) {
       throw new Error(`MU ${method} ${path} -> ${res.status} ${res.text()}`);
     }
     if ((res.contentType || "").includes("application/json"))
       return res.json<T>();
     return null;
+  }
+
+  /** Searches the public MangaUpdates series index and returns normalized
+   *  results. No login required — attaches the stored session token only if
+   *  one is present (it slightly enriches results but isn't mandatory). A
+   *  query shorter than 2 chars short-circuits to an empty list. */
+  async search(query: string, perpage = 10): Promise<MUResult[]> {
+    const q = (query || "").trim();
+    if (q.length < 2) return [];
+    const token = $storage.get<string>(this.tokenKey);
+    const data = await this.req<MUSearch.Response>("POST", "/series/search", {
+      token,
+      body: { search: q, perpage },
+    });
+    const out: MUResult[] = [];
+    for (const r of data?.results || []) {
+      const sid = r?.record?.series_id;
+      if (!sid) continue;
+      const rec = r.record;
+      const year = rec.year ? parseInt(rec.year, 10) : undefined;
+      out.push({
+        id: String(sid),
+        title: rec.title || "(untitled)",
+        year: year != null && !Number.isNaN(year) ? year : undefined,
+        cover: rec.image?.url
+          ? rec.image.url.thumb || rec.image.url.original
+          : undefined,
+        url: rec.url || `https://www.mangaupdates.com/series.html?id=${sid}`,
+      });
+    }
+    return out;
   }
 
   async login(username: string, password: string): Promise<string> {
@@ -85,13 +137,8 @@ export class MUClient {
     if (!res.ok) {
       throw new Error(`MU login -> ${res.status} ${res.text()}`);
     }
-    const data = res.json<{
-      context?: { session_token?: string };
-      session_token?: string;
-      token?: string;
-    }>();
-    const token =
-      data?.context?.session_token || data?.session_token || data?.token;
+    const data = res.json<MULogin.Response>();
+    const token = data?.context?.session_token;
     if (!token) throw new Error("MU login: response missing session token");
     return token;
   }
@@ -99,33 +146,20 @@ export class MUClient {
   /** Returns a usable bearer token, performing a login (and storing the
    *  token in `$storage`) if no stored token is present or the stored one
    *  fails the cheap `/account/profile` probe with 401. */
-  async ensureToken(): Promise<string> {
-    let token = $storage.get<string>(this.tokenKey) || "";
-    const username = $getUserPreference("username") || "";
-    const password = $getUserPreference("password") || "";
+  private async ensureToken(refresh = false): Promise<string> {
+    let token = refresh ? undefined : $storage.get<string>(this.tokenKey);
+    const username = $getUserPreference("username");
+    const password = $getUserPreference("password");
     if (!token) {
       if (!username || !password) {
+        $storage.remove(this.tokenKey);
         throw new Error("Missing MangaUpdates credentials in plugin settings.");
       }
       token = await this.login(username, password);
       $storage.set(this.tokenKey, token);
       return token;
     }
-    try {
-      await this.req(token, "GET", "/account/profile");
-      return token;
-    } catch (err) {
-      if (!(err instanceof MUTokenExpiredError)) throw err;
-      if (!username || !password) {
-        $storage.remove(this.tokenKey);
-        throw new Error(
-          "MangaUpdates session expired and no credentials to re-login.",
-        );
-      }
-      token = await this.login(username, password);
-      $storage.set(this.tokenKey, token);
-      return token;
-    }
+    return token;
   }
 
   /** Pushes status + chapter to MU. Falls through to `/lists/series` (add)
@@ -133,13 +167,13 @@ export class MUClient {
    *  only mutates existing entries. `payload.status` accepts AniList list
    *  status strings; the mapping to MU list ids is built-in. */
   async pushListEntry(
-    token: string,
     seriesId: number,
     payload: {
       status?: $app.AL_MediaListStatus;
       progress?: number;
     },
   ): Promise<void> {
+    const token = await this.ensureToken();
     const item: {
       series: { id: number };
       list_id?: number;
@@ -153,11 +187,11 @@ export class MUClient {
       item.status = { chapter: payload.progress };
     }
     try {
-      await this.req(token, "POST", "/lists/series/update", [item]);
+      await this.req("POST", "/lists/series/update", { token, body: [item] });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.indexOf("isn't on your list") >= 0) {
-        await this.req(token, "POST", "/lists/series", [item]);
+        await this.req("POST", "/lists/series", { token, body: [item] });
       } else {
         throw err;
       }
@@ -167,15 +201,15 @@ export class MUClient {
   /** Pushes a rating (0-10 scale, derived from AniList's 0-100 scoreRaw).
    *  Skipped silently when scoreRaw <= 0. Score lives behind a separate
    *  endpoint — `/lists/series/update` silently drops any `rating` field. */
-  async pushRating(
-    token: string,
-    seriesId: number,
-    scoreRaw: number,
-  ): Promise<void> {
+  async pushRating(seriesId: number, scoreRaw: number): Promise<void> {
     if (scoreRaw <= 0) return;
+    const token = await this.ensureToken();
     const rating = Math.min(10, Math.max(0, Math.round(scoreRaw) / 10));
     try {
-      await this.req(token, "PUT", `/series/${seriesId}/rating`, { rating });
+      await this.req("PUT", `/series/${seriesId}/rating`, {
+        token,
+        body: { rating },
+      });
     } catch (err) {
       console.warn("[mangaupdates-sync] rating push failed:", err);
     }

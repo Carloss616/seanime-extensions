@@ -1,120 +1,12 @@
 // src/plugins/mangaupdates-sync/modules/on-post-update-entry.ts
 var onPostUpdateEntry = (...args) => {
-  class MUTokenExpiredError extends Error {
-    constructor() {
-      super("MU session expired");
-      this.name = "MUTokenExpiredError";
-    }
+  var SHARED_LIB_NAME = "mangaupdates-sync";
+  var LINK_PREFIX = "mu_link_";
+  function getMULink(mediaId) {
+    return $storage.get(`${LINK_PREFIX}${mediaId}`);
   }
-
-  class MUClient {
-    constructor(fetchFn) {
-      this.base = "https://api.mangaupdates.com/v1";
-      this.tokenKey = "mu_session_token";
-      this.statusList = {
-        CURRENT: 0,
-        PLANNING: 1,
-        COMPLETED: 2,
-        DROPPED: 3,
-        PAUSED: 4,
-        REPEATING: 0,
-      };
-      this.fetchFn = fetchFn;
-    }
-    async req(token, method, path, body) {
-      const headers = { Accept: "application/json" };
-      if (token) headers.Authorization = `Bearer ${token}`;
-      if (body !== undefined) headers["Content-Type"] = "application/json";
-      const res = await this.fetchFn(this.base + path, {
-        method,
-        headers,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-      });
-      if (res.status === 401) throw new MUTokenExpiredError();
-      if (!res.ok) {
-        throw new Error(`MU ${method} ${path} -> ${res.status} ${res.text()}`);
-      }
-      if ((res.contentType || "").includes("application/json"))
-        return res.json();
-      return null;
-    }
-    async login(username, password) {
-      const res = await this.fetchFn(`${this.base}/account/login`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({ username, password }),
-      });
-      if (!res.ok) {
-        throw new Error(`MU login -> ${res.status} ${res.text()}`);
-      }
-      const data = res.json();
-      const token =
-        data?.context?.session_token || data?.session_token || data?.token;
-      if (!token) throw new Error("MU login: response missing session token");
-      return token;
-    }
-    async ensureToken() {
-      let token = $storage.get(this.tokenKey) || "";
-      const username = $getUserPreference("username") || "";
-      const password = $getUserPreference("password") || "";
-      if (!token) {
-        if (!username || !password) {
-          throw new Error(
-            "Missing MangaUpdates credentials in plugin settings.",
-          );
-        }
-        token = await this.login(username, password);
-        $storage.set(this.tokenKey, token);
-        return token;
-      }
-      try {
-        await this.req(token, "GET", "/account/profile");
-        return token;
-      } catch (err) {
-        if (!(err instanceof MUTokenExpiredError)) throw err;
-        if (!username || !password) {
-          $storage.remove(this.tokenKey);
-          throw new Error(
-            "MangaUpdates session expired and no credentials to re-login.",
-          );
-        }
-        token = await this.login(username, password);
-        $storage.set(this.tokenKey, token);
-        return token;
-      }
-    }
-    async pushListEntry(token, seriesId, payload) {
-      const item = { series: { id: seriesId } };
-      if (payload.status != null) {
-        const mapped = this.statusList[payload.status];
-        item.list_id = mapped !== undefined ? mapped : this.statusList.CURRENT;
-      }
-      if (payload.progress !== undefined) {
-        item.status = { chapter: payload.progress };
-      }
-      try {
-        await this.req(token, "POST", "/lists/series/update", [item]);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.indexOf("isn't on your list") >= 0) {
-          await this.req(token, "POST", "/lists/series", [item]);
-        } else {
-          throw err;
-        }
-      }
-    }
-    async pushRating(token, seriesId, scoreRaw) {
-      if (scoreRaw <= 0) return;
-      const rating = Math.min(10, Math.max(0, Math.round(scoreRaw) / 10));
-      try {
-        await this.req(token, "PUT", `/series/${seriesId}/rating`, { rating });
-      } catch (err) {
-        console.warn("[mangaupdates-sync] rating push failed:", err);
-      }
-    }
+  function setMULink(mediaId, link) {
+    $storage.set(`${LINK_PREFIX}${mediaId}`, link);
   }
   var onPostUpdateEntry2 = (event) => {
     try {
@@ -130,6 +22,7 @@ var onPostUpdateEntry = (...args) => {
         return;
       }
       $store.remove(key);
+      const { MUClient } = $shared.use(SHARED_LIB_NAME);
       (async () => {
         const EXT_ID_OFFSET = 2147483648;
         const LOCAL_ID_RANGE = 1099511627776;
@@ -140,7 +33,6 @@ var onPostUpdateEntry = (...args) => {
           manga = undefined;
         }
         const mu = new MUClient((url, init) => fetch(url, init));
-        const token = await mu.ensureToken();
         let externalId;
         if (mediaId >= EXT_ID_OFFSET) {
           const siteUrl = manga?.siteUrl;
@@ -158,8 +50,8 @@ var onPostUpdateEntry = (...args) => {
           }
         }
         if (!externalId) {
-          const link = $storage.get(`mu_link_${mediaId}`);
-          if (link?.seriesId) externalId = link.seriesId;
+          const link = getMULink(mediaId);
+          if (link?.id) externalId = link.id;
         }
         if (
           !externalId &&
@@ -171,18 +63,10 @@ var onPostUpdateEntry = (...args) => {
               manga.title.romaji ||
               manga.title.userPreferred);
           if (title) {
-            const data = await mu.req(token, "POST", "/series/search", {
-              search: title,
-              perpage: 25,
-            });
-            const sid = data?.results?.[0]?.record?.series_id;
-            if (sid) {
-              externalId = String(sid);
-              $storage.set(`mu_link_${mediaId}`, {
-                seriesId: externalId,
-                linkedAt: Date.now(),
-                source: "auto",
-              });
+            const match = (await mu.search(title, 25))[0];
+            if (match) {
+              externalId = match.id;
+              setMULink(mediaId, { ...match, linkedAt: Date.now() });
             }
           }
         }
@@ -193,14 +77,14 @@ var onPostUpdateEntry = (...args) => {
           return;
         }
         const seriesIdNum = Number(externalId);
-        await mu.pushListEntry(token, seriesIdNum, {
+        await mu.pushListEntry(seriesIdNum, {
           status: update.status,
           progress: update.progress,
         });
         const syncScore =
           ($getUserPreference("syncScore") ?? "true") !== "false";
         if (syncScore && update.scoreRaw != null) {
-          await mu.pushRating(token, seriesIdNum, update.scoreRaw);
+          await mu.pushRating(seriesIdNum, update.scoreRaw);
         }
         console.log(
           `[mangaupdates-sync] pushed media ${mediaId} -> MU ${externalId} (status=${update.status || "-"} chapter=${update.progress != null ? update.progress : "-"} score=${update.scoreRaw != null ? update.scoreRaw : "-"})`,
@@ -254,126 +138,285 @@ var onPreUpdateEntry = (...args) => {
 
 // src/plugins/mangaupdates-sync/modules/register.ts
 var register = (...args) => {
+  function divider(tray) {
+    return tray.div([], {
+      style: {
+        borderTop: "1px solid rgba(255,255,255,0.1)",
+        marginTop: "10px",
+        paddingTop: "8px",
+      },
+    });
+  }
+  var PILL_PALETTE = {
+    success: { bg: "rgba(80,200,120,0.15)", fg: "rgba(140,220,160,1)" },
+    info: { bg: "rgba(120,170,255,0.15)", fg: "rgba(160,200,255,1)" },
+    warning: { bg: "rgba(255,200,0,0.15)", fg: "rgba(255,220,80,1)" },
+    alert: { bg: "rgba(255,120,120,0.15)", fg: "rgba(255,150,150,1)" },
+    gray: { bg: "rgba(255,255,255,0.06)", fg: "rgba(255,255,255,0.6)" },
+  };
+  function pill(tray, label, intent = "gray") {
+    const { bg, fg } = PILL_PALETTE[intent] ?? PILL_PALETTE.gray;
+    return tray.span(label, {
+      style: {
+        fontSize: "0.7rem",
+        fontWeight: "500",
+        padding: "2px 8px",
+        borderRadius: "10px",
+        background: bg,
+        color: fg,
+      },
+    });
+  }
+  function renderEntryListSection(tray, cfg) {
+    const coverBox = (src) =>
+      src
+        ? tray.img({
+            src,
+            style: {
+              width: "44px",
+              height: "62px",
+              objectFit: "cover",
+              borderRadius: "4px",
+              flexShrink: "0",
+            },
+          })
+        : tray.div([], {
+            style: {
+              width: "44px",
+              height: "62px",
+              background: "rgba(255,255,255,0.05)",
+              borderRadius: "4px",
+              flexShrink: "0",
+            },
+          });
+    const dotSep = () =>
+      tray.span("·", {
+        style: { opacity: "0.35", fontSize: "0.75rem", margin: "0 2px" },
+      });
+    const subLineSegments = (row) => {
+      const segs = [];
+      if (row.year != null) {
+        segs.push(
+          tray.span(String(row.year), {
+            style: { opacity: "0.55", fontSize: "0.75rem" },
+          }),
+        );
+      }
+      if (row.status) {
+        segs.push(pill(tray, row.status.label, row.status.intent));
+      }
+      if (row.chapter != null && row.chapter !== "") {
+        segs.push(
+          tray.span(`c.${row.chapter}`, {
+            style: { opacity: "0.7", fontSize: "0.75rem" },
+          }),
+        );
+      }
+      const linkStyle = {
+        background: "transparent",
+        border: "none",
+        padding: "0",
+        height: "auto",
+        minHeight: "0",
+        fontSize: "0.75rem",
+        fontWeight: "500",
+        opacity: "0.75",
+        textDecoration: "underline",
+        whiteSpace: "nowrap",
+      };
+      if (row.openExternal) {
+        const link = tray.a([tray.span("Open ↗")], {
+          href: row.openExternal.href,
+          target: "_blank",
+          rel: "noopener noreferrer",
+          style: linkStyle,
+        });
+        segs.push(
+          row.openExternal.tooltip
+            ? tray.tooltip(link, { text: row.openExternal.tooltip })
+            : link,
+        );
+      }
+      if (row.openInPlace) {
+        const button = tray.button("Open →", {
+          onClick: row.openInPlace.onClick,
+          size: "sm",
+          intent: "gray-subtle",
+          style: linkStyle,
+        });
+        segs.push(
+          row.openInPlace.tooltip
+            ? tray.tooltip(button, { text: row.openInPlace.tooltip })
+            : button,
+        );
+      }
+      return segs;
+    };
+    const entryRow = (row) => {
+      const segs = subLineSegments(row);
+      const subLineChildren = [];
+      segs.forEach((seg, i) => {
+        if (i > 0) subLineChildren.push(dotSep());
+        subLineChildren.push(seg);
+      });
+      const middle = tray.stack(
+        [
+          tray.text(row.title, {
+            style: {
+              fontWeight: "600",
+              fontSize: "0.9rem",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            },
+          }),
+          tray.flex(subLineChildren, {
+            gap: 0,
+            style: { alignItems: "center", marginTop: "2px" },
+          }),
+        ],
+        { style: { flex: "1", minWidth: "0" } },
+      );
+      const rowChildren = [coverBox(row.cover), middle];
+      for (const a of row.actions ?? []) rowChildren.push(a);
+      return tray.flex(rowChildren, {
+        gap: 2,
+        style: {
+          alignItems: "center",
+          padding: "6px 8px",
+          borderRadius: "4px",
+          background: "rgba(255,255,255,0.02)",
+          opacity: row.opacity != null ? String(row.opacity) : "1",
+        },
+      });
+    };
+    const headerCount = cfg.searchActive
+      ? `${cfg.rows.length} / ${cfg.totalCount}`
+      : `${cfg.totalCount}`;
+    const header = tray.flex(
+      [
+        tray.div(
+          [
+            tray.text(`${cfg.headerLabel} (${headerCount})`, {
+              style: {
+                fontSize: "0.7rem",
+                fontWeight: "700",
+                opacity: "0.55",
+                letterSpacing: "0.1em",
+              },
+            }),
+          ],
+          { style: { flex: "1", alignSelf: "center" } },
+        ),
+        ...(cfg.inlineActions ?? []),
+      ],
+      {
+        gap: 2,
+        style: { alignItems: "center", marginTop: "10px", marginBottom: "6px" },
+      },
+    );
+    const out = [];
+    if (cfg.leadingDivider !== false) out.push(divider(tray));
+    out.push(header);
+    if (cfg.showSearchRow !== false && cfg.totalCount > 0) {
+      const searchRowChildren = [
+        tray.div(
+          [
+            tray.input(cfg.searchPlaceholder, {
+              fieldRef: cfg.searchFieldRef,
+            }),
+          ],
+          { style: { flex: "1", minWidth: "0" } },
+        ),
+        tray.button(cfg.searchButtonLabel ?? "\uD83D\uDD0D Search", {
+          onClick: cfg.onSearch,
+          size: "sm",
+        }),
+      ];
+      if (cfg.searchActive) {
+        searchRowChildren.push(
+          tray.tooltip(
+            tray.button("✕", { onClick: cfg.onClearSearch, size: "sm" }),
+            { text: "Clear search" },
+          ),
+        );
+      }
+      out.push(
+        tray.flex(searchRowChildren, {
+          gap: 2,
+          style: { alignItems: "end", marginBottom: "6px" },
+        }),
+      );
+    }
+    if (cfg.totalCount === 0) {
+      out.push(
+        tray.text(cfg.emptyText, {
+          style: {
+            fontSize: "0.8rem",
+            opacity: "0.5",
+            textAlign: "center",
+            padding: "10px 0",
+          },
+        }),
+      );
+    } else if (cfg.rows.length === 0 && cfg.searchActive) {
+      out.push(
+        tray.text(cfg.noMatchText, {
+          style: {
+            fontSize: "0.8rem",
+            opacity: "0.5",
+            textAlign: "center",
+            padding: "10px 0",
+          },
+        }),
+      );
+    } else {
+      for (const row of cfg.rows) out.push(entryRow(row));
+    }
+    return out;
+  }
+  var STATUS_INTENT = {
+    RELEASING: "success",
+    FINISHED: "info",
+    HIATUS: "warning",
+    CANCELLED: "alert",
+    NOT_YET_RELEASED: "gray",
+  };
+  function statusToPill(status) {
+    if (!status) return;
+    return {
+      label: status.replace(/_/g, " ").toLowerCase(),
+      intent: STATUS_INTENT[status] ?? "gray",
+    };
+  }
   var GITHUB_RAW_WORKSPACE =
     "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main";
-
-  class MUTokenExpiredError extends Error {
-    constructor() {
-      super("MU session expired");
-      this.name = "MUTokenExpiredError";
-    }
+  var SHARED_LIB_NAME = "mangaupdates-sync";
+  var LINK_PREFIX = "mu_link_";
+  function getMULink(mediaId) {
+    return $storage.get(`${LINK_PREFIX}${mediaId}`);
   }
-
-  class MUClient {
-    constructor(fetchFn) {
-      this.base = "https://api.mangaupdates.com/v1";
-      this.tokenKey = "mu_session_token";
-      this.statusList = {
-        CURRENT: 0,
-        PLANNING: 1,
-        COMPLETED: 2,
-        DROPPED: 3,
-        PAUSED: 4,
-        REPEATING: 0,
-      };
-      this.fetchFn = fetchFn;
+  function setMULink(mediaId, link) {
+    $storage.set(`${LINK_PREFIX}${mediaId}`, link);
+  }
+  function removeMULink(mediaId) {
+    $storage.remove(`${LINK_PREFIX}${mediaId}`);
+  }
+  function listMULinkIds() {
+    const seen = {};
+    const ids = [];
+    for (const k of $storage.keys()) {
+      if (k.indexOf(LINK_PREFIX) !== 0) continue;
+      const rest = k.slice(LINK_PREFIX.length);
+      if (!/^\d+$/.test(rest)) continue;
+      if (seen[rest]) continue;
+      seen[rest] = true;
+      ids.push(parseInt(rest, 10));
     }
-    async req(token, method, path, body) {
-      const headers = { Accept: "application/json" };
-      if (token) headers.Authorization = `Bearer ${token}`;
-      if (body !== undefined) headers["Content-Type"] = "application/json";
-      const res = await this.fetchFn(this.base + path, {
-        method,
-        headers,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-      });
-      if (res.status === 401) throw new MUTokenExpiredError();
-      if (!res.ok) {
-        throw new Error(`MU ${method} ${path} -> ${res.status} ${res.text()}`);
-      }
-      if ((res.contentType || "").includes("application/json"))
-        return res.json();
-      return null;
-    }
-    async login(username, password) {
-      const res = await this.fetchFn(`${this.base}/account/login`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({ username, password }),
-      });
-      if (!res.ok) {
-        throw new Error(`MU login -> ${res.status} ${res.text()}`);
-      }
-      const data = res.json();
-      const token =
-        data?.context?.session_token || data?.session_token || data?.token;
-      if (!token) throw new Error("MU login: response missing session token");
-      return token;
-    }
-    async ensureToken() {
-      let token = $storage.get(this.tokenKey) || "";
-      const username = $getUserPreference("username") || "";
-      const password = $getUserPreference("password") || "";
-      if (!token) {
-        if (!username || !password) {
-          throw new Error(
-            "Missing MangaUpdates credentials in plugin settings.",
-          );
-        }
-        token = await this.login(username, password);
-        $storage.set(this.tokenKey, token);
-        return token;
-      }
-      try {
-        await this.req(token, "GET", "/account/profile");
-        return token;
-      } catch (err) {
-        if (!(err instanceof MUTokenExpiredError)) throw err;
-        if (!username || !password) {
-          $storage.remove(this.tokenKey);
-          throw new Error(
-            "MangaUpdates session expired and no credentials to re-login.",
-          );
-        }
-        token = await this.login(username, password);
-        $storage.set(this.tokenKey, token);
-        return token;
-      }
-    }
-    async pushListEntry(token, seriesId, payload) {
-      const item = { series: { id: seriesId } };
-      if (payload.status != null) {
-        const mapped = this.statusList[payload.status];
-        item.list_id = mapped !== undefined ? mapped : this.statusList.CURRENT;
-      }
-      if (payload.progress !== undefined) {
-        item.status = { chapter: payload.progress };
-      }
-      try {
-        await this.req(token, "POST", "/lists/series/update", [item]);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.indexOf("isn't on your list") >= 0) {
-          await this.req(token, "POST", "/lists/series", [item]);
-        } else {
-          throw err;
-        }
-      }
-    }
-    async pushRating(token, seriesId, scoreRaw) {
-      if (scoreRaw <= 0) return;
-      const rating = Math.min(10, Math.max(0, Math.round(scoreRaw) / 10));
-      try {
-        await this.req(token, "PUT", `/series/${seriesId}/rating`, { rating });
-      } catch (err) {
-        console.warn("[mangaupdates-sync] rating push failed:", err);
-      }
-    }
+    return ids;
   }
   var register2 = (ctx) => {
+    const { MUClient } = $shared.use(SHARED_LIB_NAME);
     const tray = ctx.newTray({
       tooltipText: "MangaUpdates Sync — linking",
       iconUrl: `${GITHUB_RAW_WORKSPACE}/src/plugins/mangaupdates-sync/assets/icon.png`,
@@ -383,7 +426,13 @@ var register = (...args) => {
     const searchInputRef = ctx.fieldRef("");
     const searchResults = ctx.state([]);
     const isSearching = ctx.state(false);
+    const linkedFilter = ctx.state("");
+    const fLinkedFilter = ctx.fieldRef("");
+    const linkedRefresh = ctx.state(0);
+    const bumpLinked = () => linkedRefresh.set(linkedRefresh.get() + 1);
+    const showAllLinked = ctx.state(false);
     ctx.screen.onNavigate((e) => {
+      showAllLinked.set(false);
       const id = e.searchParams?.id;
       if (id) {
         const parsed = parseInt(id, 10);
@@ -421,17 +470,13 @@ var register = (...args) => {
         return;
       }
       btn.mount();
-      const link = $storage.get(`mu_link_${id}`);
+      const link = getMULink(id);
       if (!link) {
         btn.setLabel("Link to MangaUpdates");
-        tray.updateBadge({ number: 0 });
-      } else if (link.source === "manual") {
-        btn.setLabel(`Linked: ${link.seriesTitle || `#${link.seriesId}`}`);
-        tray.updateBadge({ number: 0 });
       } else {
-        btn.setLabel("Linked: ? (verify)");
-        tray.updateBadge({ number: 1, intent: "warning" });
+        btn.setLabel(`Linked: ${link.title || `#${link.id}`}`);
       }
+      tray.updateBadge({ number: 0 });
     }, [currentMediaId]);
     const MU_ICON_KEY = "mu";
     const MU_ICON_SVG =
@@ -450,12 +495,9 @@ var register = (...args) => {
       if (media.siteUrl && media.siteUrl.indexOf(customPrefix) === 0) {
         return {};
       }
-      const link = $storage.get(`mu_link_${mediaId}`);
+      const link = getMULink(mediaId);
       if (!link) return {};
-      const url =
-        link.seriesUrl ||
-        `https://www.mangaupdates.com/series.html?id=${link.seriesId}`;
-      return { url, title: link.seriesTitle };
+      return { url: link.url, title: link.title };
     };
     const [, refetchEntryPage] = ctx.dom.observe(
       "[data-manga-entry-page]",
@@ -505,10 +547,20 @@ var register = (...args) => {
       },
       { withInnerHTML: true, identifyChildren: true },
     );
+    const unlinkMedia = (id) => {
+      removeMULink(id);
+      ctx.toast.info("Link cleared");
+      bumpLinked();
+      if (id === currentMediaId.get()) {
+        searchResults.set([]);
+        currentMediaId.set(id);
+        refetchEntryPage();
+      }
+    };
     const mu = new MUClient((url, init) => ctx.fetch(url, init));
     async function syncStatsToMU(mediaId) {
-      const link = $storage.get(`mu_link_${mediaId}`);
-      if (!link?.seriesId) return false;
+      const link = getMULink(mediaId);
+      if (!link?.id) return false;
       let listData;
       try {
         const collection = await ctx.manga.getCollection();
@@ -524,15 +576,14 @@ var register = (...args) => {
         console.warn("[mangaupdates-sync] getCollection failed:", err);
       }
       if (!listData) return false;
-      const token = await mu.ensureToken();
-      const seriesIdNum = Number(link.seriesId);
-      await mu.pushListEntry(token, seriesIdNum, {
+      const seriesIdNum = Number(link.id);
+      await mu.pushListEntry(seriesIdNum, {
         status: listData.status,
         progress: listData.progress,
       });
       const syncScore = ($getUserPreference("syncScore") ?? "true") !== "false";
       if (syncScore && listData.scoreRaw != null) {
-        await mu.pushRating(token, seriesIdNum, listData.scoreRaw);
+        await mu.pushRating(seriesIdNum, listData.scoreRaw);
       }
       return true;
     }
@@ -544,44 +595,7 @@ var register = (...args) => {
       }
       isSearching.set(true);
       try {
-        const token = $storage.get("mu_session_token") || "";
-        const headers = {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        };
-        if (token) headers.Authorization = `Bearer ${token}`;
-        const res = await ctx.fetch(
-          "https://api.mangaupdates.com/v1/series/search",
-          {
-            method: "POST",
-            headers,
-            body: JSON.stringify({ search: q, perpage: 10 }),
-          },
-        );
-        if (!res.ok) {
-          ctx.toast.alert(`MangaUpdates search failed (${res.status})`);
-          searchResults.set([]);
-          return;
-        }
-        const data = res.json();
-        const out = [];
-        const arr = data?.results || [];
-        for (const r of arr) {
-          const sid = r?.record?.series_id;
-          if (!sid) continue;
-          const rec = r.record;
-          const year = rec.year ? parseInt(rec.year, 10) : undefined;
-          out.push({
-            id: String(sid),
-            title: rec.title || "(untitled)",
-            year: !Number.isNaN(year) ? year : undefined,
-            cover: rec.image?.url
-              ? rec.image.url.thumb || rec.image.url.original
-              : undefined,
-            url: rec.url,
-          });
-        }
-        searchResults.set(out);
+        searchResults.set(await mu.search(q));
       } catch (e) {
         ctx.toast.alert(
           `MangaUpdates search error: ${e instanceof Error ? e.message : "Unknown error"}`,
@@ -594,18 +608,23 @@ var register = (...args) => {
     ctx.registerEventHandler("mu-do-search", async () => {
       await runSearch(searchInputRef.current || "");
     });
-    ctx.registerEventHandler("mu-clear-link", () => {
-      const id = currentMediaId.get();
-      if (!id) return;
-      $storage.remove(`mu_link_${id}`);
-      searchResults.set([]);
-      ctx.toast.info("Link cleared");
-      currentMediaId.set(id);
-      refetchEntryPage();
+    ctx.registerEventHandler("mu-linked-search", () => {
+      linkedFilter.set((fLinkedFilter.current || "").trim());
     });
+    ctx.registerEventHandler("mu-linked-search-clear", () => {
+      linkedFilter.set("");
+      fLinkedFilter.setValue("");
+    });
+    ctx.registerEventHandler("mu-clear-search", () => {
+      searchInputRef.setValue("");
+      searchResults.set([]);
+    });
+    ctx.registerEventHandler("mu-show-all", () => showAllLinked.set(true));
+    ctx.registerEventHandler("mu-show-current", () => showAllLinked.set(false));
     btn.onClick(async (event) => {
       const media = event.media;
       if (!media) return;
+      showAllLinked.set(false);
       if (media.id) currentMediaId.set(media.id);
       const title =
         (media.title &&
@@ -614,9 +633,7 @@ var register = (...args) => {
             media.title.userPreferred)) ||
         "";
       searchInputRef.setValue(title);
-      const existingLink = media.id
-        ? $storage.get(`mu_link_${media.id}`)
-        : undefined;
+      const existingLink = media.id ? getMULink(media.id) : undefined;
       if (!existingLink) {
         await runSearch(title);
       } else {
@@ -631,70 +648,93 @@ var register = (...args) => {
       }
     });
     btn.mount();
-    tray.render(() => {
-      const id = currentMediaId.get();
-      if (!id) {
-        return tray.stack([
-          tray.text("Open a manga entry page to link it to MangaUpdates."),
-        ]);
-      }
-      let media;
+    const buildLinkedRow = (mediaId, link) => {
+      let alMedia;
       try {
-        media = $anilist.getManga(id);
+        alMedia = $anilist.getManga(mediaId);
       } catch (_) {
-        media = undefined;
+        alMedia = undefined;
       }
-      if (!media) {
-        return tray.stack([tray.text(`Unknown media #${id}`)]);
-      }
-      if (
-        media.siteUrl &&
-        media.siteUrl.indexOf("ext_custom_source_mangaupdates|END|") === 0
-      ) {
-        return tray.stack([
-          tray.text(
-            "This entry already comes from the MangaUpdates custom-source.",
-          ),
-          tray.text("Sync uses the embedded series_id — no linking needed."),
-        ]);
-      }
-      const link = $storage.get(`mu_link_${id}`);
-      const title =
-        (media.title &&
-          (media.title.english ||
-            media.title.userPreferred ||
-            media.title.romaji)) ||
-        `#${id}`;
-      const items = [tray.text(`Manga: ${title}`)];
-      if (link) {
-        items.push(
-          tray.flex(
-            [
-              tray.text(
-                `Linked: ${link.seriesTitle || `#${link.seriesId}`} (${link.source})`,
-                {
-                  style: { flex: "1", minWidth: "0" },
-                },
+      return {
+        cover: link.cover,
+        title: link.title || `#${link.id}`,
+        year: alMedia?.startDate?.year,
+        status: statusToPill(alMedia?.status),
+        openExternal: { href: link.url, tooltip: "View on MangaUpdates" },
+        openInPlace: {
+          onClick: ctx.eventHandler(`mu-open-${mediaId}`, () => {
+            ctx.screen.navigateTo("/manga/entry", { id: String(mediaId) });
+            tray.close();
+          }),
+          tooltip: "Open in seanime",
+        },
+        actions: [
+          tray.tooltip(
+            tray.button("⛔", {
+              onClick: ctx.eventHandler(`mu-unlink-${mediaId}`, () =>
+                unlinkMedia(mediaId),
               ),
-              tray.button("Unlink", {
-                onClick: "mu-clear-link",
-                intent: "alert-subtle",
-                size: "sm",
-              }),
-            ],
-            { gap: 2, style: { alignItems: "center" } },
+              size: "sm",
+              intent: "alert-subtle",
+            }),
+            { text: "Unlink" },
           ),
-        );
-      } else {
-        items.push(tray.text("Not linked yet."));
-      }
-      items.push(
-        tray.input("Search MangaUpdates", { fieldRef: searchInputRef }),
+        ],
+      };
+    };
+    const renderLinkedList = (inlineActions = [], leadingDivider = true) => {
+      const filter = linkedFilter.get().toLowerCase();
+      const allLinked = listMULinkIds()
+        .map((mediaId) => ({ mediaId, link: getMULink(mediaId) }))
+        .filter((x) => !!x.link && Number.isFinite(x.mediaId));
+      allLinked.sort((a, b) =>
+        (a.link.title || "").localeCompare(b.link.title || ""),
+      );
+      const filtered = filter
+        ? allLinked.filter((x) =>
+            (x.link.title || `#${x.link.id}`).toLowerCase().includes(filter),
+          )
+        : allLinked;
+      return renderEntryListSection(tray, {
+        headerLabel: "LINKED",
+        rows: filtered.map((x) => buildLinkedRow(x.mediaId, x.link)),
+        totalCount: allLinked.length,
+        searchActive: filter.length > 0,
+        searchFieldRef: fLinkedFilter,
+        searchPlaceholder: "Filter linked manga…",
+        onSearch: "mu-linked-search",
+        onClearSearch: "mu-linked-search-clear",
+        inlineActions,
+        leadingDivider,
+        emptyText:
+          "No linked manga yet. Open a manga entry page and use the “Link to MangaUpdates” button.",
+        noMatchText: `No linked manga match "${linkedFilter.get()}".`,
+      });
+    };
+    const renderSearchUI = (media, id, link) => {
+      const out = [];
+      const currentInput = (searchInputRef.current || "").trim();
+      out.push(divider(tray));
+      const searchRow = [
+        tray.div(
+          [tray.input("Search MangaUpdates", { fieldRef: searchInputRef })],
+          { style: { flex: "1", minWidth: "0" } },
+        ),
         tray.button(isSearching.get() ? "Searching..." : "Search", {
           onClick: "mu-do-search",
           intent: "primary",
+          size: "sm",
         }),
-      );
+      ];
+      if (searchResults.get().length > 0 || currentInput) {
+        searchRow.push(
+          tray.tooltip(
+            tray.button("✕", { onClick: "mu-clear-search", size: "sm" }),
+            { text: "Clear search" },
+          ),
+        );
+      }
+      out.push(tray.flex(searchRow, { gap: 2, style: { alignItems: "end" } }));
       const allTitles = [];
       if (media.title) {
         if (media.title.english)
@@ -707,7 +747,6 @@ var register = (...args) => {
             value: media.title.userPreferred,
           });
       }
-      const currentInput = (searchInputRef.current || "").trim();
       const seen = {};
       const altTitles = allTitles.filter((t) => {
         const v = (t.value || "").trim();
@@ -718,79 +757,47 @@ var register = (...args) => {
         return true;
       });
       if (altTitles.length > 0) {
-        const altRow = tray.flex(
-          altTitles.map((t) =>
-            tray.button(`Search as ${t.label}`, {
-              onClick: ctx.eventHandler(`mu-search-as-${t.label}`, () => {
-                searchInputRef.setValue(t.value);
-                runSearch(t.value).catch((e) =>
-                  console.error("[mangaupdates-sync] alt search failed:", e),
-                );
+        out.push(
+          tray.flex(
+            [
+              tray.text("Search as", {
+                style: {
+                  fontSize: "0.8rem",
+                  opacity: "0.6",
+                  alignSelf: "center",
+                },
               }),
-              intent: "gray-subtle",
-              size: "sm",
-            }),
+              ...altTitles.map((t) =>
+                tray.button(t.label, {
+                  onClick: ctx.eventHandler(`mu-search-as-${t.label}`, () => {
+                    searchInputRef.setValue(t.value);
+                    runSearch(t.value).catch((e) =>
+                      console.error(
+                        "[mangaupdates-sync] alt search failed:",
+                        e,
+                      ),
+                    );
+                  }),
+                  intent: "gray-subtle",
+                  size: "sm",
+                }),
+              ),
+            ],
+            { gap: 1, style: { flexWrap: "wrap", alignItems: "center" } },
           ),
-          { gap: 1, style: { flexWrap: "wrap" } },
         );
-        items.push(altRow);
       }
       const results = searchResults.get();
       if (results.length > 0) {
-        items.push(tray.text("Pick the matching series:"));
-        for (const r of results) {
-          const titleLine = r.title + (r.year ? ` (${r.year})` : "");
-          const subLine = `#${r.id}`;
-          const openUrl =
-            r.url || `https://www.mangaupdates.com/series.html?id=${r.id}`;
-          const row = tray.flex(
-            [
-              r.cover
-                ? tray.img({
-                    src: r.cover,
-                    style: {
-                      width: "44px",
-                      height: "62px",
-                      objectFit: "cover",
-                      borderRadius: "4px",
-                      flexShrink: "0",
-                    },
-                  })
-                : tray.div([], {
-                    style: {
-                      width: "44px",
-                      height: "62px",
-                      background: "rgba(255,255,255,0.05)",
-                      borderRadius: "4px",
-                      flexShrink: "0",
-                    },
-                  }),
-              tray.stack(
-                [
-                  tray.text(titleLine, { style: { fontWeight: "600" } }),
-                  tray.flex(
-                    [
-                      tray.span(subLine, {
-                        style: { opacity: "0.6", fontSize: "0.8rem" },
-                      }),
-                      tray.a([tray.span("Open ↗")], {
-                        href: openUrl,
-                        target: "_blank",
-                        rel: "noopener noreferrer",
-                        style: {
-                          fontSize: "0.8rem",
-                          opacity: "0.85",
-                          textDecoration: "underline",
-                          whiteSpace: "nowrap",
-                        },
-                      }),
-                    ],
-                    { gap: 3, style: { alignItems: "center" } },
-                  ),
-                ],
-                { style: { flex: "1", minWidth: "0" } },
-              ),
-              link && link.seriesId === r.id
+        const resultRows = results.map((r) => {
+          const alreadyLinked = !!link && link.id === r.id;
+          return {
+            cover: r.cover,
+            title: r.title,
+            year: r.year,
+            openExternal: { href: r.url, tooltip: "View on MangaUpdates" },
+            actions: [
+              alreadyLinked
                 ? tray.button("Linked", {
                     intent: "success-subtle",
                     size: "sm",
@@ -798,17 +805,11 @@ var register = (...args) => {
                   })
                 : tray.button("Pick", {
                     onClick: ctx.eventHandler(`mu-pick-${r.id}`, () => {
-                      const linkValue = {
-                        seriesId: r.id,
-                        seriesTitle: r.title,
-                        seriesUrl: r.url,
-                        seriesCover: r.cover,
-                        linkedAt: Date.now(),
-                        source: "manual",
-                      };
-                      $storage.set(`mu_link_${id}`, linkValue);
+                      const linkValue = { ...r, linkedAt: Date.now() };
+                      setMULink(id, linkValue);
                       ctx.toast.success(`Linked to ${r.title}`);
                       searchResults.set([]);
+                      bumpLinked();
                       currentMediaId.set(id);
                       refetchEntryPage();
                       tray.close();
@@ -831,10 +832,104 @@ var register = (...args) => {
                     size: "sm",
                   }),
             ],
-            { gap: 2, style: { alignItems: "center", padding: "6px 0" } },
-          );
-          items.push(row);
+          };
+        });
+        out.push(
+          ...renderEntryListSection(tray, {
+            headerLabel: "RESULTS",
+            rows: resultRows,
+            totalCount: results.length,
+            searchActive: false,
+            searchFieldRef: searchInputRef,
+            searchPlaceholder: "",
+            onSearch: "",
+            onClearSearch: "",
+            emptyText: "",
+            noMatchText: "",
+            showSearchRow: false,
+          }),
+        );
+      }
+      return out;
+    };
+    tray.render(() => {
+      linkedRefresh.get();
+      const expanded = showAllLinked.get();
+      const items = [];
+      const id = currentMediaId.get();
+      let media;
+      if (id) {
+        try {
+          media = $anilist.getManga(id);
+        } catch (_) {
+          media = undefined;
         }
+      }
+      const customPrefix = "ext_custom_source_mangaupdates|END|";
+      const isCustomSource =
+        !!media?.siteUrl && media.siteUrl.indexOf(customPrefix) === 0;
+      const onEntry = !!id && !!media && !isCustomSource;
+      if (onEntry && media && !expanded) {
+        const link = getMULink(id);
+        const title =
+          (media.title &&
+            (media.title.english ||
+              media.title.userPreferred ||
+              media.title.romaji)) ||
+          `#${id}`;
+        items.push(
+          tray.text(`Manga: ${title}`, { style: { fontWeight: "600" } }),
+        );
+        const totalLinked = listMULinkIds().length;
+        const showAllBtn = tray.button(`Show all (${totalLinked})`, {
+          onClick: "mu-show-all",
+          size: "sm",
+          intent: "gray-subtle",
+        });
+        if (link) {
+          items.push(
+            ...renderEntryListSection(tray, {
+              headerLabel: "LINKED",
+              rows: [buildLinkedRow(id, link)],
+              totalCount: 1,
+              searchActive: false,
+              searchFieldRef: fLinkedFilter,
+              searchPlaceholder: "",
+              onSearch: "",
+              onClearSearch: "",
+              inlineActions: totalLinked > 1 ? [showAllBtn] : [],
+              emptyText: "",
+              noMatchText: "",
+              showSearchRow: false,
+            }),
+          );
+        } else {
+          items.push(tray.text("Not linked yet."));
+          if (totalLinked > 0) items.push(showAllBtn);
+        }
+        items.push(...renderSearchUI(media, id, link));
+      } else {
+        if (id && media && isCustomSource) {
+          items.push(
+            tray.text(
+              "This entry already comes from the MangaUpdates custom-source.",
+            ),
+            tray.text("Sync uses the embedded series_id — no linking needed."),
+          );
+        } else if (id && !media) {
+          items.push(tray.text(`Could not load entry #${id}.`));
+        }
+        const collapseBtn =
+          onEntry && expanded
+            ? [
+                tray.button("Show current", {
+                  onClick: "mu-show-current",
+                  size: "sm",
+                  intent: "gray-subtle",
+                }),
+              ]
+            : [];
+        items.push(...renderLinkedList(collapseBtn, items.length > 0));
       }
       return tray.stack(items);
     });
@@ -842,8 +937,161 @@ var register = (...args) => {
   return register2(...args);
 };
 
+// src/plugins/mangaupdates-sync/modules/shared-lib.ts
+var sharedLib = (...args) => {
+  class MUTokenExpiredError extends Error {
+    constructor() {
+      super("MU session expired");
+      this.name = "MUTokenExpiredError";
+    }
+  }
+
+  class MUClient {
+    constructor(fetchFn) {
+      this.base = "https://api.mangaupdates.com/v1";
+      this.tokenKey = "mu_session_token";
+      this.statusList = {
+        CURRENT: 0,
+        PLANNING: 1,
+        COMPLETED: 2,
+        DROPPED: 3,
+        PAUSED: 4,
+        REPEATING: 0,
+      };
+      this.fetchFn = fetchFn;
+    }
+    async req(method, path, options) {
+      const attempt = "attempt" in options ? Number(options.attempt) : 1;
+      const headers = { Accept: "application/json" };
+      if (options.token) headers.Authorization = `Bearer ${options.token}`;
+      if (options.body !== undefined)
+        headers["Content-Type"] = "application/json";
+      const res = await this.fetchFn(this.base + path, {
+        method,
+        headers,
+        body:
+          options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      });
+      if (res.status === 401) {
+        if (attempt >= 2) throw new MUTokenExpiredError();
+        const token = await this.ensureToken(true);
+        const _options = { ...options, token, attempt: attempt + 1 };
+        return this.req(method, path, _options);
+      }
+      if (!res.ok) {
+        throw new Error(`MU ${method} ${path} -> ${res.status} ${res.text()}`);
+      }
+      if ((res.contentType || "").includes("application/json"))
+        return res.json();
+      return null;
+    }
+    async search(query, perpage = 10) {
+      const q = (query || "").trim();
+      if (q.length < 2) return [];
+      const token = $storage.get(this.tokenKey);
+      const data = await this.req("POST", "/series/search", {
+        token,
+        body: { search: q, perpage },
+      });
+      const out = [];
+      for (const r of data?.results || []) {
+        const sid = r?.record?.series_id;
+        if (!sid) continue;
+        const rec = r.record;
+        const year = rec.year ? parseInt(rec.year, 10) : undefined;
+        out.push({
+          id: String(sid),
+          title: rec.title || "(untitled)",
+          year: year != null && !Number.isNaN(year) ? year : undefined,
+          cover: rec.image?.url
+            ? rec.image.url.thumb || rec.image.url.original
+            : undefined,
+          url: rec.url || `https://www.mangaupdates.com/series.html?id=${sid}`,
+        });
+      }
+      return out;
+    }
+    async login(username, password) {
+      const res = await this.fetchFn(`${this.base}/account/login`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!res.ok) {
+        throw new Error(`MU login -> ${res.status} ${res.text()}`);
+      }
+      const data = res.json();
+      const token = data?.context?.session_token;
+      if (!token) throw new Error("MU login: response missing session token");
+      return token;
+    }
+    async ensureToken(refresh = false) {
+      let token = refresh ? undefined : $storage.get(this.tokenKey);
+      const username = $getUserPreference("username");
+      const password = $getUserPreference("password");
+      if (!token) {
+        if (!username || !password) {
+          $storage.remove(this.tokenKey);
+          throw new Error(
+            "Missing MangaUpdates credentials in plugin settings.",
+          );
+        }
+        token = await this.login(username, password);
+        $storage.set(this.tokenKey, token);
+        return token;
+      }
+      return token;
+    }
+    async pushListEntry(seriesId, payload) {
+      const token = await this.ensureToken();
+      const item = { series: { id: seriesId } };
+      if (payload.status != null) {
+        const mapped = this.statusList[payload.status];
+        item.list_id = mapped !== undefined ? mapped : this.statusList.CURRENT;
+      }
+      if (payload.progress !== undefined) {
+        item.status = { chapter: payload.progress };
+      }
+      try {
+        await this.req("POST", "/lists/series/update", { token, body: [item] });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.indexOf("isn't on your list") >= 0) {
+          await this.req("POST", "/lists/series", { token, body: [item] });
+        } else {
+          throw err;
+        }
+      }
+    }
+    async pushRating(seriesId, scoreRaw) {
+      if (scoreRaw <= 0) return;
+      const token = await this.ensureToken();
+      const rating = Math.min(10, Math.max(0, Math.round(scoreRaw) / 10));
+      try {
+        await this.req("PUT", `/series/${seriesId}/rating`, {
+          token,
+          body: { rating },
+        });
+      } catch (err) {
+        console.warn("[mangaupdates-sync] rating push failed:", err);
+      }
+    }
+  }
+  var sharedLib2 = () => ({
+    MUClient,
+  });
+  return sharedLib2(...args);
+};
+
+// src/plugins/mangaupdates-sync/utils/constants.ts
+var SHARED_LIB_NAME = "mangaupdates-sync";
+
 // src/plugins/mangaupdates-sync/code.ts
 function init() {
+  $shared.define(SHARED_LIB_NAME, sharedLib);
   $app.onPreUpdateEntryProgress(onPreUpdateEntry);
   $app.onPreUpdateEntry(onPreUpdateEntry);
   $app.onPostUpdateEntryProgress(onPostUpdateEntry);

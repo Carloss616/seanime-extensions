@@ -1,0 +1,289 @@
+// Reusable searchable entry-list section for plugin trays.
+//
+// PURE FUNCTION: it receives the `tray` instance plus a declarative row spec,
+// so the build can inline it into a serialized $ui.register callback without
+// closing over module scope (goja re-evals callbacks in a fresh runtime — see
+// CLAUDE.md "Splitting an extension across multiple files").
+//
+// Opinionated rows: instead of arbitrary pre-built segments, a row declares
+// what it HAS (year / status / chapter / external link / in-place open) and
+// the component renders the present pieces, dot-separated, in a fixed order:
+//
+//   {year} · {status pill} · c.{chapter} · Open ↗ · Open →
+//
+// Trailing `actions` (edit / delete / unlink / apply buttons) are still passed
+// pre-built, because their onClick handlers close over per-plugin state.
+//
+// BUILD: never write the 6-char sequence e-x-p-o-r-t inside a string literal
+// in this file — scripts/build.ts splits bundled modules on that substring.
+
+import { divider } from "./divider";
+import { type PillIntent, pill } from "./pill";
+
+export interface EntryListRow {
+  cover?: string;
+  title: string;
+  year?: number;
+  // Rendered as a colored pill. `intent` drives the palette (the caller maps
+  // its domain status → intent; e.g. AniList RELEASING → "success").
+  status?: { label: string; intent?: PillIntent };
+  // Rendered as "c.{chapter}".
+  chapter?: number | string;
+  // "Open ↗" underlined external link (new tab) with an optional tooltip.
+  openExternal?: { href: string; tooltip?: string };
+  // "Open →" underlined in-place open. `onClick` is a registered handler id
+  // (string) or the result of ctx.eventHandler(...) — the component can't make
+  // handlers itself (it has no ctx), so the caller wires the navigation.
+  openInPlace?: { onClick: string | unknown; tooltip?: string };
+  // Pre-built trailing buttons (edit / delete / unlink / apply …).
+  actions?: unknown[];
+  // Row dim factor (e.g. 0.5 while drifting).
+  opacity?: number;
+}
+
+export interface EntryListSectionConfig {
+  headerLabel: string;
+  rows: EntryListRow[];
+  totalCount: number;
+  searchActive: boolean;
+  searchFieldRef: unknown;
+  searchPlaceholder: string;
+  onSearch: string;
+  onClearSearch: string;
+  inlineActions?: unknown[];
+  emptyText: string;
+  noMatchText: string;
+  showSearchRow?: boolean; // default true
+  searchButtonLabel?: string; // default "🔍 Search"
+  // Leading separator line above the header. Default true (sections normally
+  // follow other content). Set false when this section is the FIRST thing in
+  // its container, otherwise the divider renders as an empty top line.
+  leadingDivider?: boolean;
+}
+
+export function renderEntryListSection(
+  tray: Tray,
+  cfg: EntryListSectionConfig,
+): unknown[] {
+  const coverBox = (src?: string) =>
+    src
+      ? tray.img({
+          src,
+          style: {
+            width: "44px",
+            height: "62px",
+            objectFit: "cover",
+            borderRadius: "4px",
+            flexShrink: "0",
+          },
+        })
+      : tray.div([], {
+          style: {
+            width: "44px",
+            height: "62px",
+            background: "rgba(255,255,255,0.05)",
+            borderRadius: "4px",
+            flexShrink: "0",
+          },
+        });
+
+  const dotSep = () =>
+    tray.span("·", {
+      style: { opacity: "0.35", fontSize: "0.75rem", margin: "0 2px" },
+    });
+
+  // Build the dot-separated sub-line from the present declarative fields.
+  const subLineSegments = (row: EntryListRow): unknown[] => {
+    const segs: unknown[] = [];
+    if (row.year != null) {
+      segs.push(
+        tray.span(String(row.year), {
+          style: { opacity: "0.55", fontSize: "0.75rem" },
+        }),
+      );
+    }
+    if (row.status) {
+      segs.push(pill(tray, row.status.label, row.status.intent));
+    }
+    if (row.chapter != null && row.chapter !== "") {
+      segs.push(
+        tray.span(`c.${row.chapter}`, {
+          style: { opacity: "0.7", fontSize: "0.75rem" },
+        }),
+      );
+    }
+    // Open ↗ (external <a>) and Open → (in-place <button>) share one style so
+    // they read as a uniform pair AND match the metadata scale (year / c.N).
+    // We do NOT change the button's `display` (that bloats its label size);
+    // instead we collapse its UI-Button_root box height/padding so its
+    // underline lines up with the inline anchor's. `fontSize: 0.75rem` keeps
+    // both at the same small size as the rest of the sub-line.
+    const linkStyle: Record<string, string> = {
+      background: "transparent",
+      border: "none",
+      padding: "0",
+      height: "auto",
+      minHeight: "0",
+      fontSize: "0.75rem",
+      fontWeight: "500",
+      opacity: "0.75",
+      textDecoration: "underline",
+      whiteSpace: "nowrap",
+    };
+    if (row.openExternal) {
+      const link = tray.a([tray.span("Open ↗")], {
+        href: row.openExternal.href,
+        target: "_blank",
+        rel: "noopener noreferrer",
+        style: linkStyle,
+      });
+      segs.push(
+        row.openExternal.tooltip
+          ? tray.tooltip(link, { text: row.openExternal.tooltip })
+          : link,
+      );
+    }
+    if (row.openInPlace) {
+      const button = tray.button("Open →", {
+        onClick: row.openInPlace.onClick,
+        size: "sm",
+        intent: "gray-subtle",
+        style: linkStyle,
+      });
+      segs.push(
+        row.openInPlace.tooltip
+          ? tray.tooltip(button, { text: row.openInPlace.tooltip })
+          : button,
+      );
+    }
+    return segs;
+  };
+
+  const entryRow = (row: EntryListRow) => {
+    const segs = subLineSegments(row);
+    const subLineChildren: unknown[] = [];
+    segs.forEach((seg, i) => {
+      if (i > 0) subLineChildren.push(dotSep());
+      subLineChildren.push(seg);
+    });
+    const middle = tray.stack(
+      [
+        tray.text(row.title, {
+          style: {
+            fontWeight: "600",
+            fontSize: "0.9rem",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          },
+        }),
+        tray.flex(subLineChildren, {
+          gap: 0,
+          style: { alignItems: "center", marginTop: "2px" },
+        }),
+      ],
+      { style: { flex: "1", minWidth: "0" } },
+    );
+    const rowChildren: unknown[] = [coverBox(row.cover), middle];
+    for (const a of row.actions ?? []) rowChildren.push(a);
+    return tray.flex(rowChildren, {
+      gap: 2,
+      style: {
+        alignItems: "center",
+        padding: "6px 8px",
+        borderRadius: "4px",
+        background: "rgba(255,255,255,0.02)",
+        opacity: row.opacity != null ? String(row.opacity) : "1",
+      },
+    });
+  };
+
+  const headerCount = cfg.searchActive
+    ? `${cfg.rows.length} / ${cfg.totalCount}`
+    : `${cfg.totalCount}`;
+  const header = tray.flex(
+    [
+      tray.div(
+        [
+          tray.text(`${cfg.headerLabel} (${headerCount})`, {
+            style: {
+              fontSize: "0.7rem",
+              fontWeight: "700",
+              opacity: "0.55",
+              letterSpacing: "0.1em",
+            },
+          }),
+        ],
+        { style: { flex: "1", alignSelf: "center" } },
+      ),
+      ...(cfg.inlineActions ?? []),
+    ],
+    {
+      gap: 2,
+      style: { alignItems: "center", marginTop: "10px", marginBottom: "6px" },
+    },
+  );
+
+  const out: unknown[] = [];
+  if (cfg.leadingDivider !== false) out.push(divider(tray));
+  out.push(header);
+
+  if (cfg.showSearchRow !== false && cfg.totalCount > 0) {
+    const searchRowChildren: unknown[] = [
+      tray.div(
+        [
+          tray.input(cfg.searchPlaceholder, {
+            fieldRef: cfg.searchFieldRef as FieldRef<string>,
+          }),
+        ],
+        { style: { flex: "1", minWidth: "0" } },
+      ),
+      tray.button(cfg.searchButtonLabel ?? "🔍 Search", {
+        onClick: cfg.onSearch,
+        size: "sm",
+      }),
+    ];
+    if (cfg.searchActive) {
+      searchRowChildren.push(
+        tray.tooltip(
+          tray.button("✕", { onClick: cfg.onClearSearch, size: "sm" }),
+          { text: "Clear search" },
+        ),
+      );
+    }
+    out.push(
+      tray.flex(searchRowChildren, {
+        gap: 2,
+        style: { alignItems: "end", marginBottom: "6px" },
+      }),
+    );
+  }
+
+  if (cfg.totalCount === 0) {
+    out.push(
+      tray.text(cfg.emptyText, {
+        style: {
+          fontSize: "0.8rem",
+          opacity: "0.5",
+          textAlign: "center",
+          padding: "10px 0",
+        },
+      }),
+    );
+  } else if (cfg.rows.length === 0 && cfg.searchActive) {
+    out.push(
+      tray.text(cfg.noMatchText, {
+        style: {
+          fontSize: "0.8rem",
+          opacity: "0.5",
+          textAlign: "center",
+          padding: "10px 0",
+        },
+      }),
+    );
+  } else {
+    for (const row of cfg.rows) out.push(entryRow(row));
+  }
+
+  return out;
+}

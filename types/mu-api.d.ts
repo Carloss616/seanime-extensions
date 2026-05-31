@@ -3,34 +3,185 @@
 // These cover the read-only series endpoints — `POST /series/search` and
 // `GET /series/{id}` — that the `mangaupdates` custom-source and the
 // `mangaupdates-sync` plugin both consume.
-//
-// Field names on MUSeriesRecord / MUSearchResponse below are verified at
-// runtime by the `mangaupdates` custom-source (which consumes every one of
-// them on each search/detail call). Auth-only list endpoints live in the
-// tracker's own code.ts because they are not shared.
 
-interface MUSeriesRecord {
-  series_id: number;
-  title: string;
-  url: string;
-  description?: string | null;
-  image?: { url?: { original?: string; thumb?: string } };
-  type?: string;
-  year?: string;
-  bayesian_rating?: number;
-  rating_votes?: number;
-  genres?: Array<{ genre: string }>;
-  associated?: Array<{ title?: string }>;
-  // SPIKE: not confirmed that MU exposes cross-ids on /series/{id}. Kept
-  // optional so the tracker's resolveReverseMapping can probe for them.
-  anilist_id?: number;
-  mal_id?: number;
-  external_ids?: { anilist?: number; mal?: number };
+declare namespace MU {
+  interface Genre {
+    genre: string;
+  }
+
+  interface Image {
+    url: URL;
+    height: number;
+    width: number;
+  }
+
+  interface URL {
+    original: string;
+    thumb: string;
+  }
 }
 
-interface MUSearchResponse {
-  total_hits: number;
-  page: number;
-  per_page: number;
-  results?: Array<{ record: MUSeriesRecord }>;
+declare namespace MULogin {
+  interface Response {
+    status: string;
+    reason?: string;
+    context: {
+      session_token: string;
+      uid: number;
+    };
+  }
+}
+
+declare namespace MUSearch {
+  interface Response {
+    total_hits: number;
+    page: number;
+    per_page: number;
+    results: Result[];
+  }
+
+  interface Result {
+    record: Record;
+    hit_title: string;
+    metadata: Metadata;
+  }
+
+  interface Metadata {
+    user_list: UserList;
+    user_genre_highlights: any[];
+  }
+
+  interface UserList {
+    list_type: null | string;
+    list_icon: null;
+    status: Status;
+  }
+
+  interface Status {
+    volume: number | null;
+    chapter: number | null;
+  }
+
+  interface Record {
+    series_id: number;
+    title: string;
+    url: string;
+    description: null | string;
+    image: MU.Image;
+    type: string;
+    year: string;
+    bayesian_rating: number | null;
+    rating_votes: number;
+    genres: MU.Genre[];
+    last_updated: LastUpdated;
+  }
+
+  interface LastUpdated {
+    timestamp: number;
+    as_rfc3339: string;
+    as_string: string;
+  }
+}
+
+declare namespace MUSeries {
+  interface Response extends MUSearch.Record {
+    associated: Associated[];
+    categories: Category[];
+    latest_chapter: number;
+    forum_id: number;
+    status: string;
+    licensed: boolean;
+    completed: boolean;
+    anime: Anime;
+    related_series: RelatedSery[];
+    authors: Author[];
+    publishers: Publisher[];
+    publications: Publication[];
+    recommendations: any[];
+    category_recommendations: CategoryRecommendation[];
+    rank: Rank;
+    admin: Admin;
+  }
+
+  interface Admin {
+    approved: boolean;
+  }
+
+  interface Anime {
+    start: string;
+    end: string;
+  }
+
+  interface Associated {
+    title: string;
+  }
+
+  interface Author {
+    name: string;
+    author_id: number | null;
+    url: null | string;
+    type: string;
+  }
+
+  interface Category {
+    series_id: number;
+    category: string;
+    votes: number;
+    votes_plus: number;
+    votes_minus: number;
+    added_by: number;
+  }
+
+  interface CategoryRecommendation {
+    series_name: string;
+    series_url: string;
+    series_id: number;
+    series_image: MU.Image;
+    weight: number;
+  }
+
+  interface Publication {
+    publication_name: string;
+    publisher_name: null;
+    publisher_id: null;
+  }
+
+  interface Publisher {
+    publisher_name: string;
+    publisher_id: number | null;
+    url: null | string;
+    type: string;
+    notes: null | string;
+  }
+
+  interface Rank {
+    position: Position;
+    old_position: Position;
+    lists: Lists;
+  }
+
+  interface Lists {
+    reading: number;
+    wish: number;
+    complete: number;
+    unfinished: number;
+    custom: number;
+  }
+
+  interface Position {
+    week: number;
+    month: number;
+    three_months: number;
+    six_months: number;
+    year: number;
+  }
+
+  interface RelatedSery {
+    relation_id: number;
+    relation_type: string;
+    related_series_id: number;
+    related_series_name: string;
+    related_series_url: string;
+    triggered_by_relation_id: number;
+  }
 }

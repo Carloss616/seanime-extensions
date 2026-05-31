@@ -18,7 +18,7 @@ export class Provider implements CustomSource {
     if (!res.ok) {
       return { media: [], page, totalPages: 0, total: 0 };
     }
-    const data = (await res.json()) as MUSearchResponse;
+    const data = res.json<MUSearch.Response>();
     const results = data.results || [];
     const per = data.per_page || perPage;
     return {
@@ -34,7 +34,7 @@ export class Provider implements CustomSource {
       (ids || []).map((id) => this.fetchSeries(id)),
     );
     return records
-      .filter((r): r is MUSeriesRecord => r !== null)
+      .filter((r): r is MUSeries.Response => r !== null)
       .map(toBaseManga);
   }
 
@@ -78,21 +78,23 @@ export class Provider implements CustomSource {
     return { media: [], page: 1, totalPages: 0, total: 0 };
   }
 
-  private async fetchSeries(id: number): Promise<MUSeriesRecord | null> {
+  private async fetchSeries(id: number): Promise<MUSeries.Response | null> {
     try {
       const res = await fetch(`${this.api}/series/${id}`);
       if (!res.ok) return null;
-      return (await res.json()) as MUSeriesRecord;
+      return res.json<MUSeries.Response>();
     } catch {
       return null;
     }
   }
 }
 
-function toBaseManga(record: MUSeriesRecord): $app.AL_BaseManga {
+function toBaseManga(
+  record: MUSearch.Record | MUSeries.Response,
+): $app.AL_BaseManga {
   const title = record.title || "???";
   const year = record.year ? parseInt(record.year, 10) : NaN;
-  const synonyms = (record.associated || [])
+  const synonyms = ("associated" in record ? record.associated : [])
     .map((a) => a.title)
     .filter((t): t is string => typeof t === "string" && t.length > 0);
   const coverOriginal = record.image?.url?.original;

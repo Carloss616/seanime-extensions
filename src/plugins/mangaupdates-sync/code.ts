@@ -1,6 +1,8 @@
 import { onPostUpdateEntry } from "./modules/on-post-update-entry";
 import { onPreUpdateEntry } from "./modules/on-pre-update-entry";
 import { register } from "./modules/register";
+import { sharedLib } from "./modules/shared-lib";
+import { SHARED_LIB_NAME } from "./utils/constants";
 
 // MangaUpdates sync plugin.
 //
@@ -17,10 +19,19 @@ import { register } from "./modules/register";
 // self-contained function whose body carries all its deps. So when seanime
 // serializes the callback, `MUClient` (etc.) travels inside the function text.
 //
-// `MUClient` lives once in `utils/mu-client.ts` and is imported by the modules
-// that need it. Pre→Post payloads cross runtimes via `$store`.
+// `MUClient` lives once in `utils/mu-client.ts`. Rather than inlining it into
+// every callback that needs it (the register module AND the post-update hook),
+// it is exposed through `$shared` (see modules/shared-lib.ts): the factory is
+// `$shared.define`d here, and each consumer calls `$shared.use(SHARED_LIB_NAME)`
+// — so the ~180-line class travels once instead of being duplicated per
+// wrapper. Pre→Post payloads cross runtimes via `$store`.
 
 export function init() {
+  // $shared.define MUST come before any hook / UI registration (per the docs)
+  // — the register module + the post-update hook later call
+  // $shared.use(SHARED_LIB_NAME) to get MUClient.
+  $shared.define(SHARED_LIB_NAME, sharedLib);
+
   $app.onPreUpdateEntryProgress(onPreUpdateEntry);
   $app.onPreUpdateEntry(onPreUpdateEntry);
   $app.onPostUpdateEntryProgress(onPostUpdateEntry);

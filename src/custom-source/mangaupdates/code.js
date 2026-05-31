@@ -13,7 +13,7 @@ class Provider {
     if (!res.ok) {
       return { media: [], page, totalPages: 0, total: 0 };
     }
-    const data = await res.json();
+    const data = res.json();
     const results = data.results || [];
     const per = data.per_page || perPage;
     return {
@@ -57,7 +57,7 @@ class Provider {
     try {
       const res = await fetch(`${this.api}/series/${id}`);
       if (!res.ok) return null;
-      return await res.json();
+      return res.json();
     } catch {
       return null;
     }
@@ -66,7 +66,7 @@ class Provider {
 function toBaseManga(record) {
   const title = record.title || "???";
   const year = record.year ? parseInt(record.year, 10) : NaN;
-  const synonyms = (record.associated || [])
+  const synonyms = ("associated" in record ? record.associated : [])
     .map((a) => a.title)
     .filter((t) => typeof t === "string" && t.length > 0);
   const coverOriginal = record.image?.url?.original;

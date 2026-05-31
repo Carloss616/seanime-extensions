@@ -15,11 +15,26 @@ declare namespace $app {
     | "PAUSED"
     | "REPEATING";
 
+  /** Publication status of the media itself (NOT the user's list status —
+   *  that's AL_MediaListStatus). */
+  type AL_MediaStatus =
+    | "FINISHED"
+    | "RELEASING"
+    | "NOT_YET_RELEASED"
+    | "CANCELLED"
+    | "HIATUS";
+
   interface AL_BaseManga_Title {
     english?: string;
     native?: string;
     romaji?: string;
     userPreferred?: string;
+  }
+
+  interface AL_BaseManga_StartDate {
+    year?: number;
+    month?: number;
+    day?: number;
   }
 
   interface AL_BaseManga {
@@ -32,6 +47,13 @@ declare namespace $app {
      *  `ext_custom_source_<extId>|END|<original-url>` (see
      *  internal/customsource/customsource.go:formatSiteUrl in seanime). */
     siteUrl?: string;
+    /** SPIKE: seanime's full BaseManga (internal/api/anilist) exposes these,
+     *  but the goja `$anilist.getManga` binding hasn't been confirmed to
+     *  populate them in this repo — verify at runtime before relying on them.
+     *  Used by mangaupdates-sync to show publication status + year on linked
+     *  rows. */
+    status?: AL_MediaStatus;
+    startDate?: AL_BaseManga_StartDate;
   }
 
   interface AL_MediaListEntry_Media {

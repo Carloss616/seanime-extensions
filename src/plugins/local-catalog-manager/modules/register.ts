@@ -1,3 +1,11 @@
+import { alertBox } from "../../../_components/alert-box";
+import { divider } from "../../../_components/divider";
+import {
+  type EntryListRow,
+  renderEntryListSection,
+} from "../../../_components/entry-list";
+import { pill } from "../../../_components/pill";
+import { statusToPill } from "../../../_utils/anilist-status";
 import { GITHUB_RAW_WORKSPACE } from "../../../_utils/constants";
 import {
   CUSTOM_SOURCE_ID,
@@ -1638,6 +1646,26 @@ export const register = (ctx: PluginContext) => {
     { label: "Novel", value: "NOVEL" },
     { label: "One-shot", value: "ONE_SHOT" },
   ];
+  // Month picker options. Values are the 1-based month number as a string so
+  // they round-trip through fMonth unchanged (setValue String(e.month) /
+  // num(fMonth.current)); NONE clears it (num("-") === undefined).
+  const MONTH_OPTS = [
+    { label: "—", value: NONE },
+    ...[
+      "January",
+      "February",
+      "March",
+      "April",
+      "May",
+      "June",
+      "July",
+      "August",
+      "September",
+      "October",
+      "November",
+      "December",
+    ].map((label, i) => ({ label, value: String(i + 1) })),
+  ];
 
   // Section header style — used for ENTRIES / READING PROGRESS / GIST BINDING.
   const sectionHeader = (label: string) =>
@@ -1650,52 +1678,7 @@ export const register = (ctx: PluginContext) => {
         marginBottom: "4px",
       },
     });
-  const sectionDivider = () =>
-    tray.div([], {
-      style: {
-        borderTop: "1px solid rgba(255,255,255,0.1)",
-        marginTop: "10px",
-        paddingTop: "8px",
-      },
-    });
-
-  // Pill / badge for inline status labels (linked, RELEASING, etc.).
-  // Single color palette indexed by intent name.
-  const PILL_PALETTE: Record<string, { bg: string; fg: string }> = {
-    success: { bg: "rgba(80,200,120,0.15)", fg: "rgba(140,220,160,1)" },
-    info: { bg: "rgba(120,170,255,0.15)", fg: "rgba(160,200,255,1)" },
-    warning: { bg: "rgba(255,200,0,0.15)", fg: "rgba(255,220,80,1)" },
-    alert: { bg: "rgba(255,120,120,0.15)", fg: "rgba(255,150,150,1)" },
-    gray: { bg: "rgba(255,255,255,0.06)", fg: "rgba(255,255,255,0.6)" },
-  };
-  const pill = (
-    label: string,
-    intent: "success" | "info" | "warning" | "alert" | "gray" = "gray",
-  ) => {
-    const { bg, fg } = PILL_PALETTE[intent] ?? PILL_PALETTE.gray;
-    return tray.span(label, {
-      style: {
-        fontSize: "0.7rem",
-        fontWeight: "500",
-        padding: "2px 8px",
-        borderRadius: "10px",
-        background: bg,
-        color: fg,
-      },
-    });
-  };
-
-  // AL_MediaStatus → pill color. NOT_YET_RELEASED defaults to gray.
-  const STATUS_INTENT: Record<
-    string,
-    "success" | "info" | "warning" | "alert" | "gray"
-  > = {
-    RELEASING: "success",
-    FINISHED: "info",
-    HIATUS: "warning",
-    CANCELLED: "alert",
-    NOT_YET_RELEASED: "gray",
-  };
+  const sectionDivider = () => divider(tray);
 
   // Mode header row: icon + bold title (+ optional dim subtitle), with an
   // optional right-side actions list (pill, button, etc.). Shared by local
@@ -1761,43 +1744,6 @@ export const register = (ctx: PluginContext) => {
         },
       },
     );
-
-  // Alert callout — yellow accent panel for warnings / drift. `warning` is
-  // the stronger tinted-background variant (used for drift, where the user
-  // needs to act); `note` is the subtler variant (used for the local-mode
-  // sandbox limitation callout, which is always visible).
-  const ALERT_PALETTE: Record<
-    string,
-    { bg: string; border: string; borderW: string; padding: string }
-  > = {
-    warning: {
-      bg: "rgba(255,180,0,0.08)",
-      border: "rgba(255,180,0,0.7)",
-      borderW: "3px",
-      padding: "10px 12px",
-    },
-    note: {
-      bg: "rgba(255,255,255,0.04)",
-      border: "rgba(255,180,0,0.5)",
-      borderW: "2px",
-      padding: "8px 10px",
-    },
-  };
-  const alertBox = (
-    children: unknown[],
-    opts: { intent?: "warning" | "note" } = {},
-  ) => {
-    const p = ALERT_PALETTE[opts.intent ?? "warning"];
-    return tray.div(children, {
-      style: {
-        padding: p.padding,
-        borderRadius: "6px",
-        background: p.bg,
-        borderLeft: `${p.borderW} solid ${p.border}`,
-        marginBottom: "8px",
-      },
-    });
-  };
 
   function renderProgressSection() {
     // Header row: section title on left, reload (gist only) + orphan toggle
@@ -1952,7 +1898,9 @@ export const register = (ctx: PluginContext) => {
       const expanded = bindingExpanded.get();
       const headerRow = modeHeader("🌐", "Gist mode", {
         right: [
-          gid ? pill("🔗 Linked", "success") : pill("🔓 Not linked", "gray"),
+          gid
+            ? pill(tray, "🔗 Linked", "success")
+            : pill(tray, "🔓 Not linked", "gray"),
           tray.tooltip(
             tray.button(expanded ? "↑" : "✏️", {
               onClick: "lcm-toggle-binding",
@@ -2099,7 +2047,7 @@ export const register = (ctx: PluginContext) => {
     const items: unknown[] = [
       modeHeader("🔒", "Local mode", {
         right: [
-          pill("💻 this device only", "gray"),
+          pill(tray, "💻 this device only", "gray"),
           tray.tooltip(
             tray.button(expanded ? "↑" : "⚠️", {
               onClick: "lcm-toggle-binding",
@@ -2118,6 +2066,7 @@ export const register = (ctx: PluginContext) => {
       items.push(
         // Callout: sandbox limitation + Gist recommendation.
         alertBox(
+          tray,
           [
             tray.text(
               "⚠️ Plugin and custom-source can't sync directly — seanime sandboxes extensions. Copy the JSON below into the custom-source's Inline catalog JSON field after every edit.",
@@ -2307,127 +2256,40 @@ export const register = (ctx: PluginContext) => {
           return syns.some((s) => s.toLowerCase().includes(q));
         })
       : allEntries;
-    const rows = list.map((e) => {
+    const rows: EntryListRow[] = list.map((e) => {
       const title = resolveUserPreferred(e.title) ?? "(untitled)";
-      // Cover thumbnail or fallback box. Pattern lifted from mangaupdates-sync.
-      const coverBox = e.cover
-        ? tray.img({
-            src: e.cover,
-            style: {
-              width: "44px",
-              height: "62px",
-              objectFit: "cover",
-              borderRadius: "4px",
-              flexShrink: "0",
-            },
-          })
-        : tray.div([], {
-            style: {
-              width: "44px",
-              height: "62px",
-              background: "rgba(255,255,255,0.05)",
-              borderRadius: "4px",
-              flexShrink: "0",
-            },
-          });
-      // Middle column: title (bold) + sub-line: YYYY · Status · c.N · Open →
-      // Each segment is dropped if absent (no awkward "·  · c.5"). Separator
-      // is a thin centered dot styled to read as metadata rather than UI.
-      const dotSep = () =>
-        tray.span("·", {
-          style: {
-            opacity: "0.35",
-            fontSize: "0.75rem",
-            margin: "0 2px",
-          },
-        });
-      const subSegments: unknown[] = [];
-      if (e.year) {
-        subSegments.push(
-          tray.span(String(e.year), {
-            style: { opacity: "0.55", fontSize: "0.75rem" },
-          }),
-        );
-      }
-      if (e.status) {
-        const intent = STATUS_INTENT[e.status as string] ?? "gray";
-        subSegments.push(
-          pill(e.status.replace(/_/g, " ").toLowerCase(), intent),
-        );
-      }
       const rowProg = progress.get().manga[String(e.id)]?.progress;
-      if (rowProg != null) {
-        subSegments.push(
-          tray.span(`c.${rowProg}`, {
-            style: { opacity: "0.7", fontSize: "0.75rem" },
-          }),
-        );
-      }
-      // Inline "Open →" navigation link — uses the cached mediaIdLookup
-      // (with fresh-fetch fallback at click time) to jump to
-      // /manga/entry?id=<mediaId>. Hidden during drift. Tooltip surfaces
-      // the resolved mediaId so the user can confirm what id is in flight.
+
+      const row: EntryListRow = {
+        cover: e.cover,
+        title,
+        year: e.year,
+        chapter: rowProg ?? undefined,
+        opacity: drifting ? 0.5 : 1,
+      };
+      row.status = statusToPill(e.status);
+      // "Open →" (navigate to the seanime entry) is hidden while drift is
+      // pending — the busy "⏳ Opening…" label is dropped in the opinionated
+      // model, but the dynamic tooltip still conveys progress/target.
       if (!drifting) {
-        // Prefer collection lookup (proves the manga is in user's list) →
-        // fall back to extId-cached computation (works even when not added).
         const inListMediaId = mediaIdLookup.get()?.get(e.id);
         const computedMediaId = mediaIdFor(e.id);
         const resolvedMediaId = inListMediaId ?? computedMediaId;
         const openBusy = busyAction.get() === `open-manga-${e.id}`;
         const tooltipText = openBusy
-          ? `Opening…`
+          ? "Opening …"
           : resolvedMediaId
             ? `Open in seanime · media #${resolvedMediaId}${inListMediaId == null ? " · not in your list" : ""}`
             : `Open in seanime · resolves on click`;
-        subSegments.push(
-          tray.tooltip(
-            tray.button(openBusy ? "⏳ Opening…" : "Open →", {
-              onClick: ctx.eventHandler(`lcm-open-manga-${e.id}`, () => {
-                void navigateToMangaEntry(e.id);
-              }),
-              size: "sm",
-              intent: "gray-subtle",
-              style: {
-                background: "transparent",
-                border: "none",
-                padding: "0 2px",
-                fontSize: "0.75rem",
-                fontWeight: "500",
-                textDecoration: "underline",
-                opacity: "0.75",
-              },
-            }),
-            { text: tooltipText },
-          ),
-        );
+        row.openInPlace = {
+          onClick: ctx.eventHandler(`lcm-open-manga-${e.id}`, () => {
+            void navigateToMangaEntry(e.id);
+          }),
+          tooltip: tooltipText,
+        };
       }
-      // Interleave separator dots between segments.
-      const subLineChildren: unknown[] = [];
-      subSegments.forEach((seg, i) => {
-        if (i > 0) subLineChildren.push(dotSep());
-        subLineChildren.push(seg);
-      });
-      const middle = tray.stack(
-        [
-          tray.text(title, {
-            style: {
-              fontWeight: "600",
-              fontSize: "0.9rem",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            },
-          }),
-          tray.flex(subLineChildren, {
-            gap: 0,
-            style: { alignItems: "center", marginTop: "2px" },
-          }),
-        ],
-        { style: { flex: "1", minWidth: "0" } },
-      );
-      const rowChildren: unknown[] = [coverBox, middle];
-      // While drift is pending, hide Edit/Delete/Apply — they trigger push
-      // and would clobber the side the user hasn't chosen yet.
+
+      const actions: unknown[] = [];
       if (!drifting) {
         // Apply-progress button: rendered ONLY when local progress for this
         // entry drifts from seanime's tracked state (or the entry isn't in
@@ -2469,7 +2331,7 @@ export const register = (ctx: PluginContext) => {
             if (local === undefined) return false;
             return Number(local) !== Number(remote ?? 0);
           };
-          const hasDrift =
+          const hasDriftRow =
             !lookupReady ||
             !seanimeData ||
             stringDiff(rowProgress.status, seanimeData.status) ||
@@ -2479,7 +2341,7 @@ export const register = (ctx: PluginContext) => {
           // resolves to false mid-flight (applyProgress refreshes the lookup
           // synchronously after updateEntry — without this guard the loading
           // ⏳ would disappear before the user notices it).
-          if (hasDrift || applyRowBusy) {
+          if (hasDriftRow || applyRowBusy) {
             const progSummary = [
               rowProgress.status?.toLowerCase(),
               rowProgress.progress != null
@@ -2494,7 +2356,7 @@ export const register = (ctx: PluginContext) => {
             const applyTooltip = inListForApply
               ? `Push local progress to seanime · drift detected · ${progSummary || "(no data)"}`
               : `Add to your list + push local progress · ${progSummary || "(no data)"}`;
-            rowChildren.push(
+            actions.push(
               tray.tooltip(
                 tray.button(applyRowBusy ? "⏳" : "📤", {
                   onClick: ctx.eventHandler(
@@ -2510,7 +2372,7 @@ export const register = (ctx: PluginContext) => {
             );
           }
         }
-        rowChildren.push(
+        actions.push(
           tray.tooltip(
             tray.button("✏️", {
               onClick: ctx.eventHandler(`lcm-edit-${e.id}`, () =>
@@ -2521,7 +2383,7 @@ export const register = (ctx: PluginContext) => {
             { text: "Edit" },
           ),
         );
-        rowChildren.push(
+        actions.push(
           tray.tooltip(
             tray.button("⛔", {
               onClick: ctx.eventHandler(`lcm-del-${e.id}`, () =>
@@ -2534,19 +2396,11 @@ export const register = (ctx: PluginContext) => {
           ),
         );
       }
-      return tray.flex(rowChildren, {
-        gap: 2,
-        style: {
-          alignItems: "center",
-          padding: "6px 8px",
-          borderRadius: "4px",
-          background: "rgba(255,255,255,0.02)",
-          // Visually de-emphasize rows while drift is pending.
-          opacity: drifting ? "0.5" : "1",
-        },
-      });
+
+      row.actions = actions;
+      return row;
     });
-    // ENTRIES section: header with inline "+ New" + "Pull" buttons, then
+    // ENTRIES section: header with inline "+ New" + "Reload" buttons, then
     // the rows. Always shown (empty placeholder if no entries).
     const inlineActions: unknown[] = drifting
       ? []
@@ -2565,98 +2419,20 @@ export const register = (ctx: PluginContext) => {
         ),
       );
     }
-    const searchActive = q.length > 0;
-    const headerCount = searchActive
-      ? `${list.length} / ${allEntries.length}`
-      : `${list.length}`;
-    const entriesHeader = tray.flex(
-      [
-        tray.div(
-          [
-            tray.text(`ENTRIES (${headerCount})`, {
-              style: {
-                fontSize: "0.7rem",
-                fontWeight: "700",
-                opacity: "0.55",
-                letterSpacing: "0.1em",
-              },
-            }),
-          ],
-          { style: { flex: "1", alignSelf: "center" } },
-        ),
-        ...inlineActions,
-      ],
-      {
-        gap: 2,
-        style: {
-          alignItems: "center",
-          marginTop: "10px",
-          marginBottom: "6px",
-        },
-      },
-    );
-    const entriesSection: unknown[] = [sectionDivider(), entriesHeader];
-    // Search row: input + Search button (+ Clear when active). Only shown
-    // when there's anything to filter — empty catalog hides it.
-    if (!drifting && allEntries.length > 0) {
-      const searchRowChildren: unknown[] = [
-        tray.div(
-          [
-            tray.input("Search entries…", {
-              fieldRef: fEntrySearch,
-            }),
-          ],
-          { style: { flex: "1", minWidth: "0" } },
-        ),
-        tray.button("🔍 Search", {
-          onClick: "lcm-entry-search",
-          size: "sm",
-        }),
-      ];
-      if (searchActive) {
-        searchRowChildren.push(
-          tray.tooltip(
-            tray.button("✕", {
-              onClick: "lcm-entry-search-clear",
-              size: "sm",
-            }),
-            { text: "Clear search" },
-          ),
-        );
-      }
-      entriesSection.push(
-        tray.flex(searchRowChildren, {
-          gap: 2,
-          style: { alignItems: "end", marginBottom: "6px" },
-        }),
-      );
-    }
-    if (allEntries.length === 0) {
-      entriesSection.push(
-        tray.text("No entries yet. Click + New to add one.", {
-          style: {
-            fontSize: "0.8rem",
-            opacity: "0.5",
-            textAlign: "center",
-            padding: "10px 0",
-          },
-        }),
-      );
-    } else if (list.length === 0) {
-      // Search has filtered every entry out.
-      entriesSection.push(
-        tray.text(`No entries match "${q}".`, {
-          style: {
-            fontSize: "0.8rem",
-            opacity: "0.5",
-            textAlign: "center",
-            padding: "10px 0",
-          },
-        }),
-      );
-    } else {
-      entriesSection.push(...rows);
-    }
+    const entriesSection = renderEntryListSection(tray, {
+      headerLabel: "ENTRIES",
+      rows,
+      totalCount: allEntries.length,
+      searchActive: q.length > 0,
+      searchFieldRef: fEntrySearch,
+      searchPlaceholder: "Search entries…",
+      onSearch: "lcm-entry-search",
+      onClearSearch: "lcm-entry-search-clear",
+      inlineActions,
+      emptyText: "No entries yet. Click + New to add one.",
+      noMatchText: `No entries match "${q}".`,
+      showSearchRow: !drifting,
+    });
     // Gist mode: drift banner (if any) → header → entries → progress → gist binding.
     // Local mode: header (with its own callouts + JSON I/O) → entries.
     if (hasToken()) {
@@ -2666,7 +2442,7 @@ export const register = (ctx: PluginContext) => {
         const d = diffCatalog(drift.local, drift.remote);
         const resolveBusy = busyAction.get() === "resolve-drift";
         layers.push(
-          alertBox([
+          alertBox(tray, [
             tray.text("⚠️ DRIFT DETECTED", {
               style: {
                 fontSize: "0.75rem",
@@ -2725,7 +2501,7 @@ export const register = (ctx: PluginContext) => {
         const remoteCount = Object.keys(progressDrift.remote.manga).length;
         const resolveProgBusy = busyAction.get() === "resolve-progress-drift";
         layers.push(
-          alertBox([
+          alertBox(tray, [
             tray.text("⚠️ READING PROGRESS DRIFT", {
               style: {
                 fontSize: "0.75rem",
@@ -2862,9 +2638,10 @@ export const register = (ctx: PluginContext) => {
           tray.div([tray.input("Year", { fieldRef: fYear })], {
             style: { flex: "1", minWidth: "0" },
           }),
-          tray.div([tray.input("Month (1-12)", { fieldRef: fMonth })], {
-            style: { flex: "1", minWidth: "0" },
-          }),
+          tray.div(
+            [tray.select("Month", { options: MONTH_OPTS, fieldRef: fMonth })],
+            { style: { flex: "1", minWidth: "0" } },
+          ),
           tray.div([tray.input("Day (1-31)", { fieldRef: fDay })], {
             style: { flex: "1", minWidth: "0" },
           }),
