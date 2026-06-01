@@ -71,8 +71,14 @@ const loadAndValidateManifest = async (entryDir: string): Promise<Manifest> => {
   return manifest;
 };
 
-const buildEntry = async (entryPath: string) => {
+const buildEntry = async (entryPath: string, manifestId: string) => {
   const entryDir = path.dirname(entryPath);
+
+  // Inject the manifest id as a bundle-time literal. Both Bun.build passes
+  // below replace the bare global `__MANIFEST_ID__` (declared type-only in
+  // types/core.d.ts) with this string, so `getManifestId()` resolves to the
+  // owning extension's id without any per-call path or per-plugin macro file.
+  const define = { __MANIFEST_ID__: JSON.stringify(manifestId) };
 
   // 1. Bundle every isolated module (modules/*.ts) standalone. Each bundle
   //    resolves its `../utils/*` imports and inlines those decls, so the module
@@ -88,6 +94,11 @@ const buildEntry = async (entryPath: string) => {
         entrypoints: [filePath],
         target: "browser",
         format: "esm",
+        define,
+        // Inline `.svg` imports as raw text (a string literal) rather than
+        // emitting an asset + returning its path. Keeps icon markup in a
+        // file while still surviving goja's per-callback `.toString()`.
+        loader: { ".svg": "text" },
       });
       const output = await result.outputs[0]?.text();
       if (!output) throw new Error(`No output found for ${file}`);
@@ -105,6 +116,8 @@ const buildEntry = async (entryPath: string) => {
     entrypoints: [entryPath],
     target: "browser",
     format: "esm",
+    define,
+    loader: { ".svg": "text" },
     plugins: [
       {
         name: "isolate-modules",
@@ -182,7 +195,7 @@ const main = async () => {
   for (const entryPath of extensions) {
     const entryDir = path.dirname(entryPath);
     const manifest = await loadAndValidateManifest(entryDir);
-    await buildEntry(entryPath);
+    await buildEntry(entryPath, manifest.id);
     manifests.push(manifest);
     console.log(`built ${manifest.id.padEnd(24)} ${entryDir}`);
   }

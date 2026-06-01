@@ -13,6 +13,9 @@ import type { sharedLib } from "./shared-lib";
 // + remote present → restore-from-remote, cache absent + remote absent →
 // push-new. We don't block event.next() on the network.
 export const onPostUpdateEntry = (event: $app.PostUpdateEntryEvent) => {
+  const { createLogger, GistClient, decodeLocalId, handlePostUpdate } =
+    $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
+  const log = createLogger();
   try {
     if (event.mediaId == null) {
       event.next();
@@ -24,8 +27,6 @@ export const onPostUpdateEntry = (event: $app.PostUpdateEntryEvent) => {
       event.next();
       return;
     }
-    const { GistClient, decodeLocalId, handlePostUpdate } =
-      $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
     $store.remove(key);
 
     const localId = decodeLocalId(event.mediaId);
@@ -48,8 +49,8 @@ export const onPostUpdateEntry = (event: $app.PostUpdateEntryEvent) => {
       const notifiedKey = "lcm:drift-notified";
       if (!$store.get<boolean>(notifiedKey)) {
         $store.set(notifiedKey, true);
-        console.warn(
-          "[local-catalog-manager] catalog drift pending — saved locally only. Resolve in tray.",
+        log.warn(
+          "catalog drift pending — saved locally only. Resolve in tray.",
         );
       }
     }
@@ -86,10 +87,10 @@ export const onPostUpdateEntry = (event: $app.PostUpdateEntryEvent) => {
         $storage.set(K_PROGRESS_UPDATED, updatedAt);
       },
     }).catch((e: unknown) => {
-      console.warn("[local-catalog-manager] post-update-entry sync failed:", e);
+      log.warn("post-update-entry sync failed:", e);
     });
   } catch (e) {
-    console.error("[local-catalog-manager] post-update-entry error:", e);
+    log.error("post-update-entry error:", e);
   }
   event.next();
 };

@@ -5,7 +5,8 @@ import {
 } from "../../../_components/entry-list";
 import { statusToPill } from "../../../_utils/anilist-status";
 import { GITHUB_RAW_WORKSPACE } from "../../../_utils/constants";
-import { SHARED_LIB_NAME } from "../utils/constants";
+import muLetterSvg from "../assets/mu-letter.svg";
+import { SHARED_LIB_NAME, SOURCE_PREFIX } from "../utils/constants";
 import {
   getMULink,
   listMULinkIds,
@@ -28,8 +29,9 @@ import type { sharedLib } from "./shared-lib";
 //   - $storage, $anilist (per-plugin storage + AniList lookup)
 export const register = (ctx: PluginContext) => {
   // MUClient is shared across runtimes via $shared (defined in code.ts init()).
-  const { MUClient } =
+  const { MUClient, createLogger } =
     $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
+  const log = createLogger();
 
   const tray = ctx.newTray({
     tooltipText: "MangaUpdates Sync — linking",
@@ -100,10 +102,7 @@ export const register = (ctx: PluginContext) => {
     } catch (_) {
       media = undefined;
     }
-    if (
-      media?.siteUrl &&
-      media.siteUrl.indexOf("ext_custom_source_mangaupdates|END|") === 0
-    ) {
+    if (media?.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0) {
       btn.unmount();
       tray.updateBadge({ number: 0 });
       return;
@@ -141,10 +140,9 @@ export const register = (ctx: PluginContext) => {
   // any size. Geometry is sized to fill ~75% of the 24x24 viewBox so
   // the rendered height matches the AL icon (~13.5px in `text-lg`).
   // Color is `currentColor` so it inherits the button's `text-[--gray]`.
-  const MU_ICON_SVG =
-    '<svg stroke="currentColor" fill="currentColor" stroke-width="0" role="img" viewBox="0 0 24 24" class="text-lg" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg">' +
-    '<path d="M0.5,21 L0.5,3 L4.5,3 L7.5,11 L10.5,3 L14.5,3 L14.5,21 L11.5,21 L11.5,11.5 L8.5,17 L6.5,17 L3.5,11.5 L3.5,21 Z M16.5,21 L16.5,3 L18.5,3 L18.5,17 L21.5,17 L21.5,3 L23.5,3 L23.5,21 Z"/>' +
-    "</svg>";
+  // Markup itself lives in assets/mu-letter.svg, inlined as a string
+  // literal at build time (Bun.build's `text` loader) — used directly
+  // as `muLetterSvg` below, no intermediate const needed.
 
   const resolveMULink = (mediaId: number): { url?: string; title?: string } => {
     let media: $app.AL_BaseManga | undefined;
@@ -158,8 +156,7 @@ export const register = (ctx: PluginContext) => {
     // renders its own native external-link button for custom-source entries
     // (pointing at the same series URL it stored in siteUrl), so adding our
     // MU icon here would just duplicate it.
-    const customPrefix = "ext_custom_source_mangaupdates|END|";
-    if (media.siteUrl && media.siteUrl.indexOf(customPrefix) === 0) {
+    if (media.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0) {
       return {};
     }
     const link = getMULink(mediaId);
@@ -223,7 +220,7 @@ export const register = (ctx: PluginContext) => {
       a.setInnerHTML(
         '<button type="button" class="UI-Button_root whitespace-nowrap font-semibold rounded-lg inline-flex items-center transition ease-in text-center justify-center focus-visible:outline-none focus-visible:ring-2 ring-offset-1 ring-offset-[--background] focus-visible:ring-[--ring] disabled:opacity-50 disabled:pointer-events-none shadow-none text-[--gray] border border-transparent bg-transparent hover:underline active:text-gray-700 dark:text-gray-300 dark:active:text-gray-200 UI-IconButton_root p-0 flex-none text-xl h-8 w-8 px-0">' +
           '<span class="md:inline-block">' +
-          MU_ICON_SVG +
+          muLetterSvg.trim() +
           "</span>" +
           "</button>",
       );
@@ -275,7 +272,7 @@ export const register = (ctx: PluginContext) => {
         }
       }
     } catch (err) {
-      console.warn("[mangaupdates-sync] getCollection failed:", err);
+      log.warn("getCollection failed:", err);
     }
     // Nothing on the AL list yet — nothing to mirror.
     if (!listData) return false;
@@ -532,7 +529,7 @@ export const register = (ctx: PluginContext) => {
                 onClick: ctx.eventHandler(`mu-search-as-${t.label}`, () => {
                   searchInputRef.setValue(t.value);
                   runSearch(t.value).catch((e) =>
-                    console.error("[mangaupdates-sync] alt search failed:", e),
+                    log.error("alt search failed:", e),
                   );
                 }),
                 intent: "gray-subtle",
@@ -584,10 +581,7 @@ export const register = (ctx: PluginContext) => {
                           ctx.toast.info("Stats synced to MangaUpdates");
                       })
                       .catch((err) => {
-                        console.error(
-                          "[mangaupdates-sync] link-time sync failed:",
-                          err,
-                        );
+                        log.error("link-time sync failed:", err);
                         const msg =
                           err instanceof Error ? err.message : String(err);
                         ctx.toast.alert(`Sync failed: ${msg}`);
@@ -640,9 +634,8 @@ export const register = (ctx: PluginContext) => {
         media = undefined;
       }
     }
-    const customPrefix = "ext_custom_source_mangaupdates|END|";
     const isCustomSource =
-      !!media?.siteUrl && media.siteUrl.indexOf(customPrefix) === 0;
+      !!media?.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0;
     const onEntry = !!id && !!media && !isCustomSource;
 
     if (onEntry && media && !expanded) {

@@ -1,18 +1,15 @@
 // Shared progress-sync helpers used by both the local-catalog-manager plugin
-// (writer + sync ops) and tests. See docs/superpowers/specs/<…>-design.md.
-
-const EXT_ID_OFFSET = 0x80000000;
-const LOCAL_ID_RANGE = 0x10000000000;
-
-// Recover the catalog-local id from a synthetic custom-source mediaId.
-// See CLAUDE.md "Custom-source mediaId encoding" for the math.
-export function decodeLocalId(mediaId: number): number {
-  return (mediaId - EXT_ID_OFFSET) % LOCAL_ID_RANGE;
-}
+// (writer + sync ops) and tests.
+//
+// The custom-source mediaId codec (decodeLocalId/encodeMediaId/…) lives in
+// src/_utils/custom-source-id.ts — import it from there.
 
 const EMPTY_DOC: ProgressDoc = { version: 1, updatedAt: 0, manga: {} };
 
-export function parseProgress(raw: string | unknown): ProgressDoc {
+export function parseProgress(
+  raw: string | unknown,
+  log: Console,
+): ProgressDoc {
   if (raw == null || raw === "") return { ...EMPTY_DOC, manga: {} };
   let data: unknown = raw;
   if (typeof raw === "string") {
@@ -32,9 +29,7 @@ export function parseProgress(raw: string | unknown): ProgressDoc {
     entries?: Record<string, Partial<ProgressEntry>>;
   };
   if (typeof obj.version === "number" && obj.version !== 1) {
-    console.warn(
-      `local-catalog: progress.json version ${obj.version} unknown, keeping entries`,
-    );
+    log.warn(`progress.json version ${obj.version} unknown, keeping entries`);
   }
   const out: ProgressDoc = {
     version: typeof obj.version === "number" ? obj.version : 1,
@@ -49,10 +44,7 @@ export function parseProgress(raw: string | unknown): ProgressDoc {
     if (!v || typeof v !== "object") continue;
     const e: ProgressEntry = { updatedAt: 0 };
     if (typeof v.updatedAt === "number") e.updatedAt = v.updatedAt;
-    else
-      console.warn(
-        `local-catalog: progress entry ${k} missing updatedAt, treating as 0`,
-      );
+    else log.warn(`progress entry ${k} missing updatedAt, treating as 0`);
     if (typeof v.progress === "number") e.progress = v.progress;
     if (typeof v.scoreRaw === "number") e.scoreRaw = v.scoreRaw;
     if (typeof v.status === "string")

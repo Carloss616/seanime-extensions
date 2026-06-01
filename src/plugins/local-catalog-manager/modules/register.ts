@@ -29,15 +29,11 @@ import {
 import type { sharedLib } from "./shared-lib";
 
 export const register = (ctx: PluginContext) => {
-  // Custom-source mediaId encoding (see CLAUDE.md "Custom-source mediaId
-  // encoding" + seanime's internal/customsource/customsource.go):
-  //   mediaId = EXT_OFFSET + (extensionIdentifier << 40) + localId
-  // EXT_OFFSET is the boundary between AniList ids (< 2^31) and custom-
-  // source ids; LOCAL_RANGE is the per-extension localId range (2^40).
-  const EXT_OFFSET = 0x80000000;
-  const LOCAL_RANGE = 0x10000000000;
-
+  // Custom-source mediaId codec — see CLAUDE.md "Custom-source mediaId
+  // encoding" + src/_utils/custom-source-id.ts. Sourced via $shared so the
+  // single canonical implementation travels into this UI runtime.
   const {
+    createLogger,
     GistClient,
     parseCatalog,
     resolveUserPreferred,
@@ -49,6 +45,9 @@ export const register = (ctx: PluginContext) => {
     upsertEntry,
     validateEntry,
     decodeLocalId,
+    decodeExtId,
+    encodeMediaId,
+    isCustomSourceId,
     buildMediaIdLookup,
     applyRemote,
     detectOrphans,
@@ -61,6 +60,7 @@ export const register = (ctx: PluginContext) => {
     diffProgress,
     progressMangaEquals,
   } = $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
+  const log = createLogger();
 
   const tray = ctx.newTray({
     tooltipText: "Local Catalog Manager",
@@ -84,9 +84,7 @@ export const register = (ctx: PluginContext) => {
     >(K_PROGRESS);
     if (!stored) return { version: 1, updatedAt: 0, manga: {} };
     if (!stored.manga && stored.entries) {
-      console.log(
-        "[local-catalog-manager] migrating $storage progress: entries → manga",
-      );
+      log.log("migrating $storage progress: entries → manga");
       return {
         version: stored.version ?? 1,
         updatedAt: stored.updatedAt ?? 0,
@@ -146,7 +144,7 @@ export const register = (ctx: PluginContext) => {
           `Pushed ${Object.keys(merged.manga).length} entries`,
         );
       } catch (e) {
-        console.warn("[local-catalog-manager] push progress failed:", e);
+        log.warn("push progress failed:", e);
         progressStatus.set(`Push failed: ${String(e)}`);
       }
     });
@@ -192,7 +190,7 @@ export const register = (ctx: PluginContext) => {
           `Pulled — applied ${res.applied}${res.skipped ? `, skipped ${res.skipped} orphan(s)` : ""}`,
         );
       } catch (e) {
-        console.warn("[local-catalog-manager] pull progress failed:", e);
+        log.warn("pull progress failed:", e);
         progressStatus.set(`Pull failed: ${String(e)}`);
       }
     });
@@ -216,7 +214,7 @@ export const register = (ctx: PluginContext) => {
     await runBusy("reload-catalog", async () => {
       try {
         const content = await client().getGistFile(gistId, FILENAME);
-        const remote = parseCatalog(content);
+        const remote = parseCatalog(content, log);
         const now = Date.now();
         const merged = mergeCatalog(entries.get(), remote);
         persistLocal(merged, now);
@@ -285,7 +283,7 @@ export const register = (ctx: PluginContext) => {
     } catch (_) {
       remoteStr = "";
     }
-    const remote = parseProgress(remoteStr);
+    const remote = parseProgress(remoteStr, log);
     const localDoc = progress.get();
     const merged = mergeProgress(localDoc, remote, now);
     const collection = await ctx.manga.getCollection();
@@ -324,10 +322,7 @@ export const register = (ctx: PluginContext) => {
       try {
         $anilist.refreshMangaCollection();
       } catch (e) {
-        console.warn(
-          "[local-catalog-manager] refreshMangaCollection failed:",
-          e,
-        );
+        log.warn("refreshMangaCollection failed:", e);
       }
       invalidateClientCaches({ progress: true });
     }
@@ -367,10 +362,7 @@ export const register = (ctx: PluginContext) => {
         );
       }
     } catch (e) {
-      console.warn(
-        `[local-catalog-manager] silent pull failed (${reason}):`,
-        e,
-      );
+      log.warn(`silent pull failed (${reason}):`, e);
     }
   }
 
@@ -403,7 +395,7 @@ export const register = (ctx: PluginContext) => {
           `Reloaded — applied ${res.applied}${res.skipped ? `, skipped ${res.skipped} orphan(s)` : ""}${hadProgressDrift ? " · drift merged" : ""}`,
         );
       } catch (e) {
-        console.warn("[local-catalog-manager] reload progress failed:", e);
+        log.warn("reload progress failed:", e);
         progressStatus.set(`Reload failed: ${String(e)}`);
       }
     });
@@ -437,7 +429,7 @@ export const register = (ctx: PluginContext) => {
     try {
       $app.invalidateClientQuery(keys);
     } catch (e) {
-      console.warn("[local-catalog-manager] invalidateClientQuery failed:", e);
+      log.warn("invalidateClientQuery failed:", e);
     }
   }
 
@@ -455,7 +447,7 @@ export const register = (ctx: PluginContext) => {
     if (hasToken() && gistId && !hasDrift()) {
       pushProgress(client(), gistId, PROGRESS_FILENAME, next, updatedAt).catch(
         (e: unknown) => {
-          console.warn("[local-catalog-manager] progress push failed:", e);
+          log.warn("progress push failed:", e);
         },
       );
     }
@@ -483,16 +475,13 @@ export const register = (ctx: PluginContext) => {
     try {
       await ctx.extensions.disable(CUSTOM_SOURCE_ID);
     } catch (e) {
-      console.warn(
-        `[local-catalog-manager] disable(${CUSTOM_SOURCE_ID}) failed:`,
-        e,
-      );
+      log.warn(`disable(${CUSTOM_SOURCE_ID}) failed:`, e);
     }
     try {
       await ctx.extensions.enable(CUSTOM_SOURCE_ID);
     } catch (e) {
-      console.warn(
-        `[local-catalog-manager] enable(${CUSTOM_SOURCE_ID}) failed — source may be left disabled, re-enable manually:`,
+      log.warn(
+        `enable(${CUSTOM_SOURCE_ID}) failed — source may be left disabled, re-enable manually:`,
         e,
       );
     }
@@ -517,7 +506,7 @@ export const register = (ctx: PluginContext) => {
   function mediaIdFor(localId: number): number | null {
     const extId = $storage.get<number>(K_EXT_ID);
     if (extId == null) return null;
-    return EXT_OFFSET + extId * LOCAL_RANGE + localId;
+    return encodeMediaId(extId, localId);
   }
 
   // Discover the seanime-assigned extensionIdentifier (1-1023) for this
@@ -539,7 +528,7 @@ export const register = (ctx: PluginContext) => {
     const lookup = mediaIdLookup.get();
     if (lookup && lookup.size > 0) {
       const [, anyMediaId] = lookup.entries().next().value as [number, number];
-      const extId = Math.floor((anyMediaId - EXT_OFFSET) / LOCAL_RANGE);
+      const extId = decodeExtId(anyMediaId);
       $storage.set(K_EXT_ID, extId);
       return extId;
     }
@@ -553,7 +542,7 @@ export const register = (ctx: PluginContext) => {
         // setTimeout / requestAnimationFrame in goja).
         $sleep(0);
       }
-      const candidate = EXT_OFFSET + extId * LOCAL_RANGE + probeLocalId;
+      const candidate = encodeMediaId(extId, probeLocalId);
       try {
         const m = $anilist.getManga(candidate);
         if (m?.siteUrl && m.siteUrl.indexOf(PREFIX_SITEURL) === 0) {
@@ -576,7 +565,7 @@ export const register = (ctx: PluginContext) => {
     if (cached != null) return cached;
     const extId = await discoverExtId();
     if (extId == null) return null;
-    return EXT_OFFSET + extId * LOCAL_RANGE + localId;
+    return encodeMediaId(extId, localId);
   }
 
   // "📤 Apply progress" button in the entries list (linked entry whose
@@ -621,10 +610,7 @@ export const register = (ctx: PluginContext) => {
         try {
           $anilist.refreshMangaCollection();
         } catch (e) {
-          console.warn(
-            "[local-catalog-manager] refreshMangaCollection failed:",
-            e,
-          );
+          log.warn("refreshMangaCollection failed:", e);
         }
         invalidateClientCaches({ progress: true });
         ctx.toast.success(
@@ -747,10 +733,10 @@ export const register = (ctx: PluginContext) => {
     for (const list of collection.lists ?? []) {
       for (const e of list.entries ?? []) {
         const mid = e.media?.id;
-        if (typeof mid !== "number" || mid < EXT_OFFSET) continue;
+        if (typeof mid !== "number" || !isCustomSourceId(mid)) continue;
         let isOurs = false;
         if (extId != null) {
-          isOurs = Math.floor((mid - EXT_OFFSET) / LOCAL_RANGE) === extId;
+          isOurs = decodeExtId(mid) === extId;
         } else {
           const su = e.media?.siteUrl ?? "";
           isOurs = su.indexOf(PREFIX_SITEURL) === 0;
@@ -898,9 +884,7 @@ export const register = (ctx: PluginContext) => {
     const parsed = parseGistId(legacyGistUrl);
     if (parsed) {
       $storage.set(K_GIST, parsed);
-      console.log(
-        "[local-catalog-manager] migrated legacy gistUrl config to $storage",
-      );
+      log.log("migrated legacy gistUrl config to $storage");
     }
   }
   // Gist binding lives entirely in $storage now (managed from the tray —
@@ -1001,7 +985,7 @@ export const register = (ctx: PluginContext) => {
         $storage.set(K_OWNER, info.owner);
         $storage.set(K_RAW, info.rawUrl);
         rawUrl.set(info.rawUrl);
-        remote = parseCatalog(info.content);
+        remote = parseCatalog(info.content, log);
       } catch (e) {
         ctx.toast.error(
           `Linked, but couldn't fetch remote catalog: ${(e as Error).message}. Use Pull to retry.`,
@@ -1065,7 +1049,7 @@ export const register = (ctx: PluginContext) => {
       } catch (_) {
         remoteRaw = "";
       }
-      const remote = parseProgress(remoteRaw);
+      const remote = parseProgress(remoteRaw, log);
       const local = progress.get();
       const localCount = Object.keys(local.manga).length;
       const remoteCount = Object.keys(remote.manga).length;
@@ -1086,10 +1070,7 @@ export const register = (ctx: PluginContext) => {
         `Linked to gist ${gistId} — ${catalogSummary}. Progress ${progSummary}.`,
       );
     } catch (e) {
-      console.warn(
-        "[local-catalog-manager] progress sync after link failed:",
-        e,
-      );
+      log.warn("progress sync after link failed:", e);
       ctx.toast.warning(
         `Linked to gist ${gistId} — ${catalogSummary}. Progress sync failed: ${(e as Error).message}. Use Reload progress to retry.`,
       );
@@ -1194,10 +1175,7 @@ export const register = (ctx: PluginContext) => {
               serializeProgress(resolved),
             );
           } catch (e) {
-            console.warn(
-              "[local-catalog-manager] push after progress drift resolve failed:",
-              e,
-            );
+            log.warn("push after progress drift resolve failed:", e);
           }
         }
         ctx.toast.success(
@@ -1242,15 +1220,10 @@ export const register = (ctx: PluginContext) => {
       client()
         .deleteGist(gistId)
         .then(() => {
-          console.log(
-            `[local-catalog-manager] cleaned up fresh gist ${gistId}`,
-          );
+          log.log(`cleaned up fresh gist ${gistId}`);
         })
         .catch((e: unknown) => {
-          console.warn(
-            "[local-catalog-manager] cleanup of fresh gist failed:",
-            e,
-          );
+          log.warn("cleanup of fresh gist failed:", e);
         });
       ctx.toast.info(
         "Link cancelled. Local catalog kept. Empty gist deleted from GitHub.",
@@ -1351,7 +1324,7 @@ export const register = (ctx: PluginContext) => {
     await runBusy("pull-catalog", async () => {
       try {
         const content = await client().getGistFile(gistId, FILENAME);
-        const remote = parseCatalog(content);
+        const remote = parseCatalog(content, log);
         persistLocal(remote, Date.now());
         ctx.toast.success(`Pulled ${ent(remote.length)}`);
       } catch (e) {
@@ -1584,7 +1557,7 @@ export const register = (ctx: PluginContext) => {
     }
     try {
       if (kind === "catalog") {
-        const imported = parseCatalog(raw);
+        const imported = parseCatalog(raw, log);
         if (imported.length === 0) {
           ctx.toast.error("Catalog JSON has no valid entries.");
           return;
@@ -1599,7 +1572,7 @@ export const register = (ctx: PluginContext) => {
             : `Catalog replaced · ${ent(next.length)}`,
         );
       } else {
-        const imported = parseProgress(raw);
+        const imported = parseProgress(raw, log);
         const importedCount = Object.keys(imported.manga).length;
         if (importedCount === 0) {
           ctx.toast.error("Progress JSON has no entries.");
@@ -2662,7 +2635,7 @@ export const register = (ctx: PluginContext) => {
   const currentLocalId = ctx.state<number>(0);
 
   const localIdFromMediaId = (mediaId: number): number => {
-    if (mediaId < EXT_OFFSET) return 0;
+    if (!isCustomSourceId(mediaId)) return 0;
     let m: $app.AL_BaseManga | undefined;
     try {
       m = $anilist.getManga(mediaId);
@@ -2671,7 +2644,7 @@ export const register = (ctx: PluginContext) => {
     }
     const siteUrl = m?.siteUrl ?? "";
     if (siteUrl.indexOf(PREFIX_SITEURL) !== 0) return 0;
-    return (mediaId - EXT_OFFSET) % LOCAL_RANGE;
+    return decodeLocalId(mediaId);
   };
 
   const pageBtn = ctx.action.newMangaPageButton({
@@ -2781,10 +2754,7 @@ export const register = (ctx: PluginContext) => {
         const collection = await ctx.manga.getCollection();
         refreshLookupsFromCollection(collection);
       } catch (e) {
-        console.warn(
-          "[local-catalog-manager] mediaIdLookup refresh failed:",
-          e,
-        );
+        log.warn("mediaIdLookup refresh failed:", e);
       }
       // Discover the extId in the background if we haven't cached it yet —
       // makes the first "Open →" / "Push local progress" click feel instant
@@ -2806,7 +2776,7 @@ export const register = (ctx: PluginContext) => {
             }
           }
         } catch (e) {
-          console.warn("[local-catalog-manager] extId discovery failed:", e);
+          log.warn("extId discovery failed:", e);
         }
       }
       // After lookups are warm, pull any remote progress changes silently.

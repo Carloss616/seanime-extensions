@@ -1,6 +1,13 @@
+import { SHARED_LIB_NAME } from "../utils/constants";
+import type { sharedLib } from "./shared-lib";
+
 export const onPreUpdateEntry = (
   event: $app.PreUpdateEntryEvent | $app.PreUpdateEntryProgressEvent,
 ) => {
+  const { createLogger } =
+    $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
+  const log = createLogger();
+
   try {
     const auto =
       ($getUserPreference("autoSyncOnProgress") ?? "true") !== "false";
@@ -24,7 +31,7 @@ export const onPreUpdateEntry = (
       ...("scoreRaw" in event ? { scoreRaw: event.scoreRaw } : {}),
     });
   } catch (e) {
-    console.error("[mangaupdates-sync] pre-edit error:", e);
+    log.error("pre-edit error:", e);
   }
   event.next();
 };

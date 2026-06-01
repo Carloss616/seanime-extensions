@@ -7,11 +7,21 @@
 // MUClient physically inside every goja-isolated callback that needs it. See
 // CLAUDE.md "Splitting an extension across multiple files".
 
-class MUTokenExpiredError extends Error {
-  constructor() {
-    super("MU session expired");
-    this.name = "MUTokenExpiredError";
-  }
+import { createLogger } from "../../../_utils/logger";
+import { MUClientBase } from "../../../_utils/mangaupdates/client";
+import { muRecordUrl, muRecordYear } from "../../../_utils/mangaupdates/record";
+
+const log = createLogger();
+
+export function toBaseResult(record: MUSearch.Record): MUResult {
+  const cover = record.image?.url || {};
+  return {
+    id: String(record.series_id),
+    title: record.title || "???",
+    year: muRecordYear(record),
+    cover: cover.thumb || cover.original,
+    url: muRecordUrl(record),
+  };
 }
 
 // A normalized MangaUpdates series — the shape the UI and the link store both
@@ -25,17 +35,9 @@ export interface MUResult {
   url: string;
 }
 
-export class MUClient {
-  // `declare` makes these fields TYPE-ONLY (zero runtime emit). Defensive:
-  // some transpiler targets lower bare field declarations to `__publicField`
-  // helper calls that live at bundle module scope — unreachable from inside an
-  // isolated-runtime callback body, throwing `ReferenceError: __publicField is
-  // not defined`. Assigning in the constructor (below) keeps the emit clean
-  // regardless of target.
-  private declare base: string;
+export class MUClient extends MUClientBase {
   private declare tokenKey: string;
   private declare statusList: Record<string, number>;
-  private declare fetchFn: typeof fetch;
 
   /**
    * @param fetchFn  HTTP transport. Pass `ctx.fetch.bind(ctx)` from UI
@@ -43,7 +45,7 @@ export class MUClient {
    *                 Indirection lets the same class work in either runtime.
    */
   constructor(fetchFn: typeof fetch) {
-    this.base = "https://api.mangaupdates.com/v1";
+    super();
     this.tokenKey = "mu_session_token";
     // Numeric ids of MU's built-in lists. `POST /v1/lists/series/update`
     // requires the numeric `list_id`, not the "reading"/"complete"/... string
@@ -67,77 +69,29 @@ export class MUClient {
     options: {
       token?: string;
       body?: unknown;
-    },
+    } = {},
   ): Promise<T | null> {
-    const attempt = "attempt" in options ? Number(options.attempt) : 1;
-    const headers: Record<string, string> = { Accept: "application/json" };
-    if (options.token) headers.Authorization = `Bearer ${options.token}`;
-    if (options.body !== undefined)
-      headers["Content-Type"] = "application/json";
-    const res = await this.fetchFn(this.base + path, {
-      method,
-      headers,
-      body:
-        options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    return this._req<T>(method, path, {
+      token: options.token,
+      body: options.body,
+      onRefreshToken: () => this.ensureToken(true),
     });
-    if (res.status === 401) {
-      if (attempt >= 2) throw new MUTokenExpiredError();
-      const token = await this.ensureToken(true);
-      const _options = { ...options, token, attempt: attempt + 1 };
-      return this.req<T>(method, path, _options);
-    }
-    if (!res.ok) {
-      throw new Error(`MU ${method} ${path} -> ${res.status} ${res.text()}`);
-    }
-    if ((res.contentType || "").includes("application/json"))
-      return res.json<T>();
-    return null;
   }
 
   /** Searches the public MangaUpdates series index and returns normalized
    *  results. No login required — attaches the stored session token only if
    *  one is present (it slightly enriches results but isn't mandatory). A
    *  query shorter than 2 chars short-circuits to an empty list. */
-  async search(query: string, perpage = 10): Promise<MUResult[]> {
-    const q = (query || "").trim();
-    if (q.length < 2) return [];
-    const token = $storage.get<string>(this.tokenKey);
-    const data = await this.req<MUSearch.Response>("POST", "/series/search", {
-      token,
-      body: { search: q, perpage },
-    });
-    const out: MUResult[] = [];
-    for (const r of data?.results || []) {
-      const sid = r?.record?.series_id;
-      if (!sid) continue;
-      const rec = r.record;
-      const year = rec.year ? parseInt(rec.year, 10) : undefined;
-      out.push({
-        id: String(sid),
-        title: rec.title || "(untitled)",
-        year: year != null && !Number.isNaN(year) ? year : undefined,
-        cover: rec.image?.url
-          ? rec.image.url.thumb || rec.image.url.original
-          : undefined,
-        url: rec.url || `https://www.mangaupdates.com/series.html?id=${sid}`,
-      });
-    }
-    return out;
+  async search(query: string, page = 1, perpage = 10): Promise<MUResult[]> {
+    const token = await this.ensureToken();
+    const data = await this._search(query, { page, perPage: perpage, token });
+    return data?.results.map((r) => toBaseResult(r.record)) || [];
   }
 
   async login(username: string, password: string): Promise<string> {
-    const res = await this.fetchFn(`${this.base}/account/login`, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify({ username, password }),
+    const data = await this.req<MULogin.Response>("PUT", "/account/login", {
+      body: { username, password },
     });
-    if (!res.ok) {
-      throw new Error(`MU login -> ${res.status} ${res.text()}`);
-    }
-    const data = res.json<MULogin.Response>();
     const token = data?.context?.session_token;
     if (!token) throw new Error("MU login: response missing session token");
     return token;
@@ -211,7 +165,7 @@ export class MUClient {
         body: { rating },
       });
     } catch (err) {
-      console.warn("[mangaupdates-sync] rating push failed:", err);
+      log.warn("rating push failed:", err);
     }
   }
 }

@@ -16,7 +16,10 @@ export function resolveUserPreferred(title: unknown): string | undefined {
   return undefined;
 }
 
-export function parseCatalog(raw: string | unknown): CatalogEntry[] {
+export function parseCatalog(
+  raw: string | unknown,
+  log: Console,
+): CatalogEntry[] {
   let data: unknown = raw;
   if (typeof raw === "string") {
     try {
@@ -41,15 +44,15 @@ export function parseCatalog(raw: string | unknown): CatalogEntry[] {
     const entry = item as CatalogEntry;
     const id = Number(entry?.id);
     if (!Number.isInteger(id) || id < 1) {
-      console.warn("local-catalog: skipping entry with invalid id");
+      log.warn("skipping entry with invalid id");
       continue;
     }
     if (!resolveUserPreferred(entry?.title)) {
-      console.warn(`local-catalog: skipping entry ${id} with no title`);
+      log.warn(`skipping entry ${id} with no title`);
       continue;
     }
     if (byId.has(id)) {
-      console.warn(`local-catalog: duplicate id ${id}, last wins`);
+      log.warn(`duplicate id ${id}, last wins`);
     }
     entry.id = id;
     byId.set(id, entry);

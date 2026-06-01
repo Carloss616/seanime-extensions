@@ -1,45 +1,45 @@
 import { describe, expect, test } from "bun:test";
 import {
-  decodeLocalId,
   mergeProgress,
   parseProgress,
   progressMangaEquals,
   serializeProgress,
 } from "./progress.ts";
 
-describe("decodeLocalId", () => {
-  test("decodes the worked example from CLAUDE.md (TBATE)", () => {
-    // mediaId 609192324283839 → localId 60735012287 (MU series_id)
-    expect(decodeLocalId(609192324283839)).toBe(60735012287);
-  });
-
-  test("decodes a minimal example (extId 0, localId 1)", () => {
-    // mediaId = 0x80000000 + (0 << 40) + 1 = 2147483649
-    expect(decodeLocalId(2147483649)).toBe(1);
-  });
-
-  test("decodes localId = 0 (offset itself, extId 0)", () => {
-    expect(decodeLocalId(0x80000000)).toBe(0);
-  });
-});
+// The mediaId codec (decodeLocalId/encodeMediaId/…) is tested in
+// src/_utils/custom-source-id.test.ts.
 
 const EMPTY_DOC = { version: 1, updatedAt: 0, manga: {} };
 
+// parseProgress takes a Console for warnings (version mismatch, missing
+// updatedAt). These tests assert on parse output, not logging, so route it to
+// a silent stub to keep test output clean.
+const log = {
+  log() {},
+  info() {},
+  warn() {},
+  error() {},
+  debug() {},
+} as unknown as Console;
+
 describe("parseProgress", () => {
   test("returns empty doc for empty string / null / bad JSON", () => {
-    expect(parseProgress("")).toEqual(EMPTY_DOC);
-    expect(parseProgress(null)).toEqual(EMPTY_DOC);
-    expect(parseProgress("not json")).toEqual(EMPTY_DOC);
+    expect(parseProgress("", log)).toEqual(EMPTY_DOC);
+    expect(parseProgress(null, log)).toEqual(EMPTY_DOC);
+    expect(parseProgress("not json", log)).toEqual(EMPTY_DOC);
   });
 
   test("parses a valid doc with manga entries", () => {
-    const out = parseProgress({
-      version: 1,
-      updatedAt: 1000,
-      manga: {
-        "42": { status: "CURRENT", progress: 10, updatedAt: 1000 },
+    const out = parseProgress(
+      {
+        version: 1,
+        updatedAt: 1000,
+        manga: {
+          "42": { status: "CURRENT", progress: 10, updatedAt: 1000 },
+        },
       },
-    });
+      log,
+    );
     expect(out.version).toBe(1);
     expect(out.updatedAt).toBe(1000);
     expect(out.manga["42"]).toEqual({
@@ -50,7 +50,9 @@ describe("parseProgress", () => {
   });
 
   test("parses from a JSON string", () => {
-    expect(parseProgress('{"version":1,"updatedAt":5,"manga":{}}')).toEqual({
+    expect(
+      parseProgress('{"version":1,"updatedAt":5,"manga":{}}', log),
+    ).toEqual({
       version: 1,
       updatedAt: 5,
       manga: {},
@@ -58,7 +60,7 @@ describe("parseProgress", () => {
   });
 
   test("missing `manga` field → empty manga map", () => {
-    expect(parseProgress({ version: 1, updatedAt: 1 })).toEqual({
+    expect(parseProgress({ version: 1, updatedAt: 1 }, log)).toEqual({
       version: 1,
       updatedAt: 1,
       manga: {},
@@ -66,42 +68,54 @@ describe("parseProgress", () => {
   });
 
   test("entry missing updatedAt → treated as 0 (warned)", () => {
-    const out = parseProgress({
-      version: 1,
-      updatedAt: 0,
-      manga: { "1": { progress: 5 } },
-    });
+    const out = parseProgress(
+      {
+        version: 1,
+        updatedAt: 0,
+        manga: { "1": { progress: 5 } },
+      },
+      log,
+    );
     expect(out.manga["1"].updatedAt).toBe(0);
     expect(out.manga["1"].progress).toBe(5);
   });
 
   test("version mismatch → keep entries, warn", () => {
-    const out = parseProgress({
-      version: 99,
-      updatedAt: 1,
-      manga: { "1": { progress: 1, updatedAt: 1 } },
-    });
+    const out = parseProgress(
+      {
+        version: 99,
+        updatedAt: 1,
+        manga: { "1": { progress: 1, updatedAt: 1 } },
+      },
+      log,
+    );
     expect(Object.keys(out.manga)).toEqual(["1"]);
   });
 
   test("legacy `entries` field migrates to `manga` on read", () => {
     // V2-B initial wire format used `entries`. Old gist files / $storage
     // payloads should be readable so existing installs don't lose data.
-    const out = parseProgress({
-      version: 1,
-      updatedAt: 7,
-      entries: { "1": { progress: 5, updatedAt: 7 } },
-    });
+    const out = parseProgress(
+      {
+        version: 1,
+        updatedAt: 7,
+        entries: { "1": { progress: 5, updatedAt: 7 } },
+      },
+      log,
+    );
     expect(out.manga["1"]).toEqual({ progress: 5, updatedAt: 7 });
   });
 
   test("if both `manga` and `entries` are present, `manga` wins", () => {
-    const out = parseProgress({
-      version: 1,
-      updatedAt: 0,
-      manga: { "1": { progress: 99, updatedAt: 1 } },
-      entries: { "1": { progress: 1, updatedAt: 1 } },
-    });
+    const out = parseProgress(
+      {
+        version: 1,
+        updatedAt: 0,
+        manga: { "1": { progress: 99, updatedAt: 1 } },
+        entries: { "1": { progress: 1, updatedAt: 1 } },
+      },
+      log,
+    );
     expect(out.manga["1"].progress).toBe(99);
   });
 });
@@ -131,7 +145,7 @@ describe("serializeProgress", () => {
         "2": { updatedAt: 2 },
       },
     };
-    expect(parseProgress(serializeProgress(doc))).toEqual(doc);
+    expect(parseProgress(serializeProgress(doc), log)).toEqual(doc);
   });
 
   test("output is byte-stable across key-order permutations", () => {

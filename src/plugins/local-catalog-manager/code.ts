@@ -12,8 +12,6 @@ export function init() {
   // — every callback later does $shared.use(SHARED_LIB_NAME).
   $shared.define(SHARED_LIB_NAME, sharedLib);
 
-  console.log("[local-catalog-manager] initialized");
-
   $app.onPreUpdateEntry(onPreUpdateEntry);
   $app.onPostUpdateEntry(onPostUpdateEntry);
   $app.onPreUpdateEntryProgress(onPreUpdateEntryProgress);

@@ -37,6 +37,15 @@ import type { sharedLib } from "./shared-lib";
 // otherwise).
 export const onGetMangaCollection = (event: $app.GetMangaCollectionEvent) => {
   void (async () => {
+    const {
+      createLogger,
+      GistClient,
+      parseProgress,
+      mergeProgress,
+      progressMangaEquals,
+      serializeProgress,
+    } = $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
+    const log = createLogger();
     try {
       const COOLDOWN_KEY = "lcm:silent-sync-at";
       const COOLDOWN_MS = 10_000;
@@ -48,13 +57,6 @@ export const onGetMangaCollection = (event: $app.GetMangaCollectionEvent) => {
       const gistId = $storage.get<string>(K_GIST) ?? "";
       if (!token || !gistId) return;
       if ($storage.get<boolean>(K_SYNC_PAUSED)) return;
-      const {
-        GistClient,
-        parseProgress,
-        mergeProgress,
-        progressMangaEquals,
-        serializeProgress,
-      } = $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
       const client = new GistClient(token, fetch);
       const local = $storage.get<ProgressDoc>(K_PROGRESS) ?? {
         version: 1,
@@ -69,7 +71,7 @@ export const onGetMangaCollection = (event: $app.GetMangaCollectionEvent) => {
       } catch (_) {
         remoteStr = "";
       }
-      const remote = parseProgress(remoteStr);
+      const remote = parseProgress(remoteStr, log);
       const merged = mergeProgress(local, remote, now);
       // Apply remote-newer entries to seanime. Skip flag prevents our own
       // hooks from echoing the update.
@@ -98,10 +100,7 @@ export const onGetMangaCollection = (event: $app.GetMangaCollectionEvent) => {
             );
             applied++;
           } catch (e) {
-            console.warn(
-              `[local-catalog-manager] hook apply failed for localId ${localIdStr}:`,
-              e,
-            );
+            log.warn(`hook apply failed for localId ${localIdStr}:`, e);
           } finally {
             $store.remove(`progress:skip:${mediaId}`);
           }
@@ -129,10 +128,7 @@ export const onGetMangaCollection = (event: $app.GetMangaCollectionEvent) => {
         try {
           $anilist.refreshMangaCollection();
         } catch (e) {
-          console.warn(
-            "[local-catalog-manager] refreshMangaCollection failed:",
-            e,
-          );
+          log.warn("refreshMangaCollection failed:", e);
         }
         try {
           $app.invalidateClientQuery([
@@ -141,17 +137,11 @@ export const onGetMangaCollection = (event: $app.GetMangaCollectionEvent) => {
             "MANGA-get-manga-entry",
           ]);
         } catch (e) {
-          console.warn(
-            "[local-catalog-manager] invalidateClientQuery failed:",
-            e,
-          );
+          log.warn("invalidateClientQuery failed:", e);
         }
       }
     } catch (e) {
-      console.warn(
-        "[local-catalog-manager] on-get-manga-collection sync failed:",
-        e,
-      );
+      log.warn("on-get-manga-collection sync failed:", e);
     }
   })();
   // Every hook callback MUST call event.next(), even when the work fires

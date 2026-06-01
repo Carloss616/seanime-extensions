@@ -5,6 +5,9 @@ import type { sharedLib } from "./shared-lib";
 // Captures the to-be-applied fields into $store keyed by mediaId, for the
 // post hook to read. Post receives only mediaId, so we must stash here.
 export const onPreUpdateEntry = (event: $app.PreUpdateEntryEvent) => {
+  const { createLogger, decodeLocalId } =
+    $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
+  const log = createLogger();
   try {
     if (event.mediaId == null) {
       event.next();
@@ -17,8 +20,6 @@ export const onPreUpdateEntry = (event: $app.PreUpdateEntryEvent) => {
       event.next();
       return;
     }
-    const { decodeLocalId } =
-      $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
     let m: $app.AL_BaseManga | null = null;
     try {
       m = $anilist.getManga(event.mediaId);
@@ -52,7 +53,7 @@ export const onPreUpdateEntry = (event: $app.PreUpdateEntryEvent) => {
     }
     $store.set(`progress:${event.mediaId}`, payload);
   } catch (e) {
-    console.error("[local-catalog-manager] pre-update-entry error:", e);
+    log.error("pre-update-entry error:", e);
   }
   event.next();
 };

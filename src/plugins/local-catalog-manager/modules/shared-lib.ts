@@ -8,6 +8,12 @@
 // helpers travel along.
 
 import {
+  decodeExtId,
+  decodeLocalId,
+  encodeMediaId,
+  isCustomSourceId,
+} from "../../../_utils/custom-source-id";
+import {
   diffCatalog,
   mergeCatalog,
   parseCatalog,
@@ -15,13 +21,13 @@ import {
   serializeCatalog,
 } from "../../../_utils/local-catalog/parse";
 import {
-  decodeLocalId,
   diffProgress,
   mergeProgress,
   parseProgress,
   progressMangaEquals,
   serializeProgress,
 } from "../../../_utils/local-catalog/progress";
+import { createLogger } from "../../../_utils/logger";
 import {
   nextId,
   removeEntry,
@@ -40,6 +46,7 @@ import {
 } from "../utils/progress-sync";
 
 export const sharedLib = () => ({
+  createLogger,
   GistClient,
   // catalog read/write
   parseCatalog,
@@ -51,8 +58,12 @@ export const sharedLib = () => ({
   removeEntry,
   nextId,
   validateEntry,
-  // progress
+  // mediaId codec
   decodeLocalId,
+  decodeExtId,
+  encodeMediaId,
+  isCustomSourceId,
+  // progress
   parseProgress,
   serializeProgress,
   mergeProgress,

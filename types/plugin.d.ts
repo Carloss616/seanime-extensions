@@ -214,6 +214,22 @@ declare namespace $store {
   function removeAll(): void;
 }
 
+/** Plugin debug logger. Available in ALL plugin runtimes, but every method is
+ *  a no-op unless the plugin runs in development mode (`$debug.enabled`).
+ *  NOT available in custom-source runtimes — use `_utils/log.ts` `createLogger`
+ *  for code that may run in either. See seanime docs "Debug". */
+declare namespace $debug {
+  const enabled: boolean;
+  function log(...values: unknown[]): void;
+  function info(...values: unknown[]): void;
+  function warn(...values: unknown[]): void;
+  function error(...values: unknown[]): void;
+  function debug(...values: unknown[]): void;
+  function clear(): void;
+  function time(label?: string): void;
+  function timeEnd(label?: string): void;
+}
+
 /** Plugin UI surface.
  *
  *  Only the bits this plugin uses are typed here. All declarations mirror the

@@ -1,3 +1,9 @@
+// Bundle-time literal: scripts/build.ts replaces this bare identifier (via
+// Bun.build `define`) with the owning extension's manifest `id`. It never
+// exists at runtime — `getManifestId()` in src/_utils/manifest-id.ts is the
+// only intended reader. Type-only declaration, no emit.
+declare const __MANIFEST_ID__: string;
+
 declare function fetch(
   url: string,
   options?: FetchOptions,

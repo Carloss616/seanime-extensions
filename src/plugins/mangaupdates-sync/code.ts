@@ -37,7 +37,5 @@ export function init() {
   $app.onPostUpdateEntryProgress(onPostUpdateEntry);
   $app.onPostUpdateEntry(onPostUpdateEntry);
 
-  console.log("[mangaupdates-sync] initialized");
-
   $ui.register(register);
 }

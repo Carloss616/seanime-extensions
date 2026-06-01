@@ -9,8 +9,10 @@
 // travels along — and lives ONCE here instead of being inlined into BOTH the
 // register and post-update wrappers (the bundle-size win $shared exists for).
 
+import { createLogger } from "../../../_utils/logger";
 import { MUClient } from "../utils/mu-client";
 
 export const sharedLib = () => ({
   MUClient,
+  createLogger,
 });

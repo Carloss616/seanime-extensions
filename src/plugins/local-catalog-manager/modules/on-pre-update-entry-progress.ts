@@ -6,6 +6,9 @@ import type { sharedLib } from "./shared-lib";
 export const onPreUpdateEntryProgress = (
   event: $app.PreUpdateEntryProgressEvent,
 ) => {
+  const { createLogger, decodeLocalId } =
+    $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
+  const log = createLogger();
   try {
     if (event.mediaId == null) {
       event.next();
@@ -18,8 +21,6 @@ export const onPreUpdateEntryProgress = (
       event.next();
       return;
     }
-    const { decodeLocalId } =
-      $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
     let m: $app.AL_BaseManga | null = null;
     try {
       m = $anilist.getManga(event.mediaId);
@@ -45,10 +46,7 @@ export const onPreUpdateEntryProgress = (
     }
     $store.set(`progress:${event.mediaId}`, payload);
   } catch (e) {
-    console.error(
-      "[local-catalog-manager] pre-update-entry-progress error:",
-      e,
-    );
+    log.error("pre-update-entry-progress error:", e);
   }
   event.next();
 };

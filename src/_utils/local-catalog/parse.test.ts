@@ -7,72 +7,91 @@ import {
   serializeCatalog,
 } from "./parse.ts";
 
+// parseCatalog takes a Console for warnings (bad entries, version mismatch).
+// These tests assert on parse output, not logging, so route it to a silent
+// stub to keep test output clean.
+const log = {
+  log() {},
+  info() {},
+  warn() {},
+  error() {},
+  debug() {},
+} as unknown as Console;
+
 describe("parseCatalog", () => {
   test("reads the manga array from an object", () => {
-    const out = parseCatalog({
-      version: 1,
-      manga: [{ id: 1, title: "A" }],
-    });
+    const out = parseCatalog(
+      {
+        version: 1,
+        manga: [{ id: 1, title: "A" }],
+      },
+      log,
+    );
     expect(out).toHaveLength(1);
     expect(out[0].id).toBe(1);
   });
 
   test("accepts a bare array", () => {
-    const out = parseCatalog([{ id: 5, title: "B" }]);
+    const out = parseCatalog([{ id: 5, title: "B" }], log);
     expect(out).toHaveLength(1);
     expect(out[0].id).toBe(5);
   });
 
   test("accepts a JSON string and returns [] on bad JSON", () => {
     expect(
-      parseCatalog('{"version":1,"manga":[{"id":1,"title":"A"}]}'),
+      parseCatalog('{"version":1,"manga":[{"id":1,"title":"A"}]}', log),
     ).toEqual([{ id: 1, title: "A" }]);
-    expect(parseCatalog("not json")).toEqual([]);
+    expect(parseCatalog("not json", log)).toEqual([]);
   });
 
   test("skips entries with no valid id", () => {
-    const out = parseCatalog([
-      { id: 0, title: "zero" },
-      { id: -1, title: "neg" },
-      { title: "noid" },
-      { id: 2, title: "ok" },
-    ]);
+    const out = parseCatalog(
+      [
+        { id: 0, title: "zero" },
+        { id: -1, title: "neg" },
+        { title: "noid" },
+        { id: 2, title: "ok" },
+      ],
+      log,
+    );
     expect(out.map((e) => e.id)).toEqual([2]);
   });
 
   test("skips entries with no resolvable title", () => {
-    const out = parseCatalog([
-      { id: 1 },
-      { id: 2, title: "" },
-      { id: 3, title: { english: "x" } },
-    ]);
+    const out = parseCatalog(
+      [{ id: 1 }, { id: 2, title: "" }, { id: 3, title: { english: "x" } }],
+      log,
+    );
     expect(out.map((e) => e.id)).toEqual([3]);
   });
 
   test("dedupes by id, last wins", () => {
-    const out = parseCatalog([
-      { id: 1, title: "first" },
-      { id: 1, title: "second" },
-    ]);
+    const out = parseCatalog(
+      [
+        { id: 1, title: "first" },
+        { id: 1, title: "second" },
+      ],
+      log,
+    );
     expect(out).toHaveLength(1);
     expect(out[0].title).toBe("second");
   });
 
   test("coerces a numeric-string id to a number", () => {
-    const out = parseCatalog([{ id: "5", title: "S" }]);
+    const out = parseCatalog([{ id: "5", title: "S" }], log);
     expect(out).toHaveLength(1);
     expect(out[0].id).toBe(5);
   });
 
   test("survives null / non-object array items", () => {
-    const out = parseCatalog([null, 5, "x", { id: 1, title: "ok" }]);
+    const out = parseCatalog([null, 5, "x", { id: 1, title: "ok" }], log);
     expect(out.map((e) => e.id)).toEqual([1]);
   });
 
   test("returns empty for garbage parsed input", () => {
-    expect(parseCatalog(null)).toEqual([]);
-    expect(parseCatalog(42)).toEqual([]);
-    expect(parseCatalog({})).toEqual([]);
+    expect(parseCatalog(null, log)).toEqual([]);
+    expect(parseCatalog(42, log)).toEqual([]);
+    expect(parseCatalog({}, log)).toEqual([]);
   });
 });
 

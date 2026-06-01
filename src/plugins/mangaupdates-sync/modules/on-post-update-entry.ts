@@ -1,10 +1,18 @@
-import { SHARED_LIB_NAME } from "../utils/constants";
+import {
+  decodeLocalId,
+  isCustomSourceId,
+} from "../../../_utils/custom-source-id";
+import { SHARED_LIB_NAME, SOURCE_PREFIX } from "../utils/constants";
 import { getMULink, setMULink } from "../utils/link-store";
 import type { sharedLib } from "./shared-lib";
 
 export const onPostUpdateEntry = (
   event: $app.PostUpdateEntryProgressEvent | $app.PostUpdateEntryEvent,
 ) => {
+  const { MUClient, createLogger } =
+    $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
+  const log = createLogger();
+
   try {
     const mediaId = event.mediaId;
     if (mediaId == null) {
@@ -23,15 +31,7 @@ export const onPostUpdateEntry = (
     }
     $store.remove(key);
 
-    // MUClient is shared across runtimes via $shared (defined in code.ts
-    // init()) — resolved only once we know there's a pending update to push.
-    const { MUClient } =
-      $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
-
     (async () => {
-      const EXT_ID_OFFSET = 0x80000000;
-      const LOCAL_ID_RANGE = 0x10000000000;
-
       let manga: $app.AL_BaseManga | undefined;
       try {
         manga = $anilist.getManga(mediaId);
@@ -45,17 +45,14 @@ export const onPostUpdateEntry = (
       let externalId: string | undefined;
 
       // 1. Custom-source MU — decode local id from the synthetic mediaId.
-      if (mediaId >= EXT_ID_OFFSET) {
+      if (isCustomSourceId(mediaId)) {
         const siteUrl = manga?.siteUrl;
-        if (
-          siteUrl &&
-          siteUrl.indexOf("ext_custom_source_mangaupdates|END|") === 0
-        ) {
-          const localId = (mediaId - EXT_ID_OFFSET) % LOCAL_ID_RANGE;
+        if (siteUrl && siteUrl.indexOf(SOURCE_PREFIX) === 0) {
+          const localId = decodeLocalId(mediaId);
           if (localId > 0) {
             externalId = String(localId);
-            console.log(
-              "[mangaupdates-sync] custom-source mangaupdates media " +
+            log.info(
+              "custom-source mangaupdates media " +
                 mediaId +
                 " -> series_id=" +
                 externalId,
@@ -95,8 +92,8 @@ export const onPostUpdateEntry = (
       }
 
       if (!externalId) {
-        console.warn(
-          "[mangaupdates-sync] no MU link for media " +
+        log.warn(
+          "no MU link for media " +
             mediaId +
             " — open the entry page and click 'Link to MangaUpdates' to set one." +
             " Alternatively enable 'Auto-match fallback' in plugin settings.",
@@ -115,8 +112,8 @@ export const onPostUpdateEntry = (
         await mu.pushRating(seriesIdNum, update.scoreRaw);
       }
 
-      console.log(
-        "[mangaupdates-sync] pushed media " +
+      log.info(
+        "pushed media " +
           mediaId +
           " -> MU " +
           externalId +
@@ -129,13 +126,10 @@ export const onPostUpdateEntry = (
           ")",
       );
     })().catch((err) => {
-      console.error(
-        `[mangaupdates-sync] push failed for media ${mediaId}:`,
-        err,
-      );
+      log.error(`push failed for media ${mediaId}:`, err);
     });
   } catch (e) {
-    console.error("[mangaupdates-sync] post hook error:", e);
+    log.error("post hook error:", e);
   }
   event.next();
 };

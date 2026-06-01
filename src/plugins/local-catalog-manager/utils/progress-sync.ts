@@ -1,14 +1,22 @@
 // Plugin-only sync ops for V2-B progress sync. The pure pieces
-// (parseProgress/serializeProgress/mergeProgress/decodeLocalId) live in
-// src/_shared/local-catalog/progress.ts; this module wires them to the
+// (parseProgress/serializeProgress/mergeProgress) live in
+// src/_utils/local-catalog/progress.ts and the mediaId codec in
+// src/_utils/custom-source-id.ts; this module wires them to the
 // GistClient and to the live library.
 
+import {
+  decodeExtId,
+  isCustomSourceId,
+} from "../../../_utils/custom-source-id";
 import {
   mergeProgress,
   parseProgress,
   serializeProgress,
 } from "../../../_utils/local-catalog/progress";
+import { createLogger } from "../../../_utils/logger";
 import type { GistClient } from "./gist-client";
+
+const log = createLogger();
 
 export interface ApplyDeps {
   updateEntry: (
@@ -35,9 +43,7 @@ export function applyRemote(
     const mediaId = deps.mediaIdByLocalId.get(Number(localIdStr));
     if (mediaId == null) {
       skipped++;
-      console.warn(
-        `local-catalog-manager: orphan progress for localId ${localIdStr} (not in collection)`,
-      );
+      log.warn(`orphan progress for localId ${localIdStr} (not in collection)`);
       continue;
     }
     deps.updateEntry(
@@ -67,8 +73,6 @@ export function buildMediaIdLookup(
   decodeLocalId: (mediaId: number) => number,
   opts: { extId?: number } = {},
 ): Map<number, number> {
-  const EXT_OFFSET = 0x80000000;
-  const LOCAL_RANGE = 0x10000000000;
   const map = new Map<number, number>();
   const lists = collection.lists ?? [];
   for (const l of lists) {
@@ -78,11 +82,10 @@ export function buildMediaIdLookup(
       if (typeof mediaId !== "number") continue;
       if (opts.extId != null) {
         // Decode-and-match: works even when siteUrl is missing. Cheap early
-        // skip for AniList-range ids (< EXT_OFFSET would yield negative
-        // offsets that never match a valid extId 1-1023).
-        if (mediaId < EXT_OFFSET) continue;
-        const extId = Math.floor((mediaId - EXT_OFFSET) / LOCAL_RANGE);
-        if (extId !== opts.extId) continue;
+        // skip for AniList-range ids (a non-custom-source id never matches a
+        // valid extId 1-1023).
+        if (!isCustomSourceId(mediaId)) continue;
+        if (decodeExtId(mediaId) !== opts.extId) continue;
       } else {
         const siteUrl = e.media?.siteUrl;
         if (!siteUrl || siteUrl.indexOf(prefix) !== 0) continue;
@@ -138,7 +141,7 @@ export async function pushProgress(
   } catch (_) {
     remoteStr = "";
   }
-  const remote = parseProgress(remoteStr);
+  const remote = parseProgress(remoteStr, log);
   const merged = mergeProgress(local, remote, now);
   await client.updateGistFile(gistId, filename, serializeProgress(merged));
   return merged;
@@ -157,7 +160,7 @@ export async function pullProgress(
   } catch (_) {
     remoteStr = "";
   }
-  const remote = parseProgress(remoteStr);
+  const remote = parseProgress(remoteStr, log);
   return mergeProgress(local, remote, now);
 }
 
@@ -241,7 +244,7 @@ export async function handlePostUpdate(
   } catch (_) {
     remoteStr = "";
   }
-  const remote = parseProgress(remoteStr);
+  const remote = parseProgress(remoteStr, log);
   const remoteEntry = remote.manga[key];
   if (remoteEntry) {
     // Restore from remote — this preserves the source of truth.

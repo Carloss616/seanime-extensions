@@ -5,7 +5,7 @@
 
 // $shared.define key — must match the string passed to `$shared.use` in
 // every hook callback and the register module.
-export const SHARED_LIB_NAME = "local-catalog";
+export const SHARED_LIB_NAME = __MANIFEST_ID__;
 
 // Custom-source identity. Seanime wraps a custom-source manga's siteUrl as
 // `ext_custom_source_<manifest-id>|END|<original-url>`; we filter incoming
