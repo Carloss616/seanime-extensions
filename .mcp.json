@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "seanime-extensions": {
+      "type": "http",
+      "url": "https://seanime.gitbook.io/seanime-extensions/~gitbook/mcp"
+    }
+  }
+}
