@@ -10,8 +10,6 @@
 // too — parseInt("159441.cover") === 159441 then yields duplicate rows.
 // listMULinkIds() below matches only top-level `mu_link_<digits>` keys, which
 // both skips the sub-keys and dedupes them back to the parent id.
-//
-// Pure functions over the $storage global — safe to inline into goja callbacks.
 
 import type { MUResult } from "./mu-client";
 
@@ -39,8 +37,7 @@ export function removeMULink(mediaId: number | string): void {
 }
 
 // Enumerate the mediaIds of every linked entry. Matches only top-level keys
-// (`mu_link_<digits>`, no trailing ".field"), which both skips the nested leaf
-// sub-keys $storage emits and dedupes them back to their parent id.
+// (`mu_link_<digits>`, no trailing ".field") — see the nested-key gotcha above.
 export function listMULinkIds(): number[] {
   const seen: Record<string, boolean> = {};
   const ids: number[] = [];

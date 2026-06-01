@@ -1,11 +1,6 @@
-// MangaUpdates v1 REST client.
-//
-// Imported by the isolated callback modules under `modules/` (e.g.
-// on-post-update-entry.ts, register.ts). The build (scripts/build.ts) bundles
-// each module standalone, so this class is inlined into each module bundle, and
-// then the module bundle is wrapped as a self-contained callback body — landing
-// MUClient physically inside every goja-isolated callback that needs it. See
-// CLAUDE.md "Splitting an extension across multiple files".
+// MangaUpdates v1 REST client. Inlined into every goja-isolated callback that
+// needs it (via the modules/ self-containerization, or once through $shared).
+// See CLAUDE.md "Splitting an extension across multiple files".
 
 import { createLogger } from "../../../_utils/logger";
 import { MUClientBase } from "../../../_utils/mangaupdates/client";
@@ -97,9 +92,9 @@ export class MUClient extends MUClientBase {
     return token;
   }
 
-  /** Returns a usable bearer token, performing a login (and storing the
-   *  token in `$storage`) if no stored token is present or the stored one
-   *  fails the cheap `/account/profile` probe with 401. */
+  /** Returns a usable bearer token. Logs in (caching the token in `$storage`)
+   *  when none is stored; `refresh=true` forces a fresh login, bypassing the
+   *  cache (used by `req`'s onRefreshToken to recover from an expired token). */
   private async ensureToken(refresh = false): Promise<string> {
     let token = refresh ? undefined : $storage.get<string>(this.tokenKey);
     const username = $getUserPreference("username");

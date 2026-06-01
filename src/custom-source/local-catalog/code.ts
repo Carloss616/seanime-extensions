@@ -1,8 +1,8 @@
 import { LCClient, normalizeEntry, searchAndPaginate } from "./utils/lc-client";
 
 export class Provider implements CustomSource {
-  // Read client (catalog fetch + TTL cache + normalization). Injects the goja
-  // globals available in custom-source runtimes.
+  // Read client (catalog fetch + TTL cache + normalization). `fetch` and
+  // `$getUserPreference` are the goja globals available in custom-source runtimes.
   private client = new LCClient(fetch, $getUserPreference);
 
   getSettings(): Settings {

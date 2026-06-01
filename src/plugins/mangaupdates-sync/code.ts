@@ -23,8 +23,8 @@ import { SHARED_LIB_NAME } from "./utils/constants";
 // every callback that needs it (the register module AND the post-update hook),
 // it is exposed through `$shared` (see modules/shared-lib.ts): the factory is
 // `$shared.define`d here, and each consumer calls `$shared.use(SHARED_LIB_NAME)`
-// — so the ~180-line class travels once instead of being duplicated per
-// wrapper. Pre→Post payloads cross runtimes via `$store`.
+// — so the class travels once instead of being duplicated per wrapper.
+// Pre→Post payloads cross runtimes via `$store`.
 
 export function init() {
   // $shared.define MUST come before any hook / UI registration (per the docs)

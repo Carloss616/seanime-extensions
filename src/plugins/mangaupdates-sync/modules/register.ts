@@ -18,31 +18,21 @@ import type { MUResult } from "../utils/mu-client";
 import type { sharedLib } from "./shared-lib";
 
 // UI: explicit AniList ↔ MangaUpdates linking.
-//
-// The plugin uses only primitives documented at
-// https://seanime.gitbook.io/seanime-extensions:
-//   - ctx.action.newMangaPageButton (per-page status + entry trigger)
-//   - ctx.newTray + tray.* (search UI; user must pin the tray icon)
-//   - ctx.fetch (UI-context HTTP — domain is whitelisted in the manifest)
-//   - ctx.state, ctx.effect, ctx.fieldRef, ctx.registerEventHandler,
-//     ctx.eventHandler, ctx.toast, ctx.screen.{onNavigate, loadCurrent}
-//   - $storage, $anilist (per-plugin storage + AniList lookup)
 export const register = (ctx: PluginContext) => {
-  // MUClient is shared across runtimes via $shared (defined in code.ts init()).
+  // $shared.use re-evals the factory in this runtime, so MUClient is a
+  // runtime-local copy of the class defined in code.ts init().
   const { MUClient, createLogger } =
     $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
   const log = createLogger();
 
   const tray = ctx.newTray({
     tooltipText: "MangaUpdates Sync — linking",
-    // SeaImage (seanime's image component) silently blocks non-raster
-    // suffixes, and `.ico` falls into that bucket — points at the
-    // extension's own `icon.png` from the github raw URL instead.
+    // SeaImage silently blocks non-raster icon suffixes (incl. .ico), so
+    // point at the extension's own icon.png raw URL instead.
     iconUrl: `${GITHUB_RAW_WORKSPACE}/src/plugins/mangaupdates-sync/assets/icon.png`,
     withContent: true,
   });
 
-  // Reactive state
   const currentMediaId = ctx.state(0);
   const searchInputRef = ctx.fieldRef<string>("");
   const searchResults = ctx.state<MUResult[]>([]);
@@ -62,10 +52,9 @@ export const register = (ctx: PluginContext) => {
   // collapsed on every navigation so each entry opens in entry-mode.
   const showAllLinked = ctx.state(false);
 
-  // Track current entry via screen.onNavigate. We don't filter by
-  // pathname — any navigation event carrying an `id` searchParam is
-  // treated as a media entry. The button click handler also seeds
-  // currentMediaId from `event.media.id` as a belt-and-suspenders.
+  // Any navigation carrying an `id` searchParam is treated as a media entry
+  // (no pathname filter). The button click handler also seeds currentMediaId
+  // from event.media.id, in case onNavigate didn't catch the route.
   ctx.screen.onNavigate((e) => {
     showAllLinked.set(false);
     const id = e.searchParams?.id;
@@ -80,15 +69,14 @@ export const register = (ctx: PluginContext) => {
   });
   ctx.screen.loadCurrent();
 
-  // MangaPageButton — only documented props (no tooltipText / setLoading).
   const btn = ctx.action.newMangaPageButton({
     label: "Link to MangaUpdates",
     intent: "primary-subtle",
   });
 
-  // Recompute the button label from $storage. Hides the button when the
-  // entry comes from the mangaupdates custom-source (sync uses the
-  // embedded id, no linking needed).
+  // Recompute the button label from $storage. Hides the button for
+  // mangaupdates custom-source entries (sync uses the embedded id, no
+  // linking needed — detected via the SOURCE_PREFIX siteUrl prefix).
   ctx.effect(() => {
     const id = currentMediaId.get();
     if (!id) {
@@ -118,31 +106,22 @@ export const register = (ctx: PluginContext) => {
   }, [currentMediaId]);
 
   // MU icon injected next to the AniList icon on the manga entry page.
-  //
   // Pattern (cribbed from the `quick-access` plugin):
-  //   1. `ctx.dom.observe` on `[data-manga-entry-page]` with
-  //      `withInnerHTML + identifyChildren`. Each tick gives us a
-  //      synchronous snapshot of the entry page and auto-assigned ids
-  //      on every child so we can re-acquire live handles via
-  //      `ctx.dom.asElement(id)`.
-  //   2. `LoadDoc` parses the snapshot. We look up the AniList button
-  //      via the documented `data-manga-meta-section-buttons-container`
-  //      attribute (NOT a href match — robust to AL link changes).
-  //   3. Idempotency: each injected icon is marked with
-  //      `data-mu-sync-key="mu"`. If the snapshot already contains it,
-  //      we only update its href; otherwise we insert one. No
-  //      remove-and-reinsert dance, no async races — fixes the
-  //      duplicate-icon bug.
+  //   1. ctx.dom.observe (withInnerHTML + identifyChildren) gives a sync
+  //      snapshot plus auto-assigned child ids for re-acquiring live handles
+  //      via ctx.dom.asElement(id).
+  //   2. LoadDoc parses the snapshot; the AniList button is located via the
+  //      data-manga-meta-section-buttons-container attribute (not a href
+  //      match — robust to AL link changes).
+  //   3. Idempotency: each injected icon carries data-mu-sync-key="mu". If
+  //      the snapshot already has it we only refresh its href, else insert
+  //      one — no remove/reinsert, no async races (fixes duplicate-icon bug).
   const MU_ICON_KEY = "mu";
-  // Path-based "MU" letterform — same approach as the AniList icon.
-  // SVG `<text>` rendering depends on the user's system font fallback
-  // chain (gets jagged/clipped at icon scale); paths render crisp at
-  // any size. Geometry is sized to fill ~75% of the 24x24 viewBox so
-  // the rendered height matches the AL icon (~13.5px in `text-lg`).
-  // Color is `currentColor` so it inherits the button's `text-[--gray]`.
-  // Markup itself lives in assets/mu-letter.svg, inlined as a string
-  // literal at build time (Bun.build's `text` loader) — used directly
-  // as `muLetterSvg` below, no intermediate const needed.
+  // Letterform is a path SVG, not <text>: <text> depends on the user's font
+  // fallback chain and clips/jags at icon scale. Sized to ~75% of the 24x24
+  // viewBox to match the AL icon height; currentColor inherits the button's
+  // text-[--gray]. Markup is inlined from assets/mu-letter.svg as a string
+  // literal at build time (Bun.build's `text` loader) — used as muLetterSvg.
 
   const resolveMULink = (mediaId: number): { url?: string; title?: string } => {
     let media: $app.AL_BaseManga | undefined;
@@ -152,10 +131,9 @@ export const register = (ctx: PluginContext) => {
       media = undefined;
     }
     if (!media) return {};
-    // Custom-source mangaupdates entries: skip injection. seanime already
-    // renders its own native external-link button for custom-source entries
-    // (pointing at the same series URL it stored in siteUrl), so adding our
-    // MU icon here would just duplicate it.
+    // Skip injection for custom-source entries: seanime already renders its
+    // own external-link button pointing at the same series URL, so ours would
+    // just duplicate it.
     if (media.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0) {
       return {};
     }
@@ -200,8 +178,8 @@ export const register = (ctx: PluginContext) => {
         : "View on MangaUpdates";
 
       if (existingId) {
-        // Already present — just refresh href + title (handles
-        // entry-to-entry navigation and link changes).
+        // Refresh href + title in place (handles entry-to-entry navigation
+        // and link changes).
         const existing = ctx.dom.asElement(existingId);
         existing.setAttribute("href", linkInfo.url);
         existing.setAttribute("title", titleAttr);
@@ -229,11 +207,8 @@ export const register = (ctx: PluginContext) => {
     { withInnerHTML: true, identifyChildren: true },
   );
 
-  // Shared unlink logic for both the current-entry "Unlink" button (Section A,
-  // via the static "mu-clear-link" handler) and the per-row ⛔ buttons
-  // (Section B, via minted `mu-unlink-<id>` handlers). They differ only in how
-  // the id is bound — singular current entry vs per-row closure — so the body
-  // lives here once.
+  // Shared unlink body for both the per-entry "Unlink" button and the per-row
+  // ⛔ buttons — they differ only in how the id is bound.
   const unlinkMedia = (id: number) => {
     removeMULink(id);
     ctx.toast.info("Link cleared");
@@ -251,15 +226,15 @@ export const register = (ctx: PluginContext) => {
 
   const mu = new MUClient((url, init) => ctx.fetch(url, init));
 
-  // Pushes the current AniList listData (status / progress / score) to
-  // the linked MU series. Used at link-time so MU mirrors AL immediately;
-  // subsequent AL edits are handled by the post-update hook.
+  // Pushes the current AniList listData (status / progress / score) to the
+  // linked MU series at link-time so MU mirrors AL immediately; subsequent AL
+  // edits are handled by the post-update hook.
   async function syncStatsToMU(mediaId: number): Promise<boolean> {
     const link = getMULink(mediaId);
     if (!link?.id) return false;
 
-    // Locate the listData by scanning the manga collection. Cheaper than
-    // refetching from AniList — the collection is already cached client-side.
+    // Scan the (client-cached) manga collection for listData — cheaper than
+    // refetching from AniList.
     let listData: MangaListEntry["listData"] | undefined;
     try {
       const collection = await ctx.manga.getCollection();
@@ -290,8 +265,8 @@ export const register = (ctx: PluginContext) => {
     return true;
   }
 
-  // Search MangaUpdates. The HTTP + response-shaping lives in MUClient
-  // (mu.searchSeries); this wrapper just drives the reactive UI state.
+  // Drives the reactive UI state around mu.search (which does the HTTP +
+  // response-shaping).
   async function runSearch(query: string) {
     const q = (query || "").trim();
     if (q.length < 2) {
@@ -332,18 +307,17 @@ export const register = (ctx: PluginContext) => {
   ctx.registerEventHandler("mu-show-all", () => showAllLinked.set(true));
   ctx.registerEventHandler("mu-show-current", () => showAllLinked.set(false));
 
-  // Button click: seed the input, run an initial search, and try to open
-  // the tray (works only if the user has pinned it — documented limitation).
-  // Also force currentMediaId from event.media: depending on the route the
-  // user took (e.g. opening the page directly), onNavigate may not have
-  // fired with a recognized pathname yet, leaving the tray with id=0.
+  // Seeds currentMediaId from event.media (onNavigate may not have fired for
+  // the route, e.g. opening the page directly), seeds the input, runs an
+  // initial search, and tries to open the tray — which only works if the user
+  // has pinned it (a seanime limitation).
   btn.onClick(async (event) => {
     const media = event.media;
     if (!media) return;
     showAllLinked.set(false);
     if (media.id) currentMediaId.set(media.id);
-    // English title takes priority — MangaUpdates is an English-language
-    // database, so matches are most reliable against English titles.
+    // English title first — MangaUpdates is an English-language DB, so matches
+    // are most reliable against English titles.
     const title =
       (media.title &&
         (media.title.english ||
@@ -368,12 +342,8 @@ export const register = (ctx: PluginContext) => {
   });
   btn.mount();
 
-  // ---- Reusable render helpers (kept DRY across the tray's two modes) ----
-
-  // One linked-manga row. Used both for the single current-entry item (entry
-  // mode) and every row of the full LINKED (N) list. Publication status + year
-  // come from AniList's clean enum (the $storage key IS the AniList mediaId),
-  // not from MU.
+  // One linked-manga row, used in both tray modes. Publication status + year
+  // come from AniList (the $storage key IS the AniList mediaId), not from MU.
   const buildLinkedRow = (mediaId: number, link: MULink): EntryListRow => {
     let alMedia: $app.AL_BaseManga | undefined;
     try {
@@ -411,9 +381,9 @@ export const register = (ctx: PluginContext) => {
     };
   };
 
-  // The full, locally-filterable "LINKED (N)" list. `inlineActions` lets the
-  // caller drop a header button (e.g. the "Show current" collapse toggle).
-  // `leadingDivider` is suppressed when the list is the first thing rendered.
+  // The full, locally-filterable "LINKED (N)" list. inlineActions lets the
+  // caller drop a header button (e.g. the "Show current" collapse toggle);
+  // leadingDivider is suppressed when the list is rendered first.
   const renderLinkedList = (
     inlineActions: unknown[] = [],
     leadingDivider = true,
@@ -454,8 +424,7 @@ export const register = (ctx: PluginContext) => {
   };
 
   // Search-MangaUpdates UI for the current entry: search row + "Search as"
-  // title shortcuts + the results picker (rendered through the shared
-  // component so it matches the LINKED list visually).
+  // title shortcuts + the results picker.
   const renderSearchUI = (
     media: $app.AL_BaseManga,
     id: number,
@@ -464,11 +433,8 @@ export const register = (ctx: PluginContext) => {
     const out: unknown[] = [];
     const currentInput = (searchInputRef.current || "").trim();
 
-    // Separator between the current entry's link and the search section
-    // (same divider renderEntryListSection draws above its sections).
     out.push(divider(tray));
 
-    // Search row: input + Search + Clear on one row.
     const searchRow: unknown[] = [
       tray.div(
         [tray.input("Search MangaUpdates", { fieldRef: searchInputRef })],
@@ -490,8 +456,8 @@ export const register = (ctx: PluginContext) => {
     }
     out.push(tray.flex(searchRow, { gap: 2, style: { alignItems: "end" } }));
 
-    // "Search as" label + per-title buttons (English / Romaji / Preferred),
-    // deduped and minus whatever is already in the input box.
+    // "Search as" per-title buttons (English / Romaji / Preferred), deduped
+    // and minus whatever is already in the input box.
     const allTitles: Array<{ label: string; value: string }> = [];
     if (media.title) {
       if (media.title.english)
@@ -542,9 +508,8 @@ export const register = (ctx: PluginContext) => {
       );
     }
 
-    // Results picker. Each result maps to an opinionated row: year + "Open ↗"
-    // external link, with Pick / Linked as the trailing action. No in-place
-    // open (the series isn't in seanime yet) and no search row.
+    // Results picker. Pick / Linked trailing action, external-link only — no
+    // in-place open (the series isn't in seanime yet) and no search row.
     const results = searchResults.get();
     if (results.length > 0) {
       const resultRows = results.map((r): EntryListRow => {
@@ -570,8 +535,8 @@ export const register = (ctx: PluginContext) => {
                     bumpLinked();
                     // Re-render the button label.
                     currentMediaId.set(id);
-                    // Re-run the icon observer so the MU icon appears next
-                    // to the AL one immediately.
+                    // Re-run the icon observer so the MU icon appears next to
+                    // the AL one without a navigate-away-and-back.
                     refetchEntryPage();
                     tray.close();
                     // Fire-and-forget: mirror current AL listData to MU.
@@ -619,8 +584,8 @@ export const register = (ctx: PluginContext) => {
   //   - Otherwise (no entry / custom-source / load failure): just the full
   //     LINKED (N) list.
   tray.render(() => {
-    // Subscribe to the non-$storage-reactive signals so pick/unlink/toggle
-    // re-render ($storage itself isn't reactive).
+    // $storage isn't reactive; read linkedRefresh so pick/unlink/toggle
+    // re-render.
     linkedRefresh.get();
     const expanded = showAllLinked.get();
     const items: unknown[] = [];
@@ -659,8 +624,8 @@ export const register = (ctx: PluginContext) => {
       });
 
       if (link) {
-        // The current entry's link as a single-row section, with the
-        // "Show all (N)" toggle in its header.
+        // Single-row section for this entry's link, with the "Show all (N)"
+        // toggle in its header.
         items.push(
           ...renderEntryListSection(tray, {
             headerLabel: "LINKED",

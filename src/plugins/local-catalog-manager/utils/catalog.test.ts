@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { nextId, removeEntry, upsertEntry, validateEntry } from "./catalog.ts";
 
 // parseCatalog / serializeCatalog / resolveUserPreferred live in
-// src/_shared/local-catalog/parse.test.ts (shared with the v1 source).
+// src/_utils/local-catalog/parse.test.ts (shared with the v1 source).
 
 describe("nextId", () => {
   test("empty -> 1, else max+1", () => {

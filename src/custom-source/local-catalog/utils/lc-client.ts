@@ -2,8 +2,8 @@
 //
 // Owns the catalog source (remote URL or inline preference), TTL caching, and
 // normalization of CatalogEntry → $app.AL_BaseManga. The Provider (code.ts) is
-// a thin delegate. Dependencies (`fetch`, `$getUserPreference`, `Date.now`) are
-// injected so the client is unit-testable without the goja globals.
+// a thin delegate. `fetch` and `$getUserPreference` are injected so the client
+// is unit-testable without the goja globals.
 //
 // `parseCatalog` is shared with the local-catalog-manager plugin (it parses the
 // same catalog.json wire format) — see src/_utils/local-catalog/parse.ts.

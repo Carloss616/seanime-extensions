@@ -25,7 +25,7 @@ function parseCatalog(raw, log) {
   } else if (data && typeof data === "object" && Array.isArray(data.manga)) {
     list = data.manga;
   }
-  const byId = new Map();
+  const byId = new Map;
   for (const item of list) {
     const entry = item;
     const id = Number(entry?.id);
@@ -54,7 +54,7 @@ function createLogger() {
     info: (...args) => console.info(prefix, ...args),
     warn: (...args) => console.warn(prefix, ...args),
     error: (...args) => console.error(prefix, ...args),
-    debug: (...args) => console.debug(prefix, ...args),
+    debug: (...args) => console.debug(prefix, ...args)
   };
 }
 
@@ -64,8 +64,7 @@ function coerceTitle(title) {
   if (typeof title === "string") {
     return { english: title, userPreferred: title };
   }
-  const userPreferred =
-    title.userPreferred || title.english || title.romaji || title.native;
+  const userPreferred = title.userPreferred || title.english || title.romaji || title.native;
   return { ...title, userPreferred };
 }
 function normalizeEntry(entry) {
@@ -75,11 +74,8 @@ function normalizeEntry(entry) {
     type: "MANGA",
     siteUrl: entry.siteUrl,
     title: coerceTitle(entry.title),
-    synonyms:
-      entry.synonyms && entry.synonyms.length > 0 ? entry.synonyms : undefined,
-    coverImage: cover
-      ? { extraLarge: cover, large: cover, medium: cover }
-      : undefined,
+    synonyms: entry.synonyms && entry.synonyms.length > 0 ? entry.synonyms : undefined,
+    coverImage: cover ? { extraLarge: cover, large: cover, medium: cover } : undefined,
     bannerImage: entry.banner,
     description: entry.description,
     genres: entry.genres && entry.genres.length > 0 ? entry.genres : undefined,
@@ -89,16 +85,11 @@ function normalizeEntry(entry) {
     volumes: entry.volumes,
     isAdult: entry.isAdult,
     countryOfOrigin: entry.country,
-    startDate:
-      typeof entry.year === "number" ||
-      typeof entry.month === "number" ||
-      typeof entry.day === "number"
-        ? {
-            year: typeof entry.year === "number" ? entry.year : undefined,
-            month: typeof entry.month === "number" ? entry.month : undefined,
-            day: typeof entry.day === "number" ? entry.day : undefined,
-          }
-        : undefined,
+    startDate: typeof entry.year === "number" || typeof entry.month === "number" || typeof entry.day === "number" ? {
+      year: typeof entry.year === "number" ? entry.year : undefined,
+      month: typeof entry.month === "number" ? entry.month : undefined,
+      day: typeof entry.day === "number" ? entry.day : undefined
+    } : undefined
   };
 }
 function matchesSearch(entry, q) {
@@ -108,12 +99,9 @@ function matchesSearch(entry, q) {
     t.romaji,
     t.native,
     t.userPreferred,
-    ...(entry.synonyms || []),
-  ]
-    .filter((s) => typeof s === "string")
-    .join(`
-`)
-    .toLowerCase();
+    ...entry.synonyms || []
+  ].filter((s) => typeof s === "string").join(`
+`).toLowerCase();
   return haystack.includes(q);
 }
 function searchAndPaginate(entries, search, page, perPage) {
@@ -127,7 +115,7 @@ function searchAndPaginate(entries, search, page, perPage) {
     media: slice.map(normalizeEntry),
     page: safePage,
     total: filtered.length,
-    totalPages: Math.ceil(filtered.length / safePerPage),
+    totalPages: Math.ceil(filtered.length / safePerPage)
   };
 }
 
@@ -191,12 +179,12 @@ class Provider {
   async getMangaDetails(id) {
     const entries = await this.client.loadCatalog();
     const entry = entries.find((e) => e.id === id);
-    if (!entry) return null;
+    if (!entry)
+      return null;
     return {
       id: entry.id,
       siteUrl: entry.siteUrl,
-      genres:
-        entry.genres && entry.genres.length > 0 ? entry.genres : undefined,
+      genres: entry.genres && entry.genres.length > 0 ? entry.genres : undefined
     };
   }
   async getAnime(_ids) {

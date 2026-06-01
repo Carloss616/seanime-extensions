@@ -32,7 +32,7 @@ export const onPreUpdateEntry = (event: $app.PreUpdateEntryEvent) => {
       return;
     }
     // Suppress unused warning: decodeLocalId is consumed by the post hook;
-    // we keep the import here to fail fast if the shared lib drops the export.
+    // we destructure it here to fail fast if the shared lib stops surfacing it.
     void decodeLocalId;
     // Build the payload by including ONLY fields that carry a meaningful
     // value. Null/undefined means "this field wasn't part of this update";

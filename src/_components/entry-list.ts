@@ -13,9 +13,6 @@
 //
 // Trailing `actions` (edit / delete / unlink / apply buttons) are still passed
 // pre-built, because their onClick handlers close over per-plugin state.
-//
-// BUILD: never write the 6-char sequence e-x-p-o-r-t inside a string literal
-// in this file — scripts/build.ts splits bundled modules on that substring.
 
 import { divider } from "./divider";
 import { type PillIntent, pill } from "./pill";
@@ -92,7 +89,6 @@ export function renderEntryListSection(
       style: { opacity: "0.35", fontSize: "0.75rem", margin: "0 2px" },
     });
 
-  // Build the dot-separated sub-line from the present declarative fields.
   const subLineSegments = (row: EntryListRow): unknown[] => {
     const segs: unknown[] = [];
     if (row.year != null) {

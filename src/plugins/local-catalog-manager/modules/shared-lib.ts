@@ -1,4 +1,4 @@
-// $shared factory — single export per file (build convention).
+// $shared factory — one public binding per file (build convention).
 // init() registers this via $shared.define("local-catalog", sharedLib);
 // every hook / register module calls $shared.use<ReturnType<typeof sharedLib>>("local-catalog").
 //

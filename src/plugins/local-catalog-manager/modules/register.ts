@@ -29,9 +29,9 @@ import {
 import type { sharedLib } from "./shared-lib";
 
 export const register = (ctx: PluginContext) => {
-  // Custom-source mediaId codec — see CLAUDE.md "Custom-source mediaId
-  // encoding" + src/_utils/custom-source-id.ts. Sourced via $shared so the
-  // single canonical implementation travels into this UI runtime.
+  // Helpers (incl. the custom-source mediaId codec — see CLAUDE.md
+  // "Custom-source mediaId encoding") come via $shared so the single
+  // canonical implementation is re-evaluated into this UI runtime.
   const {
     createLogger,
     GistClient,
@@ -233,16 +233,12 @@ export const register = (ctx: PluginContext) => {
     });
   }
 
-  // Wrap $anilist.updateEntry with the pre/post-hook skip flag so the
-  // update doesn't echo back through our own hooks. Without this, every
-  // remote-applied entry fired a recursive on-pre/on-post-update-entry pair
-  // that captured the just-applied payload, called handlePostUpdate, and
-  // ran an out-of-band pushProgress — racing with the surrounding sync's
-  // updateGistFile. The race left local $storage and the gist with
-  // disagreeing updatedAts, so the next pull saw "remote ahead" and
-  // re-applied the same entry, surfacing the "Synced N progress updates"
-  // toast every time. Matches the existing skip-flag pattern in
-  // handlePostUpdate's restore-from-remote path.
+  // Wrap $anilist.updateEntry with a per-mediaId skip flag so the update
+  // doesn't echo back through our own pre/post-update hooks. Without it, each
+  // remote-applied entry re-triggered the hooks, which ran an out-of-band
+  // pushProgress racing the surrounding sync's updateGistFile — the two then
+  // disagreed on updatedAt, so the next pull saw "remote ahead", re-applied,
+  // and re-fired the "Synced N progress updates" toast every time.
   const applyEntryViaSeanime = (
     mediaId: number,
     status: $app.AL_MediaListStatus | undefined,
@@ -496,12 +492,9 @@ export const register = (ctx: PluginContext) => {
     progressStatus.set(`Deleted orphan #${localId}`);
   }
 
-  // Apply a progress entry to seanime via $anilist.updateEntry. Works for any
-  // localId that has a record in progress.manga — used by both the per-row
-  // Compute the seanime mediaId for a given catalog localId using the cached
+  // Compute the seanime mediaId for a catalog localId from the cached
   // extensionIdentifier. Returns null when the extId hasn't been discovered
-  // yet — callers should kick off discoverExtId() first (or fall through to
-  // the buildMediaIdLookup fallback). Pure sync function — usable from
+  // yet (callers should run discoverExtId() first). Pure sync — usable from
   // render to populate tooltips with the resolved mediaId.
   function mediaIdFor(localId: number): number | null {
     const extId = $storage.get<number>(K_EXT_ID);
@@ -890,7 +883,6 @@ export const register = (ctx: PluginContext) => {
   // Gist binding lives entirely in $storage now (managed from the tray —
   // create / link / unlink / delete remotely).
   const effectiveGistId = (): string => $storage.get<string>(K_GIST) ?? "";
-  // 1 entry vs 2 entries.
   const ent = (n: number) => `${n} ${n === 1 ? "entry" : "entries"}`;
 
   // Reset the armed "Delete remotely" state. Called from every other event
@@ -1514,7 +1506,6 @@ export const register = (ctx: PluginContext) => {
     void push(next);
   });
 
-  // Import is split: Replace wipes local + uses imported as-is; Merge keeps
   // Detect what shape of JSON was pasted into the import box. Catalog and
   // progress both serialize to `{version, updatedAt, manga: ...}` but disagree
   // on `manga`: an Array for catalog, an Object (id → entry) for progress.
@@ -1640,7 +1631,6 @@ export const register = (ctx: PluginContext) => {
     ].map((label, i) => ({ label, value: String(i + 1) })),
   ];
 
-  // Section header style — used for ENTRIES / READING PROGRESS / GIST BINDING.
   const sectionHeader = (label: string) =>
     tray.text(label, {
       style: {
@@ -1653,9 +1643,6 @@ export const register = (ctx: PluginContext) => {
     });
   const sectionDivider = () => divider(tray);
 
-  // Mode header row: icon + bold title (+ optional dim subtitle), with an
-  // optional right-side actions list (pill, button, etc.). Shared by local
-  // and gist modes so both lead with a consistent compact strip.
   const modeHeader = (
     icon: string,
     title: string,
@@ -1685,7 +1672,6 @@ export const register = (ctx: PluginContext) => {
     );
   };
 
-  // Stat card: big number on top, small uppercase caption below.
   const statCard = (value: string, label: string) =>
     tray.div(
       [
@@ -1764,7 +1750,6 @@ export const register = (ctx: PluginContext) => {
         ],
         { gap: 2, style: { alignItems: "center", marginBottom: "6px" } },
       ),
-      // Two stat cards: number of local entries + last updated timestamp.
       tray.flex(
         [
           statCard(String(localEntryCount()), "local entries"),
@@ -1773,8 +1758,6 @@ export const register = (ctx: PluginContext) => {
         { gap: 2 },
       ),
     ];
-    // Orphan list (expandable). Each row: id + status/progress summary +
-    // [🔄 Try apply] [⛔ Delete]. Plus a bulk "Delete all" footer.
     if (oCount > 0 && oExpanded) {
       const catalogIds = new Set(entries.get().map((e) => e.id));
       const orphanIds = detectOrphans(progress.get(), catalogIds);
@@ -1863,9 +1846,6 @@ export const register = (ctx: PluginContext) => {
 
   function renderSync() {
     if (hasToken()) {
-      // Compact header: title + linked/not-linked pill + pencil toggle.
-      // The binding details (short-id + owner + action icons) live inline
-      // below, collapsible via bindingExpanded.
       const gid = effectiveGistId();
       const owner = $storage.get<string>(K_OWNER) ?? "";
       const expanded = bindingExpanded.get();
@@ -1886,11 +1866,9 @@ export const register = (ctx: PluginContext) => {
         ],
       });
       const items: unknown[] = [headerRow];
-      // Status line — only when there's an explicit op result ("Synced N
-      // entries", "Reloaded · N entries", etc.). The static "N entries
-      // synced" fallback was removed because the ENTRIES section header
-      // already shows the count and the Linked pill already signals the
-      // sync state.
+      // Status line only when there's an explicit op result ("Synced N",
+      // "Reloaded · N", …) — the ENTRIES header + Linked pill already convey
+      // the steady state, so there's no static fallback.
       const statusLine = status.get();
       if (statusLine) {
         items.push(
@@ -1903,7 +1881,6 @@ export const register = (ctx: PluginContext) => {
           }),
         );
       }
-      // Collapsible binding details.
       if (expanded) {
         if (gid) {
           const deleteBusy = busyAction.get() === "delete-gist";
@@ -2037,7 +2014,6 @@ export const register = (ctx: PluginContext) => {
     ];
     if (expanded) {
       items.push(
-        // Callout: sandbox limitation + Gist recommendation.
         alertBox(
           tray,
           [
@@ -2218,8 +2194,7 @@ export const register = (ctx: PluginContext) => {
   function renderList() {
     const allEntries = entries.get();
     const drifting = hasDrift();
-    // Filter entries by the active search query (case-insensitive substring
-    // match on the resolved title or any synonym).
+    // Case-insensitive substring match on resolved title or any synonym.
     const q = entrySearch.get().toLowerCase();
     const list = q
       ? allEntries.filter((e) => {
@@ -2242,8 +2217,7 @@ export const register = (ctx: PluginContext) => {
       };
       row.status = statusToPill(e.status);
       // "Open →" (navigate to the seanime entry) is hidden while drift is
-      // pending — the busy "⏳ Opening…" label is dropped in the opinionated
-      // model, but the dynamic tooltip still conveys progress/target.
+      // pending; the tooltip conveys the resolved mediaId / busy state.
       if (!drifting) {
         const inListMediaId = mediaIdLookup.get()?.get(e.id);
         const computedMediaId = mediaIdFor(e.id);
@@ -2373,8 +2347,6 @@ export const register = (ctx: PluginContext) => {
       row.actions = actions;
       return row;
     });
-    // ENTRIES section: header with inline "+ New" + "Reload" buttons, then
-    // the rows. Always shown (empty placeholder if no entries).
     const inlineActions: unknown[] = drifting
       ? []
       : [
@@ -2437,7 +2409,6 @@ export const register = (ctx: PluginContext) => {
                 marginTop: "6px",
               },
             }),
-            // 2×2 button grid (compact, square-ish layout).
             tray.flex(
               [
                 tray.button(resolveBusy ? "⏳ Working…" : "🔀 Merge", {
@@ -2547,15 +2518,10 @@ export const register = (ctx: PluginContext) => {
   function renderForm() {
     const isNew = editingId.get() === 0;
     return tray.stack([
-      // Plain bold heading — the "*" on the Title label below is the
-      // standard required marker, no pill needed.
       tray.text(isNew ? "New entry" : `Edit #${editingId.get()}`, {
         style: { fontWeight: "600", fontSize: "1rem", marginBottom: "4px" },
       }),
-      // Required field.
       tray.input("Title *", { fieldRef: fTitle }),
-      // Section separator: stronger divider + bolder uppercase caption so
-      // the boundary between required and optional is easy to read.
       tray.div([], {
         style: {
           borderTop: "1px solid rgba(255,255,255,0.15)",

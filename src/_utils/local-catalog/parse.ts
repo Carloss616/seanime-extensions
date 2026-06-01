@@ -67,8 +67,8 @@ export function serializeCatalog(
   return JSON.stringify({ version: 1, updatedAt, manga: entries });
 }
 
-// Dedupe-by-id merge of two catalog entry lists. Local wins ties (consistent
-// with mergeProgress). Caller is responsible for sorting / serializing.
+// Dedupe-by-id merge of two catalog entry lists, sorted by id. Local wins ties
+// (consistent with mergeProgress).
 //
 // Used by drift resolution when linking an existing gist that already has
 // entries: "merge" keeps both sides, preferring local when the same id

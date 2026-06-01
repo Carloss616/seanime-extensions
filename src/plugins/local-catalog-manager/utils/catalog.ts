@@ -1,5 +1,5 @@
 // Write-side catalog ops (manager-only). The wire shape + reader-side
-// parse/serialize live in src/_shared/local-catalog/parse.ts, used by both
+// parse/serialize live in src/_utils/local-catalog/parse.ts, used by both
 // this plugin and the local-catalog source.
 
 export function nextId(entries: CatalogEntry[]): number {
