@@ -6,12 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A personal collection of [seanime](https://github.com/5rahim/seanime) extensions. Each extension is a TypeScript entry (`code.ts`) plus a `manifest.json`. The build transpiles `code.ts` to a sibling `code.js`; the manifest's `payloadURI` points at the raw GitHub URL of that `code.js`, which is what seanime fetches and runs. Both source and built `code.js` are committed.
 
+Current extensions: two custom-sources (`mangaupdates`, `local-catalog`) and two plugins (`mangaupdates-sync`, `local-catalog-manager`). `local-catalog` + `local-catalog-manager` are a pair — the plugin manages a catalog the custom-source serves; `mangaupdates` + `mangaupdates-sync` likewise pair a source with its tracker plugin. Code shared across these lives in the repo-root `src/_utils/` and `src/_components/` (see "Cross-extension shared code").
+
 ## Build commands
 
 ```bash
-bun run build        # build every extension + regen marketplace.json
+bun run build        # build every extension + regen marketplace.json (postbuild runs check:fix, so output is always formatted)
 bun run typecheck    # tsc --noEmit over src/+types/ and over scripts/ (two configs)
 bun run check        # biome lint + format check (check:fix to autofix)
+bun run test         # bun test — unit tests in co-located src/**/*.test.ts
+bun run icon         # scripts/svg2png.ts — render an SVG icon to assets/icon.png
 ```
 
 `<type>` folders are: `custom-source`, `manga-provider`, `anime-torrent-provider`, `onlinestream-provider`, `plugin` (the build's `VALID_TYPES` in [scripts/build.ts](scripts/build.ts) validates each manifest's `type`).
@@ -35,6 +39,19 @@ No bundling-to-string: goja has no module system, so `code.js` IS the payload (f
 The `isolate-modules` plugin in [scripts/build.ts](scripts/build.ts) splits each `modules/*.ts` output on the literal string `"export"` expecting exactly TWO parts (body + the single `export { name }`). Any extra occurrence of the substring `export` — inside a string literal, comment, identifier, or template tag — adds a third split and the build fails with `Unexpected number of exports for modules/<file>.ts` at line 0.
 
 Affects only `modules/*.ts` (not the entry `code.ts`, `utils/*`, or non-module files). When writing strings or comments that need a synonym for "export", pick `dump`, `surface`, `save`, `output` — anything that doesn't contain the 6-char sequence `export`. The identifier `expected` is safe (different substring).
+
+## Cross-extension shared code (`src/_utils`, `src/_components`)
+
+Code reused by more than one extension lives at the repo root, outside any `<type>/<id>/` folder, and is imported with relative paths (`../../../_utils/logger`):
+
+- `src/_utils/` — `logger`, `constants`, `anilist-status`, `custom-source-id` (the mediaId encode/decode helpers), plus `mangaupdates/` and `local-catalog/` domain helpers. Each extension's per-extension `utils/*` wrapper (e.g. `mu-client.ts`) now extends a shared base (`_utils/mangaupdates/client.ts`) instead of reimplementing it.
+- `src/_components/` — declarative `$ui` builders: `entry-list`, `alert-box`, `divider`, `pill`.
+
+No build changes were needed: `Bun.build` follows the import graph regardless of file location, so these inline into each `modules/*.ts` / `utils/*` exactly like a sibling `utils/` import (and thus survive the per-callback `.toString()` serialization). The `src/*/*/code.ts` build glob never matches them (wrong depth / filename), so they are not treated as extensions.
+
+## Testing
+
+Unit tests are `*.test.ts` co-located next to source (`bun test`, runner is `bun:test`). Tests cover the shared `_utils`/`_components` and per-extension `utils/`. They are excluded from the build glob (filename ≠ `code.ts`) but ARE type-checked (`tsconfig.json` includes `src/**/*.ts`). Run `bun run test` before committing logic changes to shared code, since one base is inlined into several extensions.
 
 ## Splitting an extension across multiple files
 
