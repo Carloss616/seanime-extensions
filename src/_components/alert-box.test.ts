@@ -33,17 +33,26 @@ describe("alertBox", () => {
     expect(node.children).toEqual([child]);
   });
 
-  test("defaults to the warning intent (thick border, warning bg)", () => {
+  test("defaults to the warning intent (pill warning palette)", () => {
     const node = mkAlert([]);
-    expect(node.opts?.style?.background).toBe("rgba(255,180,0,0.08)");
-    expect(node.opts?.style?.borderLeft).toBe("3px solid rgba(255,180,0,0.7)");
+    expect(node.opts?.style?.background).toBe("rgba(255,200,0,0.15)");
+    expect(node.opts?.style?.borderLeft).toBe("3px solid rgba(255,220,80,1)");
     expect(node.opts?.style?.padding).toBe("10px 12px");
   });
 
-  test("note intent uses the subtler palette", () => {
-    const node = mkAlert([], "note");
-    expect(node.opts?.style?.background).toBe("rgba(255,255,255,0.04)");
-    expect(node.opts?.style?.borderLeft).toBe("2px solid rgba(255,180,0,0.5)");
-    expect(node.opts?.style?.padding).toBe("8px 10px");
+  test("intent colors mirror the pill palette (bg = pill bg, border = pill fg)", () => {
+    const info = mkAlert([], "info");
+    expect(info.opts?.style?.background).toBe("rgba(120,170,255,0.15)");
+    expect(info.opts?.style?.borderLeft).toBe("3px solid rgba(160,200,255,1)");
+
+    expect(mkAlert([], "success").opts?.style?.background).toBe(
+      "rgba(80,200,120,0.15)",
+    );
+    expect(mkAlert([], "alert").opts?.style?.borderLeft).toBe(
+      "3px solid rgba(255,150,150,1)",
+    );
+    expect(mkAlert([], "gray").opts?.style?.background).toBe(
+      "rgba(255,255,255,0.06)",
+    );
   });
 });

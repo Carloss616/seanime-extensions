@@ -69,6 +69,8 @@ describe("buildMediaIdLookup", () => {
   });
 });
 
+// Mirrors the $anilist.updateEntry signature, whose 3rd positional arg is the
+// API-named `scoreRaw` — fed from our ProgressEntry.score (raw POINT_100).
 type UpdateCall = {
   mediaId: number;
   status?: string;
@@ -88,9 +90,9 @@ function fakeUpdate(calls: UpdateCall[]) {
 }
 
 const doc = (
-  manga: Record<string, ProgressEntry>,
+  manga: Record<string, MangaProgressEntry>,
   updatedAt = 0,
-): ProgressDoc => ({ version: 1, updatedAt, manga });
+): LocalProgress => ({ version: 1, updatedAt, manga, anime: {} });
 
 describe("applyRemote", () => {
   test("calls updateEntry for entries newer than local; returns applied count", () => {
@@ -102,7 +104,7 @@ describe("applyRemote", () => {
     const merged = doc({
       "1": { progress: 5, updatedAt: 20, status: "CURRENT" },
       "2": { progress: 2, updatedAt: 50 },
-      "3": { progress: 3, updatedAt: 10, scoreRaw: 700 },
+      "3": { progress: 3, updatedAt: 10, score: 700 },
     });
     const lookup = new Map<number, number>([
       [1, 1001],
@@ -223,10 +225,11 @@ describe("pushProgress", () => {
         manga: { "2": { progress: 20, updatedAt: 50 } },
       }),
     });
-    const local: ProgressDoc = {
+    const local: LocalProgress = {
       version: 1,
       updatedAt: 100,
       manga: { "1": { progress: 10, updatedAt: 100 } },
+      anime: {},
     };
     const merged = await pushProgress(
       fake as unknown as GistClient,
@@ -236,7 +239,7 @@ describe("pushProgress", () => {
       999,
     );
     expect(fake.updateCalls).toHaveLength(1);
-    const pushed = JSON.parse(fake.updateCalls[0].content) as ProgressDoc;
+    const pushed = JSON.parse(fake.updateCalls[0].content) as LocalProgress;
     expect(pushed.manga["1"].progress).toBe(10);
     expect(pushed.manga["2"].progress).toBe(20);
     expect(merged.manga["1"].progress).toBe(10);
@@ -245,10 +248,11 @@ describe("pushProgress", () => {
 
   test("empty / missing remote → pushes local as-is", async () => {
     const fake = makeFakeClient({});
-    const local: ProgressDoc = {
+    const local: LocalProgress = {
       version: 1,
       updatedAt: 0,
       manga: { "1": { progress: 1, updatedAt: 1 } },
+      anime: {},
     };
     await pushProgress(
       fake as unknown as GistClient,
@@ -257,7 +261,7 @@ describe("pushProgress", () => {
       local,
       500,
     );
-    const pushed = JSON.parse(fake.updateCalls[0].content) as ProgressDoc;
+    const pushed = JSON.parse(fake.updateCalls[0].content) as LocalProgress;
     expect(pushed.manga["1"].progress).toBe(1);
     expect(pushed.updatedAt).toBe(500);
   });
@@ -272,10 +276,11 @@ describe("pullProgress", () => {
         manga: { "1": { progress: 5, updatedAt: 200 } },
       }),
     });
-    const local: ProgressDoc = {
+    const local: LocalProgress = {
       version: 1,
       updatedAt: 1,
       manga: { "1": { progress: 9, updatedAt: 100 } },
+      anime: {},
     };
     const merged = await pullProgress(
       fake as unknown as GistClient,
@@ -290,10 +295,11 @@ describe("pullProgress", () => {
 
   test("missing remote → returns local unchanged (with new top-level updatedAt)", async () => {
     const fake = makeFakeClient({});
-    const local: ProgressDoc = {
+    const local: LocalProgress = {
       version: 1,
       updatedAt: 1,
       manga: { "1": { progress: 9, updatedAt: 100 } },
+      anime: {},
     };
     const merged = await pullProgress(
       fake as unknown as GistClient,
@@ -316,24 +322,24 @@ describe("handlePostUpdate", () => {
 
   function makeDeps(
     initial: Record<string, string> = {},
-    local: ProgressDoc = { version: 1, updatedAt: 0, manga: {} },
+    local: LocalProgress = { version: 1, updatedAt: 0, manga: {}, anime: {} },
   ) {
     const fake = makeFakeClient(initial);
     const restoreCalls: RestoreCall[] = [];
-    const persistCalls: Array<{ doc: ProgressDoc; updatedAt: number }> = [];
+    const persistCalls: Array<{ doc: LocalProgress; updatedAt: number }> = [];
     return {
       fake,
       restoreCalls,
       persistCalls,
       local,
-      applyToSeanime: (entry: ProgressEntry) => {
+      applyToSeanime: (entry: MangaProgressEntry) => {
         restoreCalls.push({
           status: entry.status,
-          scoreRaw: entry.scoreRaw,
+          scoreRaw: entry.score,
           progress: entry.progress,
         });
       },
-      persistLocal: (doc: ProgressDoc, updatedAt: number) => {
+      persistLocal: (doc: LocalProgress, updatedAt: number) => {
         persistCalls.push({ doc, updatedAt });
       },
     };
@@ -366,10 +372,11 @@ describe("handlePostUpdate", () => {
   });
 
   test("cache present → push (no remote GET first — trusts local edits)", async () => {
-    const local: ProgressDoc = {
+    const local: LocalProgress = {
       version: 1,
       updatedAt: 5,
       manga: { "1": { progress: 3, updatedAt: 5 } },
+      anime: {},
     };
     const deps = makeDeps({}, local);
     const action = await handlePostUpdate({

@@ -301,6 +301,8 @@ interface DOMManager {
   createElement(tagName: string): Promise<DOMElement>;
   /** Looks up an element by id assigned via `identifyChildren: true`. */
   asElement(id: string): DOMElement;
+  /** Writes text to the user's clipboard (dispatched to the frontend). */
+  clipboard: { write(text: string): void };
 }
 
 /** Goquery-style snapshot parser. The returned `$` is callable with a CSS
@@ -559,7 +561,14 @@ interface Tray {
    *  per the seanime docs — `tray.button` already does, so common usage is
    *  `tray.tooltip(tray.button("✎", { onClick: "..." }), { text: "Edit" })`. */
   tooltip(child: unknown, opts: { text: string }): unknown;
-  input(label: string, opts: { fieldRef: FieldRef<string> }): unknown;
+  input(
+    label: string,
+    opts: {
+      placeholder?: string;
+      textarea?: boolean;
+      fieldRef: FieldRef<string>;
+    },
+  ): unknown;
   button(
     label: string,
     opts?: {

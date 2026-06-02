@@ -14,12 +14,13 @@ import {
   isCustomSourceId,
 } from "../../../_utils/custom-source-id";
 import {
+  coerceTitle,
   diffCatalog,
   mergeCatalog,
   parseCatalog,
   resolveUserPreferred,
   serializeCatalog,
-} from "../../../_utils/local-catalog/parse";
+} from "../../../_utils/local-catalog/catalog";
 import {
   diffProgress,
   mergeProgress,
@@ -49,6 +50,7 @@ export const sharedLib = () => ({
   createLogger,
   GistClient,
   // catalog read/write
+  coerceTitle,
   parseCatalog,
   resolveUserPreferred,
   serializeCatalog,

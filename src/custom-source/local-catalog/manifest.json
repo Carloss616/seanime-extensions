@@ -1,7 +1,7 @@
 {
   "id": "local-catalog",
   "name": "Local Catalog",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "manifestURI": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/local-catalog/manifest.json",
   "language": "typescript",
   "type": "custom-source",
@@ -26,7 +26,7 @@
         "name": "catalog",
         "label": "Inline catalog JSON (used when Catalog URL is empty). The default below is an editable example — replace it with your own entries (full field list in the README).",
         "type": "text",
-        "default": "{\"version\":1,\"manga\":[{\"id\":1,\"title\":\"Example Title\",\"synonyms\":[\"alternate title\"],\"genres\":[\"Action\"],\"status\":\"RELEASING\",\"chapters\":120,\"year\":2024}]}"
+        "default": "{\"version\":2,\"manga\":[{\"id\":1,\"type\":\"MANGA\",\"title\":{\"userPreferred\":\"Example Title\",\"english\":\"Example Title\"},\"synonyms\":[\"alternate title\"],\"genres\":[\"Action\"],\"status\":\"RELEASING\",\"format\":\"MANGA\",\"chapters\":120,\"coverImage\":{\"extraLarge\":\"https://example.com/cover.jpg\"},\"startDate\":{\"year\":2024}}]}"
       },
       {
         "name": "cacheMinutes",

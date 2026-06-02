@@ -37,7 +37,7 @@ export const onPreUpdateEntryProgress = (
     // means "not part of this update"; persisting it would clobber the
     // previously-known value when the post-hook merges into the cached
     // entry. See on-pre-update-entry.ts for the broader rationale.
-    const payload: Partial<ProgressEntry> = {};
+    const payload: Partial<MangaProgressEntry> = {};
     if (event.status != null) payload.status = event.status;
     if (event.progress != null) payload.progress = event.progress;
     if (Object.keys(payload).length === 0) {

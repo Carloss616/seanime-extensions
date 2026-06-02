@@ -13,8 +13,13 @@ import type { sharedLib } from "./shared-lib";
 // + remote present → restore-from-remote, cache absent + remote absent →
 // push-new. We don't block event.next() on the network.
 export const onPostUpdateEntry = (event: $app.PostUpdateEntryEvent) => {
-  const { createLogger, GistClient, decodeLocalId, handlePostUpdate } =
-    $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
+  const {
+    createLogger,
+    GistClient,
+    decodeLocalId,
+    handlePostUpdate,
+    parseProgress,
+  } = $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
   const log = createLogger();
   try {
     if (event.mediaId == null) {
@@ -22,7 +27,7 @@ export const onPostUpdateEntry = (event: $app.PostUpdateEntryEvent) => {
       return;
     }
     const key = `progress:${event.mediaId}`;
-    const payload = $store.get<Partial<ProgressEntry>>(key);
+    const payload = $store.get<Partial<MangaProgressEntry>>(key);
     if (!payload) {
       event.next();
       return;
@@ -31,11 +36,7 @@ export const onPostUpdateEntry = (event: $app.PostUpdateEntryEvent) => {
 
     const localId = decodeLocalId(event.mediaId);
     const now = Date.now();
-    const local = ($storage.get<ProgressDoc>(K_PROGRESS) ?? {
-      version: 1,
-      updatedAt: 0,
-      manga: {},
-    }) as ProgressDoc;
+    const local = parseProgress($storage.get<LocalProgress>(K_PROGRESS), log);
     const token = ($getUserPreference("githubToken") ?? "").trim();
     const gistId = $storage.get<string>(K_GIST) ?? "";
     const syncPaused = $storage.get<boolean>(K_SYNC_PAUSED) ?? false;
@@ -64,7 +65,7 @@ export const onPostUpdateEntry = (event: $app.PostUpdateEntryEvent) => {
       client,
       gistId,
       filename: PROGRESS_FILENAME,
-      applyToSeanime: (entry: ProgressEntry) => {
+      applyToSeanime: (entry: MangaProgressEntry) => {
         // Block recursive capture: our restore triggers $anilist.updateEntry,
         // which fires onPre/PostUpdateEntry again. The pre-hook checks this
         // flag and bails — otherwise we'd restore in a loop.
@@ -73,7 +74,7 @@ export const onPostUpdateEntry = (event: $app.PostUpdateEntryEvent) => {
           $anilist.updateEntry(
             mediaId,
             entry.status,
-            entry.scoreRaw,
+            entry.score,
             entry.progress,
             undefined,
             undefined,
@@ -82,7 +83,7 @@ export const onPostUpdateEntry = (event: $app.PostUpdateEntryEvent) => {
           $store.remove(`progress:skip:${mediaId}`);
         }
       },
-      persistLocal: (doc: ProgressDoc, updatedAt: number) => {
+      persistLocal: (doc: LocalProgress, updatedAt: number) => {
         $storage.set(K_PROGRESS, doc);
         $storage.set(K_PROGRESS_UPDATED, updatedAt);
       },

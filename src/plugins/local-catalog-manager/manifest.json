@@ -1,7 +1,7 @@
 {
   "id": "local-catalog-manager",
   "name": "Local Catalog Manager",
-  "version": "1.0.2",
+  "version": "2.0.0",
   "manifestURI": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/local-catalog-manager/manifest.json",
   "language": "typescript",
   "type": "plugin",
@@ -14,7 +14,7 @@
   "plugin": {
     "version": "1",
     "permissions": {
-      "scopes": ["storage", "anilist", "cron", "extensions"],
+      "scopes": ["storage", "anilist", "cron"],
       "allow": {
         "networkAccess": {
           "allowedDomains": ["api.github.com", "gist.githubusercontent.com"],
@@ -44,12 +44,6 @@
         "name": "syncIntervalMinutes",
         "label": "Auto-sync interval (minutes)",
         "default": "30"
-      },
-      {
-        "type": "switch",
-        "name": "autoCleanProgressOnDelete",
-        "label": "Auto-clean progress when deleting a catalog entry (prevents orphan progress entries)",
-        "default": "true"
       }
     ]
   },

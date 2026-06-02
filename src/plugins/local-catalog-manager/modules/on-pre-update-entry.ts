@@ -41,11 +41,11 @@ export const onPreUpdateEntry = (event: $app.PreUpdateEntryEvent) => {
     // null because AniList uses 0 to mean "un-rated" and omits the field
     // from listData — capturing 0 here desyncs us from seanime's view and
     // creates perpetual false-positive drift in the tray.
-    const payload: Partial<ProgressEntry> = {};
+    const payload: Partial<MangaProgressEntry> = {};
     if (event.status != null) payload.status = event.status;
     if (event.progress != null) payload.progress = event.progress;
     if (event.scoreRaw != null && event.scoreRaw > 0) {
-      payload.scoreRaw = event.scoreRaw;
+      payload.score = event.scoreRaw;
     }
     if (Object.keys(payload).length === 0) {
       event.next();

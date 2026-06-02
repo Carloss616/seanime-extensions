@@ -28,32 +28,49 @@ Open the extension's config in seanime and set one of:
 
 ```jsonc
 {
-  "version": 1,
+  "version": 2,
+  "updatedAt": 1700000000000,        // optional; managed by local-catalog-manager
   "manga": [
     {
-      "id": 1,
-      "title": "Title",
+      "id": 1,                        // required: stable unique integer ≥ 1
+      "type": "MANGA",
+      "title": { "userPreferred": "Title", "english": "Title", "romaji": "", "native": "" },
       "synonyms": ["alt title"],
-      "cover": "https://…",
-      "banner": "https://…",
+      "coverImage": { "extraLarge": "https://…", "large": "https://…", "medium": "https://…", "color": "#abcabc" },
+      "bannerImage": "https://…",
       "description": "…",
       "genres": ["Action"],
-      "status": "RELEASING",
-      "format": "MANGA",
+      "status": "RELEASING",          // AL_MediaStatus
+      "format": "MANGA",              // AL_MediaFormat
       "chapters": 120,
       "volumes": 12,
-      "year": 2021,
+      "startDate": { "year": 2021, "month": 3, "day": 1 },
+      "endDate": { "year": 2024 },
       "isAdult": false,
-      "country": "JP",
-      "siteUrl": "https://…"
+      "countryOfOrigin": "JP",
+      "idMal": 12345,
+      "meanScore": 78,
+      "siteUrl": "https://…",
+      "updatedAt": 1700000000000      // optional per-record merge timestamp; hand authors may omit
     }
-  ]
+  ],
+  "anime": []                          // RESERVED — not served yet
 }
 ```
 
-- `id` (stable, unique, integer ≥ 1) and `title` are required; everything else is optional. A bare array `[ … ]` is also accepted.
-- `title` may be a string or `{ english, romaji, native, userPreferred }`.
-- Good `title` / `synonyms` are what make an entry matchable by your reading provider.
+- Entries use seanime's native `AL_BaseManga` shape. `id` and a non-empty
+  `title` are required; everything else is optional. A bare array `[ … ]` is
+  also accepted and treated as `manga`.
+- `title` may be a string (coerced to `{ userPreferred, english }`) or the full
+  `{ english, romaji, native, userPreferred }` object.
+- `updatedAt` (per record and at the envelope) is merge-metadata managed by the
+  `local-catalog-manager` plugin; hand-authored catalogs can omit it.
+- The `anime` namespace is reserved for a future release — the source does not
+  serve anime yet.
+
+> **Breaking change (v2):** the format moved from the old flat shape
+> (`cover`/`banner`/`year`/`country`) to native `AL_BaseManga`. Regenerate any
+> hand-written catalog accordingly.
 
 ## Reading
 

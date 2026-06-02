@@ -9,7 +9,7 @@ import {
 // The mediaId codec (decodeLocalId/encodeMediaId/…) is tested in
 // src/_utils/custom-source-id.test.ts.
 
-const EMPTY_DOC = { version: 1, updatedAt: 0, manga: {} };
+const EMPTY_DOC = { version: 1, updatedAt: 0, manga: {}, anime: {} };
 
 // parseProgress takes a Console for warnings (version mismatch, missing
 // updatedAt). These tests assert on parse output, not logging, so route it to
@@ -27,6 +27,13 @@ describe("parseProgress", () => {
     expect(parseProgress("", log)).toEqual(EMPTY_DOC);
     expect(parseProgress(null, log)).toEqual(EMPTY_DOC);
     expect(parseProgress("not json", log)).toEqual(EMPTY_DOC);
+  });
+
+  test("empty-doc returns are fresh (not aliased to a shared singleton)", () => {
+    const a = parseProgress("", log);
+    a.manga["1"] = { updatedAt: 1 };
+    const b = parseProgress("", log);
+    expect(Object.keys(b.manga)).toEqual([]);
   });
 
   test("parses a valid doc with manga entries", () => {
@@ -49,6 +56,67 @@ describe("parseProgress", () => {
     });
   });
 
+  test("parses the anime namespace symmetrically", () => {
+    const out = parseProgress(
+      {
+        version: 1,
+        updatedAt: 1,
+        anime: { "7": { status: "COMPLETED", progress: 24, updatedAt: 9 } },
+      },
+      log,
+    );
+    expect(out.anime["7"]).toEqual({
+      status: "COMPLETED",
+      progress: 24,
+      updatedAt: 9,
+    });
+    expect(out.manga).toEqual({});
+  });
+
+  test("spread-preserves unknown/forward-compat entry fields", () => {
+    const out = parseProgress(
+      {
+        version: 1,
+        updatedAt: 0,
+        manga: { "1": { progress: 3, futureField: "x", updatedAt: 5 } },
+      },
+      log,
+    );
+    expect(
+      (out.manga["1"] as unknown as Record<string, unknown>).futureField,
+    ).toBe("x");
+  });
+
+  test("migrates legacy `scoreRaw` → `score` and drops the stale key", () => {
+    const out = parseProgress(
+      {
+        version: 1,
+        updatedAt: 0,
+        manga: { "1": { progress: 3, scoreRaw: 80, updatedAt: 5 } },
+      },
+      log,
+    );
+    expect(out.manga["1"].score).toBe(80);
+    expect(
+      (out.manga["1"] as unknown as Record<string, unknown>).scoreRaw,
+    ).toBeUndefined();
+  });
+
+  test("legacy migration: existing `score` wins over `scoreRaw`", () => {
+    const out = parseProgress(
+      {
+        version: 1,
+        updatedAt: 0,
+        manga: { "1": { score: 90, scoreRaw: 80, updatedAt: 5 } },
+      },
+      log,
+    );
+    expect(out.manga["1"].score).toBe(90);
+    expect(
+      (out.manga["1"] as unknown as Record<string, unknown>).scoreRaw,
+    ).toBeUndefined();
+  });
+
   test("parses from a JSON string", () => {
     expect(
       parseProgress('{"version":1,"updatedAt":5,"manga":{}}', log),
@@ -56,6 +124,7 @@ describe("parseProgress", () => {
       version: 1,
       updatedAt: 5,
       manga: {},
+      anime: {},
     });
   });
 
@@ -64,6 +133,7 @@ describe("parseProgress", () => {
       version: 1,
       updatedAt: 1,
       manga: {},
+      anime: {},
     });
   });
 
@@ -91,58 +161,56 @@ describe("parseProgress", () => {
     );
     expect(Object.keys(out.manga)).toEqual(["1"]);
   });
-
-  test("legacy `entries` field migrates to `manga` on read", () => {
-    // V2-B initial wire format used `entries`. Old gist files / $storage
-    // payloads should be readable so existing installs don't lose data.
-    const out = parseProgress(
-      {
-        version: 1,
-        updatedAt: 7,
-        entries: { "1": { progress: 5, updatedAt: 7 } },
-      },
-      log,
-    );
-    expect(out.manga["1"]).toEqual({ progress: 5, updatedAt: 7 });
-  });
-
-  test("if both `manga` and `entries` are present, `manga` wins", () => {
-    const out = parseProgress(
-      {
-        version: 1,
-        updatedAt: 0,
-        manga: { "1": { progress: 99, updatedAt: 1 } },
-        entries: { "1": { progress: 1, updatedAt: 1 } },
-      },
-      log,
-    );
-    expect(out.manga["1"].progress).toBe(99);
-  });
 });
 
 describe("serializeProgress", () => {
-  test("serializes to a JSON string with version, updatedAt, manga", () => {
-    const doc: ProgressDoc = {
+  test("serializes to a JSON string with version, updatedAt, manga, anime", () => {
+    const doc: LocalProgress = {
       version: 1,
       updatedAt: 123,
       manga: {
         "1": { progress: 5, updatedAt: 123 },
       },
+      anime: {},
     };
     const s = serializeProgress(doc);
     const parsed = JSON.parse(s);
     expect(parsed.version).toBe(1);
     expect(parsed.updatedAt).toBe(123);
     expect(parsed.manga["1"]).toEqual({ progress: 5, updatedAt: 123 });
+    expect(parsed.anime).toEqual({});
   });
 
   test("round-trip: parse(serialize(doc)) === doc", () => {
-    const doc: ProgressDoc = {
+    const doc: LocalProgress = {
       version: 1,
       updatedAt: 999,
       manga: {
-        "1": { status: "CURRENT", progress: 10, scoreRaw: 850, updatedAt: 1 },
+        "1": { status: "CURRENT", progress: 10, score: 850, updatedAt: 1 },
         "2": { updatedAt: 2 },
+      },
+      anime: {},
+    };
+    expect(parseProgress(serializeProgress(doc), log)).toEqual(doc);
+  });
+
+  test("round-trips repeat / startedAt / completedAt and anime entries", () => {
+    const doc: LocalProgress = {
+      version: 1,
+      updatedAt: 1,
+      manga: {
+        "1": {
+          status: "COMPLETED",
+          progress: 12,
+          score: 700,
+          repeat: 2,
+          startedAt: "2024-01-01",
+          completedAt: "2024-02-01",
+          updatedAt: 5,
+        },
+      },
+      anime: {
+        "9": { status: "CURRENT", progress: 3, updatedAt: 8 },
       },
     };
     expect(parseProgress(serializeProgress(doc), log)).toEqual(doc);
@@ -153,47 +221,29 @@ describe("serializeProgress", () => {
     // byte-identical JSON. Reproduces the symptom of $storage's Go-map
     // round-trip producing a different key order each time, which caused
     // every push to create a new gist revision.
-    const a: ProgressDoc = {
+    const a: LocalProgress = {
       version: 1,
       updatedAt: 100,
       manga: {
-        "2": {
-          progress: 166,
-          scoreRaw: 0,
-          status: "CURRENT",
-          updatedAt: 200,
-        },
-        "1": {
-          progress: 227,
-          scoreRaw: 0,
-          status: "CURRENT",
-          updatedAt: 50,
-        },
+        "2": { progress: 166, score: 0, status: "CURRENT", updatedAt: 200 },
+        "1": { progress: 227, score: 0, status: "CURRENT", updatedAt: 50 },
       },
+      anime: {},
     };
-    const b: ProgressDoc = {
+    const b: LocalProgress = {
       version: 1,
       updatedAt: 100,
       manga: {
-        "1": {
-          updatedAt: 50,
-          status: "CURRENT",
-          scoreRaw: 0,
-          progress: 227,
-        },
-        "2": {
-          status: "CURRENT",
-          updatedAt: 200,
-          progress: 166,
-          scoreRaw: 0,
-        },
+        "1": { updatedAt: 50, status: "CURRENT", score: 0, progress: 227 },
+        "2": { status: "CURRENT", updatedAt: 200, progress: 166, score: 0 },
       },
+      anime: {},
     };
     expect(serializeProgress(a)).toBe(serializeProgress(b));
   });
 
   test("manga entries serialized in numeric localId order, not lexicographic", () => {
-    const doc: ProgressDoc = {
+    const doc: LocalProgress = {
       version: 1,
       updatedAt: 0,
       manga: {
@@ -201,6 +251,7 @@ describe("serializeProgress", () => {
         "2": { updatedAt: 2 },
         "1": { updatedAt: 3 },
       },
+      anime: {},
     };
     const s = serializeProgress(doc);
     // "1" comes before "2" which comes before "10" by NUMERIC sort
@@ -213,9 +264,9 @@ describe("serializeProgress", () => {
 });
 
 const makeDoc = (
-  manga: Record<string, ProgressEntry>,
+  manga: Record<string, MangaProgressEntry>,
   updatedAt = 0,
-): ProgressDoc => ({ version: 1, updatedAt, manga });
+): LocalProgress => ({ version: 1, updatedAt, manga, anime: {} });
 
 describe("mergeProgress", () => {
   test("local-only entry survives", () => {
@@ -269,16 +320,44 @@ describe("mergeProgress", () => {
     expect(m2.manga["1"].progress).toBe(1);
     expect(m2.manga["2"].progress).toBe(22);
   });
+
+  test("merges the anime namespace with the same LWW rule", () => {
+    const local: LocalProgress = {
+      version: 1,
+      updatedAt: 0,
+      manga: {},
+      anime: { "5": { progress: 1, updatedAt: 30 } },
+    };
+    const remote: LocalProgress = {
+      version: 1,
+      updatedAt: 0,
+      manga: {},
+      anime: {
+        "5": { progress: 9, updatedAt: 10 },
+        "6": { progress: 2, updatedAt: 5 },
+      },
+    };
+    const out = mergeProgress(local, remote);
+    expect(out.anime["5"].progress).toBe(1); // local newer
+    expect(out.anime["6"].progress).toBe(2); // remote-only
+  });
+
+  test("tolerates docs missing the anime namespace", () => {
+    const local = { version: 1, updatedAt: 0, manga: {} } as LocalProgress;
+    const remote = { version: 1, updatedAt: 0, manga: {} } as LocalProgress;
+    const out = mergeProgress(local, remote);
+    expect(out.anime).toEqual({});
+  });
 });
 
 describe("progressMangaEquals", () => {
   test("identical maps → true", () => {
     const a = {
-      "1": { progress: 165, scoreRaw: 0, status: "CURRENT", updatedAt: 100 },
-    } as Record<string, ProgressEntry>;
+      "1": { progress: 165, score: 0, status: "CURRENT", updatedAt: 100 },
+    } as Record<string, MangaProgressEntry>;
     const b = {
-      "1": { status: "CURRENT", updatedAt: 100, progress: 165, scoreRaw: 0 },
-    } as Record<string, ProgressEntry>;
+      "1": { status: "CURRENT", updatedAt: 100, progress: 165, score: 0 },
+    } as Record<string, MangaProgressEntry>;
     // key order differs but values match
     expect(progressMangaEquals(a, b)).toBe(true);
   });
@@ -286,11 +365,11 @@ describe("progressMangaEquals", () => {
   test("differing progress → false", () => {
     const a = { "1": { progress: 165, updatedAt: 100 } } as Record<
       string,
-      ProgressEntry
+      MangaProgressEntry
     >;
     const b = { "1": { progress: 166, updatedAt: 100 } } as Record<
       string,
-      ProgressEntry
+      MangaProgressEntry
     >;
     expect(progressMangaEquals(a, b)).toBe(false);
   });
@@ -298,11 +377,11 @@ describe("progressMangaEquals", () => {
   test("differing updatedAt → false", () => {
     const a = { "1": { progress: 165, updatedAt: 100 } } as Record<
       string,
-      ProgressEntry
+      MangaProgressEntry
     >;
     const b = { "1": { progress: 165, updatedAt: 200 } } as Record<
       string,
-      ProgressEntry
+      MangaProgressEntry
     >;
     expect(progressMangaEquals(a, b)).toBe(false);
   });
@@ -310,23 +389,23 @@ describe("progressMangaEquals", () => {
   test("extra entry on one side → false", () => {
     const a = { "1": { progress: 1, updatedAt: 1 } } as Record<
       string,
-      ProgressEntry
+      MangaProgressEntry
     >;
     const b = {
       "1": { progress: 1, updatedAt: 1 },
       "2": { progress: 2, updatedAt: 2 },
-    } as Record<string, ProgressEntry>;
+    } as Record<string, MangaProgressEntry>;
     expect(progressMangaEquals(a, b)).toBe(false);
   });
 
-  test("scoreRaw=0 equivalent to undefined", () => {
-    const a = { "1": { progress: 1, scoreRaw: 0, updatedAt: 1 } } as Record<
+  test("score=0 equivalent to undefined", () => {
+    const a = { "1": { progress: 1, score: 0, updatedAt: 1 } } as Record<
       string,
-      ProgressEntry
+      MangaProgressEntry
     >;
     const b = { "1": { progress: 1, updatedAt: 1 } } as Record<
       string,
-      ProgressEntry
+      MangaProgressEntry
     >;
     expect(progressMangaEquals(a, b)).toBe(true);
   });

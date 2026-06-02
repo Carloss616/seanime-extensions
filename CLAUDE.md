@@ -169,6 +169,10 @@ TypeScript picks up `types/**/*.d.ts` via `tsconfig.json`'s `include`, so the go
 
 There is no module system at runtime — `code.js` is one bundled payload executed in the goja sandbox. Source-level `import`s ARE fine: the build inlines them at bundle time (per-module for isolated callbacks, see "Splitting an extension across multiple files"); the file goja runs has no imports left.
 
+### `$storage` round-trips `undefined` to `null`
+
+`$storage.set(key, value)` serializes `value` through the Go bridge, and JS `undefined` object fields come back as JSON `null` on the next `$storage.get`. So an object you store with optional fields left `undefined` rehydrates with those fields set to explicit `null`. This bites anything that later re-serializes the rehydrated value: `JSON.stringify` **omits `undefined` but keeps `null`**, so blank fields silently leak into the output the second time around (caught in `local-catalog-manager`: form-blank `AL_BaseManga` fields like `coverImage`/`bannerImage` reappeared as `null` in the pushed gist after a reload). Defend at the serialize boundary — drop nullish values when writing out (see `canonicalizeKeys` in [src/_utils/local-catalog/catalog.ts](src/_utils/local-catalog/catalog.ts)). AL fields are all optional and never legitimately `null`, so stripping is safe.
+
 ## Type definitions are intentionally partial
 
 [types/](types/) only contains the surface this repo actually touches. The full type surface lives in `internal/extension_repo/goja_plugin_types/` in the seanime source tree. **When adding a new extension type or hook**, copy the relevant `.d.ts` snippets from seanime into `types/` — they are type-only, the goja runtime already exposes the bindings.
@@ -291,3 +295,7 @@ When you need to compute `mediaId` for entries not yet in the user's list (e.g.,
 3. **Probe via `$anilist.getManga`** — last resort for cold start (user has zero entries in their list). Iterate `extId` from 1 to 1023, call `$anilist.getManga(EXT_OFFSET + extId * 2^40 + firstLocalId)`, accept the one whose `siteUrl` starts with `ext_custom_source_<your-manifest-id>`. Yield with `$sleep(0)` every ~64 iterations to avoid blocking the runtime. ~1-3s on first run, cached forever after.
 
 Auto-add then apply: `$anilist.addMediaToCollection([mediaId])` adds the entry as `PLANNING`; immediately follow with `$anilist.updateEntry(mediaId, status, scoreRaw, progress, ...)` to overwrite with the real values. Without `addMediaToCollection`, `updateEntry` against a mediaId not in the user's list is a silent no-op.
+
+### Never reuse a localId — `mediaId` is a permanent identity
+
+Because `localId` maps 1:1 into `mediaId`, and seanime treats a `mediaId` like an AniList id (a permanent identity for one specific media), **a localId must never be reissued to a different entry**. seanime persists its own snapshot of an entry's metadata keyed by `mediaId` and renders the media-entry page from that snapshot — it does NOT re-query the custom-source per view. So if you delete an entry and a new one reclaims its localId, the new entry collides with seanime's lingering snapshot and shows the *deleted* entry's details (deleting from your catalog removes it from your data, not from seanime's collection store; `$app.invalidateClientQuery` only clears the frontend query cache, not the server-side snapshot). `local-catalog-manager` allocates ids monotonically via a persisted high-water mark (`K_NEXT_ID`) — `nextId = max(ids)+1` is NOT enough, since deleting the highest id lets the next add reclaim it. Recovering a reused id requires removing the stale entry from the seanime library so seanime drops its snapshot.

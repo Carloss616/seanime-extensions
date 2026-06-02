@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { LCClient, normalizeEntry, searchAndPaginate } from "./lc-client.ts";
+
+// `lc-client.ts` calls `createLogger()` at module scope, which reads
+// `__MANIFEST_ID__` — a bundle-time define injected by scripts/build.ts.
+// Under `bun test` there is no bundler, so we stub the global before the
+// dynamic import that pulls in the module under test.
+(globalThis as unknown as { __MANIFEST_ID__: string }).__MANIFEST_ID__ =
+  "test-local-catalog";
+
+const { normalizeEntry, searchAndPaginate, LCClient } = await import(
+  "./lc-client.ts"
+);
 
 // LCClient reads the global `Date.now()` for its TTL clock; stub it so the
 // cache-expiry tests are deterministic. Restored after each test.
@@ -9,61 +19,30 @@ afterEach(() => {
 });
 
 describe("normalizeEntry", () => {
-  test("expands a string title to english + userPreferred", () => {
-    const m = normalizeEntry({ id: 1, title: "Solo" });
-    expect(m.id).toBe(1);
-    expect(m.type).toBe("MANGA");
-    expect(m.title).toEqual({ english: "Solo", userPreferred: "Solo" });
-  });
-
-  test("fills userPreferred from an object title", () => {
-    const m = normalizeEntry({ id: 2, title: { english: "E", romaji: "R" } });
-    expect(m.title?.userPreferred).toBe("E");
-    expect(m.title?.romaji).toBe("R");
-  });
-
-  test("maps cover to all coverImage sizes", () => {
-    const m = normalizeEntry({ id: 3, title: "X", cover: "http://c/x.png" });
-    expect(m.coverImage).toEqual({
-      extraLarge: "http://c/x.png",
-      large: "http://c/x.png",
-      medium: "http://c/x.png",
+  test("strips per-record updatedAt", () => {
+    const out = normalizeEntry({
+      id: 1,
+      title: { userPreferred: "A" },
+      updatedAt: 999,
     });
+    expect(
+      (out as unknown as Record<string, unknown>).updatedAt,
+    ).toBeUndefined();
   });
 
-  test("maps year to startDate.year and passes through optional fields", () => {
-    const m = normalizeEntry({
-      id: 4,
-      title: "Y",
-      year: 2021,
-      banner: "http://b/y.png",
-      chapters: 120,
-      volumes: 12,
-      genres: ["Action"],
-      status: "RELEASING",
-      format: "MANGA",
-      isAdult: true,
-      country: "JP",
-      siteUrl: "http://s/y",
+  test("defaults type to MANGA and ensures title.userPreferred", () => {
+    const out = normalizeEntry({ id: 2, title: { english: "B" } });
+    expect(out.type).toBe("MANGA");
+    expect(out.title?.userPreferred).toBe("B");
+  });
+
+  test("preserves an explicit type", () => {
+    const out = normalizeEntry({
+      id: 3,
+      title: { userPreferred: "C" },
+      type: "MANGA",
     });
-    expect(m.startDate).toEqual({ year: 2021 });
-    expect(m.bannerImage).toBe("http://b/y.png");
-    expect(m.chapters).toBe(120);
-    expect(m.volumes).toBe(12);
-    expect(m.genres).toEqual(["Action"]);
-    expect(m.status).toBe("RELEASING");
-    expect(m.format).toBe("MANGA");
-    expect(m.isAdult).toBe(true);
-    expect(m.countryOfOrigin).toBe("JP");
-    expect(m.siteUrl).toBe("http://s/y");
-  });
-
-  test("omits empty optional collections and missing fields", () => {
-    const m = normalizeEntry({ id: 5, title: "Z", genres: [], synonyms: [] });
-    expect(m.genres).toBeUndefined();
-    expect(m.synonyms).toBeUndefined();
-    expect(m.coverImage).toBeUndefined();
-    expect(m.startDate).toBeUndefined();
+    expect(out.type).toBe("MANGA");
   });
 });
 
@@ -74,7 +53,7 @@ const entries = [
     title: { english: "Solo Leveling", romaji: "Na Honjaman Level Up" },
   },
   { id: 3, title: "Tower of God" },
-];
+] as MangaCatalogEntry[];
 
 describe("searchAndPaginate", () => {
   test("empty search returns all (mapped), with totals", () => {
@@ -121,7 +100,6 @@ function makeClient(opts: {
 }) {
   const prefs = opts.prefs ?? {};
   const nowBox = opts.nowBox ?? { t: 0 };
-  // Drive the client's TTL clock from the mutable box.
   Date.now = () => nowBox.t;
   let fetchCount = 0;
   const fetchFn = (async (url: string) => {
@@ -154,8 +132,8 @@ describe("LCClient.loadCatalog", () => {
         },
       }),
     });
-    const entries = await client.loadCatalog();
-    expect(entries.map((e) => e.id)).toEqual([1, 2]);
+    const result = await client.loadCatalog();
+    expect(result.map((e) => e.id)).toEqual([1, 2]);
   });
 
   test("serves cache within the TTL window (no refetch)", async () => {
@@ -198,8 +176,8 @@ describe("LCClient.loadCatalog", () => {
     await client.loadCatalog();
     fail = true;
     nowBox.t = 11 * 60000;
-    const entries = await client.loadCatalog();
-    expect(entries.map((e) => e.id)).toEqual([1]); // kept the stale entry
+    const result = await client.loadCatalog();
+    expect(result.map((e) => e.id)).toEqual([1]); // kept the stale entry
   });
 
   test("parses inline `catalog` preference when no url is set", async () => {
@@ -208,7 +186,7 @@ describe("LCClient.loadCatalog", () => {
         catalog: JSON.stringify({ manga: [{ id: 9, title: "Inline" }] }),
       },
     });
-    const entries = await client.loadCatalog();
-    expect(entries.map((e) => e.id)).toEqual([9]);
+    const result = await client.loadCatalog();
+    expect(result.map((e) => e.id)).toEqual([9]);
   });
 });

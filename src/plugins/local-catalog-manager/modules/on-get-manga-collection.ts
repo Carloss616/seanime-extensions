@@ -17,10 +17,9 @@ import type { sharedLib } from "./shared-lib";
 //
 // Apply needs a mediaId per progress entry. Instead of walking the
 // collection (whose shape we'd have to adapt across goja boundary), we
-// compute it from the cached extId: mediaId = EXT_OFFSET + extId *
-// LOCAL_RANGE + localId. updateEntry against an id the user hasn't
-// added to their list is a silent no-op, so applying to "future" entries
-// is safe.
+// compute it from the cached extId via the shared `encodeMediaId` codec.
+// updateEntry against an id the user hasn't added to their list is a
+// silent no-op, so applying to "future" entries is safe.
 //
 // updateEntry calls are wrapped with the `progress:skip:<mediaId>`
 // $store flag so our own pre/post-update-entry hooks bail — without that,
@@ -44,6 +43,7 @@ export const onGetMangaCollection = (event: $app.GetMangaCollectionEvent) => {
       mergeProgress,
       progressMangaEquals,
       serializeProgress,
+      encodeMediaId,
     } = $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
     const log = createLogger();
     try {
@@ -58,11 +58,7 @@ export const onGetMangaCollection = (event: $app.GetMangaCollectionEvent) => {
       if (!token || !gistId) return;
       if ($storage.get<boolean>(K_SYNC_PAUSED)) return;
       const client = new GistClient(token, fetch);
-      const local = $storage.get<ProgressDoc>(K_PROGRESS) ?? {
-        version: 1,
-        updatedAt: 0,
-        manga: {},
-      };
+      const local = parseProgress($storage.get<LocalProgress>(K_PROGRESS), log);
       // Inline pull (instead of `pullProgress`) so we keep the parsed
       // remote around for the no-op-push check below.
       let remoteStr = "";
@@ -76,8 +72,6 @@ export const onGetMangaCollection = (event: $app.GetMangaCollectionEvent) => {
       // Apply remote-newer entries to seanime. Skip flag prevents our own
       // hooks from echoing the update.
       const extId = $storage.get<number>(K_EXT_ID);
-      const EXT_OFFSET = 0x80000000;
-      const LOCAL_RANGE = 0x10000000000;
       let applied = 0;
       if (extId != null) {
         for (const [localIdStr, entry] of Object.entries(merged.manga)) {
@@ -87,13 +81,13 @@ export const onGetMangaCollection = (event: $app.GetMangaCollectionEvent) => {
           }
           const localId = Number(localIdStr);
           if (!Number.isFinite(localId)) continue;
-          const mediaId = EXT_OFFSET + extId * LOCAL_RANGE + localId;
+          const mediaId = encodeMediaId(extId, localId);
           $store.set(`progress:skip:${mediaId}`, true);
           try {
             $anilist.updateEntry(
               mediaId,
               entry.status,
-              entry.scoreRaw,
+              entry.score,
               entry.progress,
               undefined,
               undefined,

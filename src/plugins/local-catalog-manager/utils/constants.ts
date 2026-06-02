@@ -29,6 +29,12 @@ export const K_OWNER = "lcm_owner";
 export const K_RAW = "lcm_raw_url";
 export const K_CATALOG = "lcm_catalog";
 export const K_UPDATED = "lcm_updated_at";
+// Monotonic id high-water mark (highest id ever issued). Catalog ids map 1:1
+// to seanime mediaIds (localId === id) and seanime caches media details by
+// mediaId, so reusing a deleted entry's id makes the new entry inherit the
+// old one's cached page. We never reuse: ids only ever increase, even across
+// deletes. Seeded from the catalog on first run (installs predate this key).
+export const K_NEXT_ID = "lcm_next_id";
 export const K_PROGRESS = "lcm_progress";
 export const K_PROGRESS_UPDATED = "lcm_progress_updated_at";
 // Set true while catalog drift is pending (linked an existing gist that

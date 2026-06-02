@@ -1,4 +1,4 @@
-// src/_utils/local-catalog/parse.ts
+// src/_utils/local-catalog/catalog.ts
 function resolveUserPreferred(title) {
   if (typeof title === "string") {
     return title.trim() || undefined;
@@ -10,40 +10,64 @@ function resolveUserPreferred(title) {
   }
   return;
 }
-function parseCatalog(raw, log) {
-  let data = raw;
-  if (typeof raw === "string") {
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      return [];
-    }
+function coerceTitle(title) {
+  if (typeof title === "string") {
+    const t = title.trim();
+    return { userPreferred: t, english: t };
   }
-  let list = [];
-  if (Array.isArray(data)) {
-    list = data;
-  } else if (data && typeof data === "object" && Array.isArray(data.manga)) {
-    list = data.manga;
+  if (title && typeof title === "object") {
+    const t = title;
+    const up = t.userPreferred || t.english || t.romaji || t.native;
+    return { ...t, userPreferred: up };
   }
-  const byId = new Map;
+  return {};
+}
+function parseNamespace(list, log) {
+  const byId = new Map();
   for (const item of list) {
     const entry = item;
-    const id = Number(entry?.id);
+    if (!entry || typeof entry !== "object") continue;
+    const id = Number(entry.id);
     if (!Number.isInteger(id) || id < 1) {
       log.warn("skipping entry with invalid id");
       continue;
     }
-    if (!resolveUserPreferred(entry?.title)) {
+    if (!resolveUserPreferred(entry.title)) {
       log.warn(`skipping entry ${id} with no title`);
       continue;
     }
     if (byId.has(id)) {
       log.warn(`duplicate id ${id}, last wins`);
     }
-    entry.id = id;
-    byId.set(id, entry);
+    const out = {
+      ...entry,
+      id,
+      title: coerceTitle(entry.title),
+    };
+    byId.set(id, out);
   }
   return Array.from(byId.values());
+}
+function parseCatalog(raw, log) {
+  let data = raw;
+  if (typeof raw === "string") {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return { manga: [], anime: [] };
+    }
+  }
+  if (Array.isArray(data)) {
+    return { manga: parseNamespace(data, log), anime: [] };
+  }
+  if (data && typeof data === "object") {
+    const doc = data;
+    return {
+      manga: Array.isArray(doc.manga) ? parseNamespace(doc.manga, log) : [],
+      anime: Array.isArray(doc.anime) ? parseNamespace(doc.anime, log) : [],
+    };
+  }
+  return { manga: [], anime: [] };
 }
 
 // src/_utils/logger.ts
@@ -54,43 +78,15 @@ function createLogger() {
     info: (...args) => console.info(prefix, ...args),
     warn: (...args) => console.warn(prefix, ...args),
     error: (...args) => console.error(prefix, ...args),
-    debug: (...args) => console.debug(prefix, ...args)
+    debug: (...args) => console.debug(prefix, ...args),
   };
 }
 
 // src/custom-source/local-catalog/utils/lc-client.ts
 var log = createLogger();
-function coerceTitle(title) {
-  if (typeof title === "string") {
-    return { english: title, userPreferred: title };
-  }
-  const userPreferred = title.userPreferred || title.english || title.romaji || title.native;
-  return { ...title, userPreferred };
-}
 function normalizeEntry(entry) {
-  const cover = entry.cover;
-  return {
-    id: entry.id,
-    type: "MANGA",
-    siteUrl: entry.siteUrl,
-    title: coerceTitle(entry.title),
-    synonyms: entry.synonyms && entry.synonyms.length > 0 ? entry.synonyms : undefined,
-    coverImage: cover ? { extraLarge: cover, large: cover, medium: cover } : undefined,
-    bannerImage: entry.banner,
-    description: entry.description,
-    genres: entry.genres && entry.genres.length > 0 ? entry.genres : undefined,
-    status: entry.status,
-    format: entry.format,
-    chapters: entry.chapters,
-    volumes: entry.volumes,
-    isAdult: entry.isAdult,
-    countryOfOrigin: entry.country,
-    startDate: typeof entry.year === "number" || typeof entry.month === "number" || typeof entry.day === "number" ? {
-      year: typeof entry.year === "number" ? entry.year : undefined,
-      month: typeof entry.month === "number" ? entry.month : undefined,
-      day: typeof entry.day === "number" ? entry.day : undefined
-    } : undefined
-  };
+  const { updatedAt, ...al } = entry;
+  return { ...al, type: al.type ?? "MANGA", title: coerceTitle(al.title) };
 }
 function matchesSearch(entry, q) {
   const t = coerceTitle(entry.title);
@@ -99,9 +95,12 @@ function matchesSearch(entry, q) {
     t.romaji,
     t.native,
     t.userPreferred,
-    ...entry.synonyms || []
-  ].filter((s) => typeof s === "string").join(`
-`).toLowerCase();
+    ...(entry.synonyms || []),
+  ]
+    .filter((s) => typeof s === "string")
+    .join(`
+`)
+    .toLowerCase();
   return haystack.includes(q);
 }
 function searchAndPaginate(entries, search, page, perPage) {
@@ -115,7 +114,7 @@ function searchAndPaginate(entries, search, page, perPage) {
     media: slice.map(normalizeEntry),
     page: safePage,
     total: filtered.length,
-    totalPages: Math.ceil(filtered.length / safePerPage)
+    totalPages: Math.ceil(filtered.length / safePerPage),
   };
 }
 
@@ -135,7 +134,7 @@ class LCClient {
     }
     try {
       const raw = await this.fetchRaw();
-      const parsed = parseCatalog(raw, log);
+      const parsed = parseCatalog(raw, log).manga;
       this.cache = parsed;
       this.cacheAt = now;
       return parsed;
@@ -157,7 +156,7 @@ class LCClient {
     if (inline) {
       return JSON.parse(inline);
     }
-    return { manga: [] };
+    return { manga: [], anime: [] };
   }
 }
 
@@ -179,12 +178,12 @@ class Provider {
   async getMangaDetails(id) {
     const entries = await this.client.loadCatalog();
     const entry = entries.find((e) => e.id === id);
-    if (!entry)
-      return null;
+    if (!entry) return null;
     return {
       id: entry.id,
       siteUrl: entry.siteUrl,
-      genres: entry.genres && entry.genres.length > 0 ? entry.genres : undefined
+      genres:
+        entry.genres && entry.genres.length > 0 ? entry.genres : undefined,
     };
   }
   async getAnime(_ids) {

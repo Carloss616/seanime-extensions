@@ -1,67 +1,29 @@
 // Local-catalog read client for the custom-source.
 //
 // Owns the catalog source (remote URL or inline preference), TTL caching, and
-// normalization of CatalogEntry → $app.AL_BaseManga. The Provider (code.ts) is
+// normalization of MangaCatalogEntry → $app.AL_BaseManga. The Provider (code.ts) is
 // a thin delegate. `fetch` and `$getUserPreference` are injected so the client
 // is unit-testable without the goja globals.
 //
 // `parseCatalog` is shared with the local-catalog-manager plugin (it parses the
-// same catalog.json wire format) — see src/_utils/local-catalog/parse.ts.
+// same catalog.json wire format) — see src/_utils/local-catalog/catalog.ts.
 
-import { parseCatalog } from "../../../_utils/local-catalog/parse";
+import {
+  coerceTitle,
+  parseCatalog,
+} from "../../../_utils/local-catalog/catalog";
 import { createLogger } from "../../../_utils/logger";
 
 const log = createLogger();
 
-function coerceTitle(title: string | CatalogTitle): $app.AL_BaseManga_Title {
-  if (typeof title === "string") {
-    return { english: title, userPreferred: title };
-  }
-  const userPreferred =
-    title.userPreferred || title.english || title.romaji || title.native;
-  return { ...title, userPreferred };
+export function normalizeEntry(entry: MangaCatalogEntry): $app.AL_BaseManga {
+  // Strip the per-record merge-metadata — it is not part of AL_BaseManga.
+  const { updatedAt, ...al } = entry;
+  void updatedAt;
+  return { ...al, type: al.type ?? "MANGA", title: coerceTitle(al.title) };
 }
 
-export function normalizeEntry(entry: CatalogEntry): $app.AL_BaseManga {
-  const cover = entry.cover;
-  return {
-    id: entry.id,
-    type: "MANGA",
-    siteUrl: entry.siteUrl,
-    title: coerceTitle(entry.title),
-    synonyms:
-      entry.synonyms && entry.synonyms.length > 0 ? entry.synonyms : undefined,
-    coverImage: cover
-      ? { extraLarge: cover, large: cover, medium: cover }
-      : undefined,
-    bannerImage: entry.banner,
-    description: entry.description,
-    genres: entry.genres && entry.genres.length > 0 ? entry.genres : undefined,
-    status: entry.status,
-    format: entry.format,
-    chapters: entry.chapters,
-    volumes: entry.volumes,
-    isAdult: entry.isAdult,
-    countryOfOrigin: entry.country,
-    // Forward whichever date parts the catalog has — matches the
-    // AL_BaseManga_StartDate (FuzzyDate) shape. Note: seanime's manga entry
-    // header formats this via Intl.DateTimeFormat and defaults a missing
-    // month to January, so passing only `year` shows "Jan YYYY". Set month
-    // (and day) in the catalog when you know them to get the right label.
-    startDate:
-      typeof entry.year === "number" ||
-      typeof entry.month === "number" ||
-      typeof entry.day === "number"
-        ? {
-            year: typeof entry.year === "number" ? entry.year : undefined,
-            month: typeof entry.month === "number" ? entry.month : undefined,
-            day: typeof entry.day === "number" ? entry.day : undefined,
-          }
-        : undefined,
-  };
-}
-
-function matchesSearch(entry: CatalogEntry, q: string): boolean {
+function matchesSearch(entry: MangaCatalogEntry, q: string): boolean {
   const t = coerceTitle(entry.title);
   const haystack = [
     t.english,
@@ -77,7 +39,7 @@ function matchesSearch(entry: CatalogEntry, q: string): boolean {
 }
 
 export function searchAndPaginate(
-  entries: CatalogEntry[],
+  entries: MangaCatalogEntry[],
   search: string,
   page: number,
   perPage: number,
@@ -99,7 +61,7 @@ export function searchAndPaginate(
 export class LCClient {
   private declare fetchFn: typeof fetch;
   private declare getPref: (name: string) => string | undefined;
-  private cache: CatalogEntry[] | null = null;
+  private cache: MangaCatalogEntry[] | null = null;
   private cacheAt = 0;
 
   constructor(
@@ -110,7 +72,7 @@ export class LCClient {
     this.getPref = getPref;
   }
 
-  async loadCatalog(): Promise<CatalogEntry[]> {
+  async loadCatalog(): Promise<MangaCatalogEntry[]> {
     const ttlMin = Number(this.getPref("cacheMinutes") ?? "10");
     const ttlMs = Number.isFinite(ttlMin) && ttlMin > 0 ? ttlMin * 60000 : 0;
     const now = Date.now();
@@ -119,7 +81,7 @@ export class LCClient {
     }
     try {
       const raw = await this.fetchRaw();
-      const parsed = parseCatalog(raw, log);
+      const parsed = parseCatalog(raw, log).manga;
       this.cache = parsed;
       this.cacheAt = now;
       return parsed;
@@ -132,6 +94,8 @@ export class LCClient {
   private async fetchRaw(): Promise<unknown> {
     const url = (this.getPref("catalogUrl") || "").trim();
     if (url) {
+      // Fetched verbatim — a revision-pinned gist URL serves a stale snapshot.
+      // The manager's new-entry alert tells the user to use the unversioned URL.
       const res = await this.fetchFn(url);
       if (!res.ok) {
         throw new Error(`catalog fetch failed: ${res.status}`);
@@ -142,6 +106,6 @@ export class LCClient {
     if (inline) {
       return JSON.parse(inline);
     }
-    return { manga: [] } as Catalog;
+    return { manga: [], anime: [] } as LocalCatalog;
   }
 }

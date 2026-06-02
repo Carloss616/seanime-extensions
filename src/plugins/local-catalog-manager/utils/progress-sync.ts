@@ -31,8 +31,8 @@ export interface ApplyDeps {
 }
 
 export function applyRemote(
-  merged: ProgressDoc,
-  local: ProgressDoc,
+  merged: LocalProgress,
+  local: LocalProgress,
   deps: ApplyDeps,
 ): { applied: number; skipped: number } {
   let applied = 0;
@@ -49,7 +49,8 @@ export function applyRemote(
     deps.updateEntry(
       mediaId,
       entry.status,
-      entry.scoreRaw,
+      // updateEntry's 3rd param is the $anilist API name "scoreRaw"; we feed entry.score (raw POINT_100).
+      entry.score,
       entry.progress,
       undefined,
       undefined,
@@ -97,7 +98,7 @@ export function buildMediaIdLookup(
 }
 
 export function detectOrphans(
-  local: ProgressDoc,
+  local: LocalProgress,
   catalogIds: Set<number>,
 ): number[] {
   const out: number[] = [];
@@ -110,15 +111,16 @@ export function detectOrphans(
 }
 
 export function pruneOrphans(
-  local: ProgressDoc,
+  local: LocalProgress,
   orphans: number[],
   now: number,
-): ProgressDoc {
+): LocalProgress {
   const orphanSet = new Set(orphans.map(String));
-  const cleaned: ProgressDoc = {
+  const cleaned: LocalProgress = {
     version: 1,
     updatedAt: now,
     manga: {},
+    anime: local.anime ?? {},
   };
   for (const [k, v] of Object.entries(local.manga)) {
     // Shallow-spread so callers can mutate cleaned.manga without
@@ -132,9 +134,9 @@ export async function pushProgress(
   client: GistClient,
   gistId: string,
   filename: string,
-  local: ProgressDoc,
+  local: LocalProgress,
   now: number,
-): Promise<ProgressDoc> {
+): Promise<LocalProgress> {
   let remoteStr = "";
   try {
     remoteStr = await client.getGistFile(gistId, filename);
@@ -151,9 +153,9 @@ export async function pullProgress(
   client: GistClient,
   gistId: string,
   filename: string,
-  local: ProgressDoc,
+  local: LocalProgress,
   now: number,
-): Promise<ProgressDoc> {
+): Promise<LocalProgress> {
   let remoteStr = "";
   try {
     remoteStr = await client.getGistFile(gistId, filename);
@@ -174,18 +176,18 @@ export type PostUpdateAction =
 export interface PostUpdateContext {
   mediaId: number;
   localId: number;
-  payload: Partial<ProgressEntry>;
+  payload: Partial<MangaProgressEntry>;
   now: number;
-  local: ProgressDoc;
+  local: LocalProgress;
   // null when there's no Gist mode (no token / no gistId)
   client: GistClient | null;
   gistId: string;
   filename: string;
   // Wraps $anilist.updateEntry — caller sets/unsets skip flag around it
   // so the recursive hook fire doesn't re-process.
-  applyToSeanime: (entry: ProgressEntry) => void;
+  applyToSeanime: (entry: MangaProgressEntry) => void;
   // Writes the local cache (e.g. $storage.set(K_PROGRESS, doc))
-  persistLocal: (doc: ProgressDoc, updatedAt: number) => void;
+  persistLocal: (doc: LocalProgress, updatedAt: number) => void;
 }
 
 /**
@@ -213,12 +215,12 @@ export async function handlePostUpdate(
 
   // MERGE (not replace) the payload into the previous entry. The pre-hook
   // only captures fields that carried a meaningful value in this event — a
-  // chapter-only update has no status/scoreRaw, and we want to keep what
+  // chapter-only update has no status/score, and we want to keep what
   // was previously known instead of erasing it. `local.manga[key]` may be
   // undefined here (cache-absent branches below), and `{ ...undefined }`
   // safely yields `{}`, so the merge works in all cases.
-  const merge = (prev: ProgressEntry | undefined): ProgressEntry =>
-    ({ ...prev, ...payload, updatedAt: now }) as ProgressEntry;
+  const merge = (prev: MangaProgressEntry | undefined): MangaProgressEntry =>
+    ({ ...prev, ...payload, updatedAt: now }) as MangaProgressEntry;
 
   // Local mode: no remote, no restoration possible. Just persist.
   if (!client) {
@@ -248,7 +250,7 @@ export async function handlePostUpdate(
   const remoteEntry = remote.manga[key];
   if (remoteEntry) {
     // Restore from remote — this preserves the source of truth.
-    const restored: ProgressEntry = { ...remoteEntry };
+    const restored: MangaProgressEntry = { ...remoteEntry };
     local.manga[key] = restored;
     local.updatedAt = now;
     persistLocal(local, now);

@@ -8,13 +8,13 @@ import { pill } from "../../../_components/pill";
 import { statusToPill } from "../../../_utils/anilist-status";
 import { GITHUB_RAW_WORKSPACE } from "../../../_utils/constants";
 import {
-  CUSTOM_SOURCE_ID,
   CATALOG_FILENAME as FILENAME,
   K_CATALOG,
   K_DRIFT_FRESH_GIST,
   K_DRIFT_REMOTE,
   K_EXT_ID,
   K_GIST,
+  K_NEXT_ID,
   K_OWNER,
   K_PROGRESS,
   K_PROGRESS_DRIFT_REMOTE,
@@ -69,35 +69,23 @@ export const register = (ctx: PluginContext) => {
   });
 
   const view = ctx.state<"list" | "form" | "setup">("list");
-  const entries = ctx.state<CatalogEntry[]>(
-    $storage.get<CatalogEntry[]>(K_CATALOG) ?? [],
+  const entries = ctx.state<MangaCatalogEntry[]>(
+    $storage.get<MangaCatalogEntry[]>(K_CATALOG) ?? [],
   );
+  // Seed the id high-water mark from the loaded catalog on first run so a
+  // delete-then-add right after upgrade can't reissue the just-deleted id.
+  if (!$storage.has(K_NEXT_ID)) {
+    $storage.set(K_NEXT_ID, nextId(entries.get()) - 1);
+  }
   const editingId = ctx.state<number>(0);
   const rawUrl = ctx.state<string>($storage.get<string>(K_RAW) ?? "");
   const status = ctx.state<string>("");
 
-  // Migration: V2-B initial $storage shape used `entries`; rename to `manga`
-  // on load so existing installs don't lose their progress cache.
-  const loadProgressDoc = (): ProgressDoc => {
-    const stored = $storage.get<
-      ProgressDoc & { entries?: Record<string, ProgressEntry> }
-    >(K_PROGRESS);
-    if (!stored) return { version: 1, updatedAt: 0, manga: {} };
-    if (!stored.manga && stored.entries) {
-      log.log("migrating $storage progress: entries → manga");
-      return {
-        version: stored.version ?? 1,
-        updatedAt: stored.updatedAt ?? 0,
-        manga: stored.entries,
-      };
-    }
-    return {
-      version: stored.version ?? 1,
-      updatedAt: stored.updatedAt ?? 0,
-      manga: stored.manga ?? {},
-    };
-  };
-  const progress = ctx.state<ProgressDoc>(loadProgressDoc());
+  // Single normalization path: parseProgress handles the null cache (→ empty
+  // doc), the manga/anime namespaces, and per-entry updatedAt defaulting.
+  const loadProgressDoc = (): LocalProgress =>
+    parseProgress($storage.get<LocalProgress>(K_PROGRESS), log);
+  const progress = ctx.state<LocalProgress>(loadProgressDoc());
   const progressUpdated = ctx.state<number>(
     $storage.get<number>(K_PROGRESS_UPDATED) ?? 0,
   );
@@ -214,7 +202,7 @@ export const register = (ctx: PluginContext) => {
     await runBusy("reload-catalog", async () => {
       try {
         const content = await client().getGistFile(gistId, FILENAME);
-        const remote = parseCatalog(content, log);
+        const remote = parseCatalog(content, log).manga;
         const now = Date.now();
         const merged = mergeCatalog(entries.get(), remote);
         persistLocal(merged, now);
@@ -226,7 +214,7 @@ export const register = (ctx: PluginContext) => {
         status.set(`Reloaded · ${ent(merged.length)}`);
         ctx.toast.success(`Catalog reloaded — ${ent(merged.length)}`);
         // Flush custom-source cache after the merged catalog is pushed.
-        await reloadCustomSource();
+        invalidateClientCaches({ catalog: true });
       } catch (e) {
         ctx.toast.error(`Reload failed: ${(e as Error).message}`);
       }
@@ -362,7 +350,6 @@ export const register = (ctx: PluginContext) => {
     }
   }
 
-  // Reload progress = single idempotent sync via syncProgressInner.
   async function reloadProgress() {
     const gistId = effectiveGistId();
     if (!hasToken() || !gistId) {
@@ -432,9 +419,9 @@ export const register = (ctx: PluginContext) => {
   // Single persistence path for progress mutations: updates ctx.state +
   // $storage, then best-effort fire-and-forget push to the gist (skipped in
   // local mode or while drift is pending). Used by cleanOrphans, the entry
-  // delete handler (when autoCleanProgressOnDelete is on), and per-orphan
+  // delete handler (which always prunes the entry's progress), and per-orphan
   // deletes from the orphan list UI.
-  function persistProgress(next: ProgressDoc, updatedAt: number) {
+  function persistProgress(next: LocalProgress, updatedAt: number) {
     progress.set(next);
     progressUpdated.set(updatedAt);
     $storage.set(K_PROGRESS, next);
@@ -457,30 +444,6 @@ export const register = (ctx: PluginContext) => {
     const now = Date.now();
     persistProgress(pruneOrphans(progress.get(), orphans, now), now);
     progressStatus.set(`Cleaned ${orphans.length} orphan(s)`);
-  }
-
-  // Flush the sibling local-catalog custom-source's in-memory cache so the
-  // user sees the new entries in the next search WITHOUT waiting for the
-  // configured `cacheMinutes` TTL. The Provider class keeps a per-instance
-  // `this.cache` that survives across requests — the only way to reset it
-  // from outside its goja runtime is disable+enable, which re-instantiates
-  // the source. The persisted `extensionIdentifier` is preserved (seanime
-  // stores it in filecache), so existing mediaIds keep working. Slightly
-  // disruptive (~100-500ms gap) but invisible during a tray-driven push.
-  async function reloadCustomSource() {
-    try {
-      await ctx.extensions.disable(CUSTOM_SOURCE_ID);
-    } catch (e) {
-      log.warn(`disable(${CUSTOM_SOURCE_ID}) failed:`, e);
-    }
-    try {
-      await ctx.extensions.enable(CUSTOM_SOURCE_ID);
-    } catch (e) {
-      log.warn(
-        `enable(${CUSTOM_SOURCE_ID}) failed — source may be left disabled, re-enable manually:`,
-        e,
-      );
-    }
   }
 
   // Single-orphan delete from the per-orphan list. Same persistence/push
@@ -561,12 +524,11 @@ export const register = (ctx: PluginContext) => {
     return encodeMediaId(extId, localId);
   }
 
-  // "📤 Apply progress" button in the entries list (linked entry whose
-  // anilist state diverged from local) AND the orphan list "🔄" button
-  // (orphan that became linked again because the catalog entry was re-added).
-  // If the manga isn't in seanime's collection yet, we auto-add it via
-  // $anilist.addMediaToCollection (status defaults to PLANNING) and then
-  // overwrite with the local progress values via updateEntry.
+  // "📤 Apply progress" button — appears on the entries list when local
+  // progress drifts from seanime's state, AND on each orphan row.
+  // If the manga isn't in seanime's collection yet, auto-add it via
+  // $anilist.addMediaToCollection (defaults to PLANNING) then overwrite
+  // with local progress via updateEntry.
   async function applyProgress(localId: number) {
     const entry = progress.get().manga[String(localId)];
     if (!entry) return;
@@ -591,7 +553,7 @@ export const register = (ctx: PluginContext) => {
         $anilist.updateEntry(
           mediaId,
           entry.status,
-          entry.scoreRaw,
+          entry.score,
           entry.progress,
           undefined,
           undefined,
@@ -652,7 +614,13 @@ export const register = (ctx: PluginContext) => {
     });
   }
 
-  const fTitle = ctx.fieldRef<string>("");
+  // AL_BaseManga_Title is romaji/english/native + a userPreferred. The user
+  // authors the three named variants directly; fPreferred picks which one
+  // becomes userPreferred (AniList derives it the same way, per viewer locale).
+  const fRomaji = ctx.fieldRef<string>("");
+  const fEnglish = ctx.fieldRef<string>("");
+  const fNative = ctx.fieldRef<string>("");
+  const fPreferred = ctx.fieldRef<string>("english");
   const fSynonyms = ctx.fieldRef<string>("");
   const fCover = ctx.fieldRef<string>("");
   const fBanner = ctx.fieldRef<string>("");
@@ -668,12 +636,21 @@ export const register = (ctx: PluginContext) => {
   const fIsAdult = ctx.fieldRef<boolean>(false);
   const fCountry = ctx.fieldRef<string>("");
   const fSiteUrl = ctx.fieldRef<string>("");
+  const fIdMal = ctx.fieldRef<string>("");
+  const fMeanScore = ctx.fieldRef<string>("");
+  const fEndYear = ctx.fieldRef<string>("");
+  const fEndMonth = ctx.fieldRef<string>("");
+  const fEndDay = ctx.fieldRef<string>("");
   const fJsonIn = ctx.fieldRef<string>("");
   const fGistLink = ctx.fieldRef<string>("");
 
   // Armed state for the two-click "Delete remotely" confirmation. Stays armed
   // until the user clicks confirm or any other action (disarmDelete()).
   const deleteGistArmed = ctx.state<boolean>(false);
+
+  // Armed catalog-entry id for the two-click entry-delete confirmation (0 =
+  // none). First ⛔ click arms + warns (progress is lost too); second deletes.
+  const deleteArmedId = ctx.state<number>(0);
 
   // Whether the gist-binding subline (short-id + owner + icon actions) is
   // expanded. Defaults to collapsed; pencil toggle flips it.
@@ -701,10 +678,15 @@ export const register = (ctx: PluginContext) => {
   // only show it when local progress drifts from seanime's tracked state
   // (or the entry isn't in the user's list yet), not for already-in-sync
   // rows where pushing is a no-op.
+  // Mirrors the fields of seanime's Manga_EntryListData (what e.listData is at
+  // runtime). The score field is named `score` here, NOT `scoreRaw` — only the
+  // PreUpdateEntryEvent / updateEntry() param is called scoreRaw; the tracked
+  // listData exposes `score`. Reading `.scoreRaw` off it is always undefined
+  // and made every rated row show false score drift.
   type SeanimeListData = {
     status?: $app.AL_MediaListStatus;
     progress?: number;
-    scoreRaw?: number;
+    score?: number;
   };
   const seanimeListDataLookup = ctx.state<Map<number, SeanimeListData> | null>(
     null,
@@ -753,12 +735,12 @@ export const register = (ctx: PluginContext) => {
   // Until resolved (merge / local-wins / remote-wins / cancel), all sync ops
   // are blocked to avoid clobber.
   const pendingDrift = ctx.state<{
-    local: CatalogEntry[];
-    remote: CatalogEntry[];
+    local: MangaCatalogEntry[];
+    remote: MangaCatalogEntry[];
   } | null>(null);
   const pendingProgressDrift = ctx.state<{
-    local: ProgressDoc;
-    remote: ProgressDoc;
+    local: LocalProgress;
+    remote: LocalProgress;
   } | null>(null);
   // "Has any drift" — used everywhere we gate sync ops. The hooks read
   // K_SYNC_PAUSED for the same effect (cross-runtime), but in-tray code uses
@@ -792,7 +774,7 @@ export const register = (ctx: PluginContext) => {
   // freshGist flag is recorded so cancelDriftLink can also delete the gist
   // we just created (if applicable).
   const pauseSync = (
-    remote: CatalogEntry[] | null,
+    remote: MangaCatalogEntry[] | null,
     opts: { freshGist?: boolean } = {},
   ) => {
     if (remote !== null) {
@@ -806,7 +788,7 @@ export const register = (ctx: PluginContext) => {
   };
 
   // Sibling of pauseSync for PROGRESS drift. Same persistence contract.
-  const pauseProgressSync = (remote: ProgressDoc | null) => {
+  const pauseProgressSync = (remote: LocalProgress | null) => {
     if (remote !== null) {
       $storage.set(K_PROGRESS_DRIFT_REMOTE, remote);
     } else {
@@ -821,11 +803,11 @@ export const register = (ctx: PluginContext) => {
   // restored independently.
   if ($storage.has(K_DRIFT_REMOTE)) {
     const persistedDriftRemote =
-      $storage.get<CatalogEntry[]>(K_DRIFT_REMOTE) ?? [];
+      $storage.get<MangaCatalogEntry[]>(K_DRIFT_REMOTE) ?? [];
     pendingDrift.set({ local: entries.get(), remote: persistedDriftRemote });
   }
   if ($storage.has(K_PROGRESS_DRIFT_REMOTE)) {
-    const persistedProgressRemote = $storage.get<ProgressDoc>(
+    const persistedProgressRemote = $storage.get<LocalProgress>(
       K_PROGRESS_DRIFT_REMOTE,
     );
     if (persistedProgressRemote) {
@@ -889,6 +871,7 @@ export const register = (ctx: PluginContext) => {
   // handler so accidental arms don't linger.
   const disarmDelete = () => {
     if (deleteGistArmed.get()) deleteGistArmed.set(false);
+    if (deleteArmedId.get() !== 0) deleteArmedId.set(0);
   };
 
   // Wipe all gist-related local state (cache + binding). Used by both
@@ -967,7 +950,7 @@ export const register = (ctx: PluginContext) => {
       rawUrl.set("");
       fGistLink.setValue("");
 
-      let remote: CatalogEntry[] = [];
+      let remote: MangaCatalogEntry[] = [];
       try {
         // getGistFileWithInfo returns owner + computed raw URL in the same
         // GET we'd already be making — persist them so "Show raw catalog
@@ -977,7 +960,7 @@ export const register = (ctx: PluginContext) => {
         $storage.set(K_OWNER, info.owner);
         $storage.set(K_RAW, info.rawUrl);
         rawUrl.set(info.rawUrl);
-        remote = parseCatalog(info.content, log);
+        remote = parseCatalog(info.content, log).manga;
       } catch (e) {
         ctx.toast.error(
           `Linked, but couldn't fetch remote catalog: ${(e as Error).message}. Use Pull to retry.`,
@@ -1086,7 +1069,7 @@ export const register = (ctx: PluginContext) => {
     if (!drift) return;
     await runBusy("resolve-drift", async () => {
       const now = Date.now();
-      let resolved: CatalogEntry[];
+      let resolved: MangaCatalogEntry[];
       if (mode === "merge") resolved = mergeCatalog(drift.local, drift.remote);
       else if (mode === "local") resolved = drift.local;
       else resolved = drift.remote;
@@ -1108,7 +1091,7 @@ export const register = (ctx: PluginContext) => {
           );
           // Flush custom-source cache so the resolved catalog is visible
           // immediately rather than after the configured `cacheMinutes` TTL.
-          await reloadCustomSource();
+          invalidateClientCaches({ catalog: true });
         } catch (e) {
           ctx.toast.error(
             `Resolved locally but push failed: ${(e as Error).message}. Use Pull to retry.`,
@@ -1131,7 +1114,7 @@ export const register = (ctx: PluginContext) => {
     if (!drift) return;
     await runBusy("resolve-progress-drift", async () => {
       const now = Date.now();
-      let resolved: ProgressDoc;
+      let resolved: LocalProgress;
       if (mode === "merge") {
         resolved = mergeProgress(drift.local, drift.remote, now);
       } else if (mode === "local") {
@@ -1257,14 +1240,27 @@ export const register = (ctx: PluginContext) => {
     return arr.length > 0 ? arr : undefined;
   };
 
-  function persistLocal(next: CatalogEntry[], updatedAt: number) {
+  function persistLocal(next: MangaCatalogEntry[], updatedAt: number) {
     entries.set(next);
     $storage.set(K_CATALOG, next);
     $storage.set(K_UPDATED, updatedAt);
+    // Keep the high-water mark ahead of every id ever persisted (covers
+    // imports and pulls), so it never regresses when entries are deleted.
+    const hw = $storage.get<number>(K_NEXT_ID) ?? 0;
+    $storage.set(K_NEXT_ID, Math.max(hw, nextId(next) - 1));
     invalidateClientCaches({ catalog: true });
   }
 
-  async function push(next: CatalogEntry[]) {
+  // Allocate a brand-new id that has never been used. Monotonic via the
+  // persisted high-water mark — never reuses a deleted entry's id (see K_NEXT_ID).
+  function allocId(): number {
+    const hw = $storage.get<number>(K_NEXT_ID) ?? 0;
+    const id = Math.max(hw, nextId(entries.get()) - 1) + 1;
+    $storage.set(K_NEXT_ID, id);
+    return id;
+  }
+
+  async function push(next: MangaCatalogEntry[]) {
     const updatedAt = Date.now();
     if (!hasToken()) {
       // Local-only mode: persist on this device. The user copies the
@@ -1296,7 +1292,7 @@ export const register = (ctx: PluginContext) => {
         status.set(`Synced ${ent(next.length)}`);
         // Flush the custom-source cache so the next search reflects the
         // pushed catalog without waiting for its `cacheMinutes` TTL.
-        await reloadCustomSource();
+        invalidateClientCaches({ catalog: true });
       } catch (e) {
         ctx.toast.error(`Sync failed: ${(e as Error).message}`);
       }
@@ -1316,7 +1312,7 @@ export const register = (ctx: PluginContext) => {
     await runBusy("pull-catalog", async () => {
       try {
         const content = await client().getGistFile(gistId, FILENAME);
-        const remote = parseCatalog(content, log);
+        const remote = parseCatalog(content, log).manga;
         persistLocal(remote, Date.now());
         ctx.toast.success(`Pulled ${ent(remote.length)}`);
       } catch (e) {
@@ -1325,15 +1321,12 @@ export const register = (ctx: PluginContext) => {
     });
   }
 
-  // Delete a catalog entry. When userConfig.autoCleanProgressOnDelete is on
-  // (default), the entry's progress is pruned in the same op so we don't
-  // leave an orphan in progress.json. Users can opt out via the preference
-  // if they want to keep progress across deletes (e.g., re-add later with
-  // the same id and re-apply on next Reload).
+  // Delete a catalog entry. The entry's progress is ALWAYS pruned in the same
+  // op: ids are never reissued (allocId is monotonic), but a future pull/import
+  // could legitimately reintroduce this id, and stale orphan progress would
+  // then bind to it. The delete button warns about the loss first (two-click).
   function deleteEntry(id: number) {
-    const autoClean =
-      ($getUserPreference("autoCleanProgressOnDelete") ?? "true") === "true";
-    if (autoClean && progress.get().manga[String(id)]) {
+    if (progress.get().manga[String(id)]) {
       const now = Date.now();
       persistProgress(pruneOrphans(progress.get(), [id], now), now);
     }
@@ -1343,22 +1336,44 @@ export const register = (ctx: PluginContext) => {
   function openForm(id: number) {
     editingId.set(id);
     const e = entries.get().find((x) => x.id === id);
-    fTitle.setValue(resolveUserPreferred(e?.title) ?? "");
+    const t = e?.title;
+    fRomaji.setValue(t?.romaji ?? "");
+    fEnglish.setValue(t?.english ?? "");
+    fNative.setValue(t?.native ?? "");
+    // Best-effort restore of which variant userPreferred points at; default
+    // english when it matches none (or the entry predates this field).
+    const up = t?.userPreferred;
+    fPreferred.setValue(
+      up && up === t?.romaji
+        ? "romaji"
+        : up && up === t?.native
+          ? "native"
+          : "english",
+    );
     fSynonyms.setValue((e?.synonyms ?? []).join(", "));
-    fCover.setValue(e?.cover ?? "");
-    fBanner.setValue(e?.banner ?? "");
+    fCover.setValue(e?.coverImage?.extraLarge ?? e?.coverImage?.large ?? "");
+    fBanner.setValue(e?.bannerImage ?? "");
     fDescription.setValue(e?.description ?? "");
     fGenres.setValue((e?.genres ?? []).join(", "));
     fStatus.setValue(e?.status ?? "");
     fFormat.setValue(e?.format ?? "");
     fChapters.setValue(e?.chapters != null ? String(e.chapters) : "");
     fVolumes.setValue(e?.volumes != null ? String(e.volumes) : "");
-    fYear.setValue(e?.year != null ? String(e.year) : "");
-    fMonth.setValue(e?.month != null ? String(e.month) : "");
-    fDay.setValue(e?.day != null ? String(e.day) : "");
+    fYear.setValue(e?.startDate?.year != null ? String(e.startDate.year) : "");
+    fMonth.setValue(
+      e?.startDate?.month != null ? String(e.startDate.month) : "",
+    );
+    fDay.setValue(e?.startDate?.day != null ? String(e.startDate.day) : "");
+    fEndYear.setValue(e?.endDate?.year != null ? String(e.endDate.year) : "");
+    fEndMonth.setValue(
+      e?.endDate?.month != null ? String(e.endDate.month) : "",
+    );
+    fEndDay.setValue(e?.endDate?.day != null ? String(e.endDate.day) : "");
     fIsAdult.setValue(!!e?.isAdult);
-    fCountry.setValue(e?.country ?? "");
+    fCountry.setValue(e?.countryOfOrigin ?? "");
     fSiteUrl.setValue(e?.siteUrl ?? "");
+    fIdMal.setValue(e?.idMal != null ? String(e.idMal) : "");
+    fMeanScore.setValue(e?.meanScore != null ? String(e.meanScore) : "");
     view.set("form");
   }
 
@@ -1436,7 +1451,13 @@ export const register = (ctx: PluginContext) => {
       );
       return;
     }
-    ctx.toast.info(url);
+    try {
+      ctx.dom.clipboard.write(url);
+      ctx.toast.success(`Raw URL copied — ${url}`);
+    } catch (e) {
+      log.warn("clipboard write failed:", e);
+      ctx.toast.info(url);
+    }
   });
   ctx.registerEventHandler("lcm-delete-gist-arm", () => {
     deleteGistArmed.set(true);
@@ -1470,13 +1491,53 @@ export const register = (ctx: PluginContext) => {
 
   ctx.registerEventHandler("lcm-save", () => {
     const current = entries.get();
-    const id = editingId.get() > 0 ? editingId.get() : nextId(current);
-    const entry: CatalogEntry = {
+    const id = editingId.get() > 0 ? editingId.get() : allocId();
+    // Spread the existing entry first so native fields the form doesn't surface
+    // (coverImage.color, season, …) survive an edit — e.g. an entry added via
+    // JSON import then re-saved through the form.
+    const existing = current.find((x) => x.id === id);
+    const cover = (fCover.current ?? "").trim() || undefined;
+    const sd = {
+      year: num(fYear.current),
+      month: num(fMonth.current),
+      day: num(fDay.current),
+    };
+    const ed = {
+      year: num(fEndYear.current),
+      month: num(fEndMonth.current),
+      day: num(fEndDay.current),
+    };
+    const hasSd = sd.year != null || sd.month != null || sd.day != null;
+    const hasEd = ed.year != null || ed.month != null || ed.day != null;
+    const entry: MangaCatalogEntry = {
+      ...existing,
       id,
-      title: (fTitle.current ?? "").trim(),
+      type: "MANGA",
+      updatedAt: Date.now(),
+      title: (() => {
+        const romaji = (fRomaji.current ?? "").trim() || undefined;
+        const english = (fEnglish.current ?? "").trim() || undefined;
+        const native = (fNative.current ?? "").trim() || undefined;
+        const pref = fPreferred.current ?? "english";
+        // userPreferred mirrors the picked variant; fall back to the first
+        // non-empty so it's never blank when any variant is filled.
+        const userPreferred =
+          (pref === "romaji" ? romaji : pref === "native" ? native : english) ||
+          english ||
+          romaji ||
+          native;
+        return { romaji, english, native, userPreferred };
+      })(),
       synonyms: list(fSynonyms.current),
-      cover: (fCover.current ?? "").trim() || undefined,
-      banner: (fBanner.current ?? "").trim() || undefined,
+      coverImage: cover
+        ? {
+            ...existing?.coverImage,
+            extraLarge: cover,
+            large: cover,
+            medium: cover,
+          }
+        : undefined,
+      bannerImage: (fBanner.current ?? "").trim() || undefined,
       description: (fDescription.current ?? "").trim() || undefined,
       genres: list(fGenres.current),
       status: (() => {
@@ -1489,12 +1550,13 @@ export const register = (ctx: PluginContext) => {
       })(),
       chapters: num(fChapters.current),
       volumes: num(fVolumes.current),
-      year: num(fYear.current),
-      month: num(fMonth.current),
-      day: num(fDay.current),
+      startDate: hasSd ? sd : undefined,
+      endDate: hasEd ? ed : undefined,
       isAdult: fIsAdult.current ? true : undefined,
-      country: (fCountry.current ?? "").trim() || undefined,
+      countryOfOrigin: (fCountry.current ?? "").trim() || undefined,
       siteUrl: (fSiteUrl.current ?? "").trim() || undefined,
+      idMal: num(fIdMal.current),
+      meanScore: num(fMeanScore.current),
     };
     const err = validateEntry(entry);
     if (err) {
@@ -1548,7 +1610,7 @@ export const register = (ctx: PluginContext) => {
     }
     try {
       if (kind === "catalog") {
-        const imported = parseCatalog(raw, log);
+        const imported = parseCatalog(raw, log).manga;
         if (imported.length === 0) {
           ctx.toast.error("Catalog JSON has no valid entries.");
           return;
@@ -1609,6 +1671,13 @@ export const register = (ctx: PluginContext) => {
     { label: "Manga", value: "MANGA" },
     { label: "Novel", value: "NOVEL" },
     { label: "One-shot", value: "ONE_SHOT" },
+  ];
+  // Which title variant becomes userPreferred. Values are the AL_BaseManga_Title
+  // keys so they round-trip through fPreferred unchanged.
+  const PREFERRED_OPTS = [
+    { label: "English", value: "english" },
+    { label: "Romaji", value: "romaji" },
+    { label: "Native", value: "native" },
   ];
   // Month picker options. Values are the 1-based month number as a string so
   // they round-trip through fMonth unchanged (setValue String(e.month) /
@@ -1766,7 +1835,7 @@ export const register = (ctx: PluginContext) => {
         const parts: string[] = [];
         if (e.status) parts.push(e.status.toLowerCase());
         if (e.progress != null) parts.push(`prog ${e.progress}`);
-        if (e.scoreRaw != null) parts.push(`score ${e.scoreRaw}`);
+        if (e.score != null) parts.push(`score ${e.score}`);
         const summary = parts.length > 0 ? parts.join(" · ") : "(no data)";
         const applyBusy = busyAction.get() === `apply-progress-${id}`;
         return tray.flex(
@@ -1910,7 +1979,7 @@ export const register = (ctx: PluginContext) => {
                     onClick: "lcm-show-raw-url",
                     size: "sm",
                   }),
-                  { text: "Show raw catalog URL" },
+                  { text: "Copy raw catalog URL" },
                 ),
                 tray.tooltip(
                   tray.button("🔓", {
@@ -2032,7 +2101,7 @@ export const register = (ctx: PluginContext) => {
               },
             ),
           ],
-          { intent: "note" },
+          { intent: "info" },
         ),
       );
     }
@@ -2209,9 +2278,9 @@ export const register = (ctx: PluginContext) => {
       const rowProg = progress.get().manga[String(e.id)]?.progress;
 
       const row: EntryListRow = {
-        cover: e.cover,
+        cover: e.coverImage?.extraLarge ?? e.coverImage?.large,
         title,
-        year: e.year,
+        year: e.startDate?.year,
         chapter: rowProg ?? undefined,
         opacity: drifting ? 0.5 : 1,
       };
@@ -2261,7 +2330,7 @@ export const register = (ctx: PluginContext) => {
           // coercion, every row showed perpetual status drift.
           //
           // For numeric fields we additionally treat 0 and undefined as
-          // equivalent: AniList's listData OMITS scoreRaw when un-rated
+          // equivalent: AniList's listData OMITS score when un-rated
           // but our pre-hook may capture event.scoreRaw=0 and persist it.
           // Without this, every un-rated row would show drift forever.
           const stringDiff = (
@@ -2283,7 +2352,7 @@ export const register = (ctx: PluginContext) => {
             !seanimeData ||
             stringDiff(rowProgress.status, seanimeData.status) ||
             numericDiff(rowProgress.progress, seanimeData.progress) ||
-            numericDiff(rowProgress.scoreRaw, seanimeData.scoreRaw);
+            numericDiff(rowProgress.score, seanimeData.score);
           // Keep the button visible during the busy window even when drift
           // resolves to false mid-flight (applyProgress refreshes the lookup
           // synchronously after updateEntry — without this guard the loading
@@ -2294,9 +2363,7 @@ export const register = (ctx: PluginContext) => {
               rowProgress.progress != null
                 ? `prog ${rowProgress.progress}`
                 : "",
-              rowProgress.scoreRaw != null
-                ? `score ${rowProgress.scoreRaw}`
-                : "",
+              rowProgress.score != null ? `score ${rowProgress.score}` : "",
             ]
               .filter(Boolean)
               .join(" · ");
@@ -2330,16 +2397,30 @@ export const register = (ctx: PluginContext) => {
             { text: "Edit" },
           ),
         );
+        const delArmed = deleteArmedId.get() === e.id;
         actions.push(
           tray.tooltip(
-            tray.button("⛔", {
-              onClick: ctx.eventHandler(`lcm-del-${e.id}`, () =>
-                deleteEntry(e.id),
-              ),
+            tray.button(delArmed ? "⛔?" : "⛔", {
+              onClick: ctx.eventHandler(`lcm-del-${e.id}`, () => {
+                if (deleteArmedId.get() === e.id) {
+                  deleteArmedId.set(0);
+                  deleteEntry(e.id);
+                } else {
+                  disarmDelete();
+                  deleteArmedId.set(e.id);
+                  ctx.toast.warning(
+                    "Click ⛔ again to delete — also clears reading progress",
+                  );
+                }
+              }),
               size: "sm",
-              intent: "alert-subtle",
+              intent: delArmed ? "alert" : "alert-subtle",
             }),
-            { text: "Delete" },
+            {
+              text: delArmed
+                ? "Click again to delete (also clears its reading progress)"
+                : "Delete",
+            },
           ),
         );
       }
@@ -2517,11 +2598,73 @@ export const register = (ctx: PluginContext) => {
 
   function renderForm() {
     const isNew = editingId.get() === 0;
+    const gistMode = hasToken() && !!effectiveGistId();
     return tray.stack([
       tray.text(isNew ? "New entry" : `Edit #${editingId.get()}`, {
         style: { fontWeight: "600", fontSize: "1rem", marginBottom: "4px" },
       }),
-      tray.input("Title *", { fieldRef: fTitle }),
+      // Gist mode only: a new entry won't surface in the source if its Catalog
+      // URL is pinned to a revision (…/raw/<sha>/…) — that snapshot never sees
+      // later edits. Remind the user to use the unversioned raw URL.
+      ...(isNew && gistMode
+        ? [
+            alertBox(
+              tray,
+              [
+                tray.div(
+                  [
+                    tray.span("ℹ️ New entries "),
+                    tray.span("only", { style: { fontStyle: "italic" } }),
+                    tray.span(" show if the source's "),
+                    tray.span("Catalog URL", { style: { fontWeight: "700" } }),
+                    tray.span(" is the "),
+                    tray.span("unversioned", {
+                      style: { fontWeight: "700", fontStyle: "italic" },
+                    }),
+                    tray.span(" gist raw URL "),
+                    tray.span("(no ", { style: { opacity: "0.75" } }),
+                    tray.span("/<sha>/", {
+                      style: { fontFamily: "monospace", fontWeight: "600" },
+                    }),
+                    tray.span(")", { style: { opacity: "0.75" } }),
+                    tray.span(". Copy it with the "),
+                    tray.span("📋", { style: { fontWeight: "700" } }),
+                    tray.span(" button in "),
+                    tray.span("Gist binding", { style: { fontWeight: "700" } }),
+                    tray.span("."),
+                  ],
+                  { style: { fontSize: "0.8rem", lineHeight: "1.5" } },
+                ),
+              ],
+              { intent: "info" },
+            ),
+          ]
+        : []),
+      tray.text("TITLE *", {
+        style: {
+          fontSize: "0.7rem",
+          fontWeight: "700",
+          opacity: "0.55",
+          letterSpacing: "0.1em",
+          marginBottom: "4px",
+        },
+      }),
+      tray.input("English", {
+        placeholder: "Solo Leveling",
+        fieldRef: fEnglish,
+      }),
+      tray.input("Romaji", {
+        placeholder: "Na Honjaman Level Up",
+        fieldRef: fRomaji,
+      }),
+      tray.input("Native", {
+        placeholder: "나 혼자만 레벨업",
+        fieldRef: fNative,
+      }),
+      tray.select("Preferred display title", {
+        options: PREFERRED_OPTS,
+        fieldRef: fPreferred,
+      }),
       tray.div([], {
         style: {
           borderTop: "1px solid rgba(255,255,255,0.15)",
@@ -2538,11 +2681,23 @@ export const register = (ctx: PluginContext) => {
           marginBottom: "4px",
         },
       }),
-      tray.input("Synonyms (comma-separated)", { fieldRef: fSynonyms }),
-      tray.input("Cover URL", { fieldRef: fCover }),
-      tray.input("Banner URL", { fieldRef: fBanner }),
-      tray.input("Description", { fieldRef: fDescription }),
-      tray.input("Genres (comma-separated)", { fieldRef: fGenres }),
+      tray.input("Synonyms (comma-separated)", {
+        placeholder: "e.g. Alias 1, Alias 2",
+        fieldRef: fSynonyms,
+      }),
+      tray.input("Cover URL", {
+        placeholder: "https://…",
+        fieldRef: fCover,
+      }),
+      tray.input("Banner URL", {
+        placeholder: "https://…",
+        fieldRef: fBanner,
+      }),
+      tray.input("Description", { textarea: true, fieldRef: fDescription }),
+      tray.input("Genres (comma-separated)", {
+        placeholder: "e.g. Action, Adventure",
+        fieldRef: fGenres,
+      }),
       tray.flex(
         [
           tray.div(
@@ -2574,22 +2729,97 @@ export const register = (ctx: PluginContext) => {
       // missing), so set Month + Day too when known to get the right label.
       tray.flex(
         [
-          tray.div([tray.input("Year", { fieldRef: fYear })], {
-            style: { flex: "1", minWidth: "0" },
-          }),
           tray.div(
-            [tray.select("Month", { options: MONTH_OPTS, fieldRef: fMonth })],
+            [
+              tray.input("Start year", {
+                placeholder: "YYYY",
+                fieldRef: fYear,
+              }),
+            ],
+            {
+              style: { flex: "1", minWidth: "0" },
+            },
+          ),
+          tray.div(
+            [
+              tray.select("Start month", {
+                options: MONTH_OPTS,
+                fieldRef: fMonth,
+              }),
+            ],
             { style: { flex: "1", minWidth: "0" } },
           ),
-          tray.div([tray.input("Day (1-31)", { fieldRef: fDay })], {
-            style: { flex: "1", minWidth: "0" },
-          }),
+          tray.div(
+            [tray.input("Start day", { placeholder: "DD", fieldRef: fDay })],
+            {
+              style: { flex: "1", minWidth: "0" },
+            },
+          ),
+        ],
+        { gap: 2 },
+      ),
+      tray.flex(
+        [
+          tray.div(
+            [
+              tray.input("End year", {
+                placeholder: "YYYY",
+                fieldRef: fEndYear,
+              }),
+            ],
+            {
+              style: { flex: "1", minWidth: "0" },
+            },
+          ),
+          tray.div(
+            [
+              tray.select("End month", {
+                options: MONTH_OPTS,
+                fieldRef: fEndMonth,
+              }),
+            ],
+            { style: { flex: "1", minWidth: "0" } },
+          ),
+          tray.div(
+            [tray.input("End day", { placeholder: "DD", fieldRef: fEndDay })],
+            {
+              style: { flex: "1", minWidth: "0" },
+            },
+          ),
+        ],
+        { gap: 2 },
+      ),
+      tray.input("Country", { placeholder: "e.g. JP", fieldRef: fCountry }),
+      tray.input("Site URL", {
+        placeholder: "https://…",
+        fieldRef: fSiteUrl,
+      }),
+      tray.flex(
+        [
+          tray.div(
+            [
+              tray.input("idMal", {
+                placeholder: "e.g. 113138",
+                fieldRef: fIdMal,
+              }),
+            ],
+            { style: { flex: "1", minWidth: "0" } },
+          ),
+          tray.div(
+            [
+              tray.input("Mean score", {
+                placeholder: "0-100",
+                fieldRef: fMeanScore,
+              }),
+            ],
+            {
+              style: { flex: "1", minWidth: "0" },
+            },
+          ),
         ],
         { gap: 2 },
       ),
       tray.switch("Adult", { fieldRef: fIsAdult }),
-      tray.input("Country (e.g. JP)", { fieldRef: fCountry }),
-      tray.input("Site URL", { fieldRef: fSiteUrl }),
       tray.flex([
         tray.button("Save", { onClick: "lcm-save", intent: "primary" }),
         tray.button("Cancel", { onClick: "lcm-cancel" }),
@@ -2597,7 +2827,6 @@ export const register = (ctx: PluginContext) => {
     ]);
   }
 
-  // ---- detect our open entry on the manga page ----
   const currentLocalId = ctx.state<number>(0);
 
   const localIdFromMediaId = (mediaId: number): number => {
@@ -2647,7 +2876,6 @@ export const register = (ctx: PluginContext) => {
     else pageBtn.unmount();
   }, [currentLocalId]);
 
-  // ---- command palette ----
   const palette = ctx.newCommandPalette({
     placeholder: "Local catalog…",
     keyboardShortcut: "l",
@@ -2677,7 +2905,6 @@ export const register = (ctx: PluginContext) => {
   ctx.effect(() => refreshPalette(), [entries]);
   palette.onOpen(() => refreshPalette());
 
-  // ---- scheduled pull ----
   const autoSync = ($getUserPreference("autoSync") ?? "false") === "true";
   if (autoSync && hasToken()) {
     const mins = Math.max(
