@@ -19,7 +19,7 @@ const ALERT_PALETTE: Record<AlertIntent, { bg: string; border: string }> = {
 };
 
 export function alertBox(
-  tray: Tray,
+  tray: $ui.Tray,
   children: unknown[],
   opts: { intent?: AlertIntent } = {},
 ) {

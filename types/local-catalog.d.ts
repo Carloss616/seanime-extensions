@@ -18,7 +18,7 @@
 type MangaCatalogEntry = $app.AL_BaseManga & { updatedAt?: number };
 type AnimeCatalogEntry = $app.AL_BaseAnime & { updatedAt?: number };
 
-interface LocalCatalog {
+declare interface LocalCatalog {
   version?: number;
   // Envelope-level: last write to the whole document.
   updatedAt?: number;
@@ -41,7 +41,7 @@ interface LocalCatalog {
 type MangaProgressEntry = $app.Manga_EntryListData & { updatedAt: number };
 type AnimeProgressEntry = $app.Anime_EntryListData & { updatedAt: number };
 
-interface LocalProgress {
+declare interface LocalProgress {
   version: number;
   // Informational. Set on each write; not used for merge.
   updatedAt: number;

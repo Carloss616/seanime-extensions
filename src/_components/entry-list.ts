@@ -31,7 +31,7 @@ export interface EntryListRow {
   // "Open →" underlined in-place open. `onClick` is a registered handler id
   // (string) or the result of ctx.eventHandler(...) — the component can't make
   // handlers itself (it has no ctx), so the caller wires the navigation.
-  openInPlace?: { onClick: string | unknown; tooltip?: string };
+  openInPlace?: { onClick?: string; tooltip?: string };
   // Pre-built trailing buttons (edit / delete / unlink / apply …).
   actions?: unknown[];
   // Row dim factor (e.g. 0.5 while drifting).
@@ -43,7 +43,7 @@ export interface EntryListSectionConfig {
   rows: EntryListRow[];
   totalCount: number;
   searchActive: boolean;
-  searchFieldRef: unknown;
+  searchFieldRef: $ui.FieldRef<string>;
   searchPlaceholder: string;
   onSearch: string;
   onClearSearch: string;
@@ -59,7 +59,7 @@ export interface EntryListSectionConfig {
 }
 
 export function renderEntryListSection(
-  tray: Tray,
+  tray: $ui.Tray,
   cfg: EntryListSectionConfig,
 ): unknown[] {
   const coverBox = (src?: string) =>
@@ -130,7 +130,6 @@ export function renderEntryListSection(
       const link = tray.a([tray.span("Open ↗")], {
         href: row.openExternal.href,
         target: "_blank",
-        rel: "noopener noreferrer",
         style: linkStyle,
       });
       segs.push(
@@ -229,7 +228,7 @@ export function renderEntryListSection(
       tray.div(
         [
           tray.input(cfg.searchPlaceholder, {
-            fieldRef: cfg.searchFieldRef as FieldRef<string>,
+            fieldRef: cfg.searchFieldRef,
           }),
         ],
         { style: { flex: "1", minWidth: "0" } },

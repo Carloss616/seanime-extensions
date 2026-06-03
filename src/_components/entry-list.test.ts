@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { renderEntryListSection } from "./entry-list.ts";
+import {
+  type EntryListSectionConfig,
+  renderEntryListSection,
+} from "./entry-list.ts";
 
 // Minimal fake `tray`: every builder records a tagged node so the test can
 // walk the returned tree. `img` takes a single opts arg; everything else is
@@ -54,19 +57,22 @@ function walk(node: unknown, acc: FakeNode[] = []): FakeNode[] {
 const argsOf = (nodes: FakeNode[], kind: string) =>
   nodes.filter((n) => n.kind === kind).map((n) => n.arg);
 
-const baseCfg = {
+const baseCfg: EntryListSectionConfig = {
   headerLabel: "LINKED",
-  searchFieldRef: {},
+  searchFieldRef: {} as $ui.FieldRef<string>,
   searchPlaceholder: "Filter…",
   onSearch: "do-search",
   onClearSearch: "clear-search",
   emptyText: "Nothing here yet.",
   noMatchText: 'No match for "x".',
+  rows: [],
+  totalCount: 0,
+  searchActive: false,
 };
 
 describe("renderEntryListSection — header & search", () => {
   test("header shows total count when no filter is active", () => {
-    const out = renderEntryListSection(fakeTray() as unknown as Tray, {
+    const out = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [{ title: "A" }, { title: "B" }, { title: "C" }],
       totalCount: 3,
@@ -76,7 +82,7 @@ describe("renderEntryListSection — header & search", () => {
   });
 
   test("header shows filtered / total when a filter is active", () => {
-    const out = renderEntryListSection(fakeTray() as unknown as Tray, {
+    const out = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [{ title: "A" }],
       totalCount: 3,
@@ -86,7 +92,7 @@ describe("renderEntryListSection — header & search", () => {
   });
 
   test("prepends a leading divider by default", () => {
-    const out = renderEntryListSection(fakeTray() as unknown as Tray, {
+    const out = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [{ title: "A" }],
       totalCount: 1,
@@ -100,7 +106,7 @@ describe("renderEntryListSection — header & search", () => {
   });
 
   test("omits the leading divider when leadingDivider is false", () => {
-    const out = renderEntryListSection(fakeTray() as unknown as Tray, {
+    const out = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [{ title: "A" }],
       totalCount: 1,
@@ -121,7 +127,7 @@ describe("renderEntryListSection — header & search", () => {
 
   test("passes inlineActions nodes into the output", () => {
     const act = { kind: "sentinel-inline" };
-    const out = renderEntryListSection(fakeTray() as unknown as Tray, {
+    const out = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [{ title: "A" }],
       totalCount: 1,
@@ -133,7 +139,7 @@ describe("renderEntryListSection — header & search", () => {
 
   test("renders the search row with a Clear button only when active", () => {
     const inactive = walk(
-      renderEntryListSection(fakeTray() as unknown as Tray, {
+      renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
         ...baseCfg,
         rows: [{ title: "A" }],
         totalCount: 1,
@@ -146,7 +152,7 @@ describe("renderEntryListSection — header & search", () => {
     );
 
     const active = walk(
-      renderEntryListSection(fakeTray() as unknown as Tray, {
+      renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
         ...baseCfg,
         rows: [{ title: "A" }],
         totalCount: 1,
@@ -157,7 +163,7 @@ describe("renderEntryListSection — header & search", () => {
   });
 
   test("hides the search row when showSearchRow is false", () => {
-    const out = renderEntryListSection(fakeTray() as unknown as Tray, {
+    const out = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [{ title: "A" }],
       totalCount: 1,
@@ -170,7 +176,7 @@ describe("renderEntryListSection — header & search", () => {
 
 describe("renderEntryListSection — placeholders", () => {
   test("shows emptyText and no rows when totalCount is 0", () => {
-    const out = renderEntryListSection(fakeTray() as unknown as Tray, {
+    const out = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [],
       totalCount: 0,
@@ -182,7 +188,7 @@ describe("renderEntryListSection — placeholders", () => {
   });
 
   test("shows noMatchText only when the filter removed every row", () => {
-    const matched = renderEntryListSection(fakeTray() as unknown as Tray, {
+    const matched = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [],
       totalCount: 5,
@@ -191,7 +197,7 @@ describe("renderEntryListSection — placeholders", () => {
     expect(argsOf(walk(matched), "text")).toContain('No match for "x".');
 
     // rows empty + not searching → render nothing (no noMatch placeholder).
-    const idle = renderEntryListSection(fakeTray() as unknown as Tray, {
+    const idle = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [],
       totalCount: 5,
@@ -203,7 +209,7 @@ describe("renderEntryListSection — placeholders", () => {
 
 describe("renderEntryListSection — opinionated rows", () => {
   test("renders title, year, status pill, and chapter when present", () => {
-    const out = renderEntryListSection(fakeTray() as unknown as Tray, {
+    const out = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [
         {
@@ -224,7 +230,7 @@ describe("renderEntryListSection — opinionated rows", () => {
   });
 
   test("status pill carries the intent palette color", () => {
-    const out = renderEntryListSection(fakeTray() as unknown as Tray, {
+    const out = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [{ title: "A", status: { label: "auto", intent: "warning" } }],
       totalCount: 1,
@@ -239,7 +245,7 @@ describe("renderEntryListSection — opinionated rows", () => {
   });
 
   test("renders Open ↗ external link (with tooltip) and Open → in-place button", () => {
-    const out = renderEntryListSection(fakeTray() as unknown as Tray, {
+    const out = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [
         {
@@ -274,7 +280,7 @@ describe("renderEntryListSection — opinionated rows", () => {
 
   test("omits absent fields and dot-separates only present segments", () => {
     // year + status + chapter = 3 segments → 2 dot separators.
-    const out = renderEntryListSection(fakeTray() as unknown as Tray, {
+    const out = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [
         {
@@ -292,7 +298,7 @@ describe("renderEntryListSection — opinionated rows", () => {
   });
 
   test("a bare row (only title) renders no sub-line segments", () => {
-    const out = renderEntryListSection(fakeTray() as unknown as Tray, {
+    const out = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [{ title: "Solo" }],
       totalCount: 1,
@@ -305,7 +311,7 @@ describe("renderEntryListSection — opinionated rows", () => {
 
   test("passes through trailing actions and applies row.opacity", () => {
     const action = { kind: "sentinel-action" };
-    const out = renderEntryListSection(fakeTray() as unknown as Tray, {
+    const out = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [{ title: "A", actions: [action], opacity: 0.5 }],
       totalCount: 1,
@@ -326,7 +332,7 @@ describe("renderEntryListSection — opinionated rows", () => {
 
   test("uses an img cover when provided, a placeholder div otherwise", () => {
     const withCover = walk(
-      renderEntryListSection(fakeTray() as unknown as Tray, {
+      renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
         ...baseCfg,
         rows: [{ title: "A", cover: "http://x/y.png" }],
         totalCount: 1,
@@ -336,7 +342,7 @@ describe("renderEntryListSection — opinionated rows", () => {
     expect(withCover.some((n) => n.kind === "img")).toBe(true);
 
     const noCover = walk(
-      renderEntryListSection(fakeTray() as unknown as Tray, {
+      renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
         ...baseCfg,
         rows: [{ title: "A" }],
         totalCount: 1,

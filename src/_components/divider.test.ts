@@ -17,7 +17,7 @@ function fakeTray() {
 }
 // divider() returns the opaque Tray.div type; the fake records a FakeNode.
 const mk = (): FakeNode =>
-  divider(fakeTray() as unknown as Tray) as unknown as FakeNode;
+  divider(fakeTray() as unknown as $ui.Tray) as unknown as FakeNode;
 
 describe("divider", () => {
   test("renders an empty div", () => {

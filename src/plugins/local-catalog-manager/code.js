@@ -475,7 +475,6 @@ var register = (...args) => {
         const link = tray.a([tray.span("Open ↗")], {
           href: row.openExternal.href,
           target: "_blank",
-          rel: "noopener noreferrer",
           style: linkStyle,
         });
         segs.push(
@@ -686,7 +685,6 @@ var register = (...args) => {
     } = $shared.use(SHARED_LIB_NAME);
     const log = createLogger();
     const tray = ctx.newTray({
-      tooltipText: "Local Catalog Manager",
       iconUrl: `${GITHUB_RAW_WORKSPACE}/src/plugins/local-catalog-manager/assets/icon.png`,
       withContent: true,
     });

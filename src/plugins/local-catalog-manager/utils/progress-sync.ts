@@ -69,7 +69,7 @@ export function applyRemote(
 // extId we fall back to the siteUrl-prefix check used before — works in
 // most cases but leaves entries out when seanime ships a bare media object.
 export function buildMediaIdLookup(
-  collection: MangaCollection,
+  collection: $app.Manga_Collection,
   prefix: string,
   decodeLocalId: (mediaId: number) => number,
   opts: { extId?: number } = {},

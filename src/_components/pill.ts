@@ -14,7 +14,11 @@ const PILL_PALETTE: Record<PillIntent, { bg: string; fg: string }> = {
   gray: { bg: "rgba(255,255,255,0.06)", fg: "rgba(255,255,255,0.6)" },
 };
 
-export function pill(tray: Tray, label: string, intent: PillIntent = "gray") {
+export function pill(
+  tray: $ui.Tray,
+  label: string,
+  intent: PillIntent = "gray",
+) {
   const { bg, fg } = PILL_PALETTE[intent] ?? PILL_PALETTE.gray;
   return tray.span(label, {
     style: {

@@ -19,7 +19,7 @@ function fakeTray() {
 // pill() returns the (opaque) Tray.span type; the fake records a FakeNode, so
 // cast back for assertions.
 const mkPill = (label: string, intent?: PillIntent): FakeNode =>
-  pill(fakeTray() as unknown as Tray, label, intent) as unknown as FakeNode;
+  pill(fakeTray() as unknown as $ui.Tray, label, intent) as unknown as FakeNode;
 
 describe("pill", () => {
   test("renders a span with the given label", () => {

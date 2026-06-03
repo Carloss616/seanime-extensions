@@ -233,7 +233,6 @@ var register = (...args) => {
         const link = tray.a([tray.span("Open ↗")], {
           href: row.openExternal.href,
           target: "_blank",
-          rel: "noopener noreferrer",
           style: linkStyle,
         });
         segs.push(
@@ -427,7 +426,6 @@ var register = (...args) => {
     const { MUClient, createLogger } = $shared.use(SHARED_LIB_NAME);
     const log = createLogger();
     const tray = ctx.newTray({
-      tooltipText: "MangaUpdates Sync — linking",
       iconUrl: `${GITHUB_RAW_WORKSPACE}/src/plugins/mangaupdates-sync/assets/icon.png`,
       withContent: true,
     });
@@ -583,8 +581,8 @@ var register = (...args) => {
         progress: listData.progress,
       });
       const syncScore = ($getUserPreference("syncScore") ?? "true") !== "false";
-      if (syncScore && listData.scoreRaw != null) {
-        await mu.pushRating(seriesIdNum, listData.scoreRaw);
+      if (syncScore && listData.score != null) {
+        await mu.pushRating(seriesIdNum, listData.score);
       }
       return true;
     }
@@ -598,7 +596,7 @@ var register = (...args) => {
       try {
         searchResults.set(await mu.search(q));
       } catch (e) {
-        ctx.toast.alert(
+        ctx.toast.warning(
           `MangaUpdates search error: ${e instanceof Error ? e.message : "Unknown error"}`,
         );
         searchResults.set([]);
@@ -820,7 +818,7 @@ var register = (...args) => {
                           log.error("link-time sync failed:", err);
                           const msg =
                             err instanceof Error ? err.message : String(err);
-                          ctx.toast.alert(`Sync failed: ${msg}`);
+                          ctx.toast.warning(`Sync failed: ${msg}`);
                         });
                     }),
                     intent: "primary-subtle",

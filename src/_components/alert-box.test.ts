@@ -20,7 +20,7 @@ function fakeTray() {
 // so cast back for assertions.
 const mkAlert = (children: unknown[], intent?: AlertIntent): FakeNode =>
   alertBox(
-    fakeTray() as unknown as Tray,
+    fakeTray() as unknown as $ui.Tray,
     children,
     intent ? { intent } : {},
   ) as unknown as FakeNode;

@@ -28,7 +28,7 @@ import {
 } from "../utils/constants";
 import type { sharedLib } from "./shared-lib";
 
-export const register = (ctx: PluginContext) => {
+export const register = (ctx: $ui.Context) => {
   // Helpers (incl. the custom-source mediaId codec — see CLAUDE.md
   // "Custom-source mediaId encoding") come via $shared so the single
   // canonical implementation is re-evaluated into this UI runtime.
@@ -63,7 +63,6 @@ export const register = (ctx: PluginContext) => {
   const log = createLogger();
 
   const tray = ctx.newTray({
-    tooltipText: "Local Catalog Manager",
     iconUrl: `${GITHUB_RAW_WORKSPACE}/src/plugins/local-catalog-manager/assets/icon.png`,
     withContent: true,
   });
@@ -697,7 +696,7 @@ export const register = (ctx: PluginContext) => {
   // seanime ships entries without the wrapped siteUrl, which was the cause
   // of the perpetual "📤 push" button on already-synced rows). Falls back
   // to the siteUrl-prefix check when extId hasn't been discovered yet.
-  function refreshLookupsFromCollection(collection: MangaCollection) {
+  function refreshLookupsFromCollection(collection: $app.Manga_Collection) {
     const extId = $storage.get<number>(K_EXT_ID) ?? undefined;
     mediaIdLookup.set(
       buildMediaIdLookup(collection, PREFIX_SITEURL, decodeLocalId, {

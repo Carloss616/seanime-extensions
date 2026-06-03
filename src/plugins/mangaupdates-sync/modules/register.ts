@@ -18,7 +18,7 @@ import type { MUResult } from "../utils/mu-client";
 import type { sharedLib } from "./shared-lib";
 
 // UI: explicit AniList ↔ MangaUpdates linking.
-export const register = (ctx: PluginContext) => {
+export const register = (ctx: $ui.Context) => {
   // $shared.use re-evals the factory in this runtime, so MUClient is a
   // runtime-local copy of the class defined in code.ts init().
   const { MUClient, createLogger } =
@@ -26,7 +26,6 @@ export const register = (ctx: PluginContext) => {
   const log = createLogger();
 
   const tray = ctx.newTray({
-    tooltipText: "MangaUpdates Sync — linking",
     // SeaImage silently blocks non-raster icon suffixes (incl. .ico), so
     // point at the extension's own icon.png raw URL instead.
     iconUrl: `${GITHUB_RAW_WORKSPACE}/src/plugins/mangaupdates-sync/assets/icon.png`,
@@ -235,7 +234,7 @@ export const register = (ctx: PluginContext) => {
 
     // Scan the (client-cached) manga collection for listData — cheaper than
     // refetching from AniList.
-    let listData: MangaListEntry["listData"] | undefined;
+    let listData: $app.Manga_EntryListData | undefined;
     try {
       const collection = await ctx.manga.getCollection();
       outer: for (const list of collection.lists || []) {
@@ -259,8 +258,8 @@ export const register = (ctx: PluginContext) => {
     });
 
     const syncScore = ($getUserPreference("syncScore") ?? "true") !== "false";
-    if (syncScore && listData.scoreRaw != null) {
-      await mu.pushRating(seriesIdNum, listData.scoreRaw);
+    if (syncScore && listData.score != null) {
+      await mu.pushRating(seriesIdNum, listData.score);
     }
     return true;
   }
@@ -277,7 +276,7 @@ export const register = (ctx: PluginContext) => {
     try {
       searchResults.set(await mu.search(q));
     } catch (e) {
-      ctx.toast.alert(
+      ctx.toast.warning(
         `MangaUpdates search error: ${e instanceof Error ? e.message : "Unknown error"}`,
       );
       searchResults.set([]);
@@ -549,7 +548,7 @@ export const register = (ctx: PluginContext) => {
                         log.error("link-time sync failed:", err);
                         const msg =
                           err instanceof Error ? err.message : String(err);
-                        ctx.toast.alert(`Sync failed: ${msg}`);
+                        ctx.toast.warning(`Sync failed: ${msg}`);
                       });
                   }),
                   intent: "primary-subtle",

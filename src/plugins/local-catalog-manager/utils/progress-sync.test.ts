@@ -15,12 +15,18 @@ const idDecoder = (mediaId: number) => mediaId;
 
 describe("buildMediaIdLookup", () => {
   test("maps localId → mediaId for entries with our prefix", () => {
-    const collection: MangaCollection = {
+    const collection: $app.Manga_Collection = {
       lists: [
         {
           entries: [
-            { media: { id: 100, siteUrl: `${PREFIX}|END|http://x/1` } },
-            { media: { id: 200, siteUrl: `${PREFIX}|END|http://x/2` } },
+            {
+              mediaId: 100,
+              media: { id: 100, siteUrl: `${PREFIX}|END|http://x/1` },
+            },
+            {
+              mediaId: 200,
+              media: { id: 200, siteUrl: `${PREFIX}|END|http://x/2` },
+            },
           ],
         },
       ],
@@ -32,18 +38,25 @@ describe("buildMediaIdLookup", () => {
   });
 
   test("skips entries with other prefixes (AniList, other custom-sources)", () => {
-    const collection: MangaCollection = {
+    const collection: $app.Manga_Collection = {
       lists: [
         {
           entries: [
-            { media: { id: 100, siteUrl: "https://anilist.co/manga/100" } },
             {
+              mediaId: 100,
+              media: { id: 100, siteUrl: "https://anilist.co/manga/100" },
+            },
+            {
+              mediaId: 200,
               media: {
                 id: 200,
                 siteUrl: "ext_custom_source_other-source|END|x",
               },
             },
-            { media: { id: 300, siteUrl: `${PREFIX}|END|http://x/3` } },
+            {
+              mediaId: 300,
+              media: { id: 300, siteUrl: `${PREFIX}|END|http://x/3` },
+            },
           ],
         },
       ],
@@ -61,7 +74,7 @@ describe("buildMediaIdLookup", () => {
     ).toBe(0);
     expect(
       buildMediaIdLookup(
-        { lists: [{ entries: [{ media: { id: 1 } }] }] },
+        { lists: [{ entries: [{ mediaId: 1, media: { id: 1 } }] }] },
         PREFIX,
         idDecoder,
       ).size,
