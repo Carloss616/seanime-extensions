@@ -46,7 +46,12 @@ function parseEntries<T extends { updatedAt: number }>(
     // round-tripping into the gist / $storage on every save. `score` wins if
     // both are present (it's the canonical post-migration value).
     const { scoreRaw, ...rest } = v;
-    if (scoreRaw != null && rest.score == null) rest.score = scoreRaw;
+    // `scoreRaw > 0` guard: AniList uses 0 to mean "un-rated" and omits score
+    // from listData. Migrating a legacy `scoreRaw: 0` to `score: 0` would
+    // resurrect a phantom rating that then leaks into the gist on the next push.
+    if (scoreRaw != null && Number(scoreRaw) > 0 && rest.score == null) {
+      rest.score = scoreRaw;
+    }
     out[k] = { ...rest, updatedAt } as unknown as T;
   }
   return out;
@@ -93,7 +98,18 @@ function serializeEntries(
   for (const id of ids) {
     const e = map[id];
     const sorted: Record<string, unknown> = {};
-    for (const k of Object.keys(e).sort()) sorted[k] = e[k];
+    for (const k of Object.keys(e).sort()) {
+      const val = e[k];
+      // Drop fields that don't carry a meaningful value, mirroring
+      // serializeCatalog's canonicalizeKeys:
+      //   - null/undefined: $storage round-trips blank fields to JSON null and
+      //     JSON.stringify keeps null, so they'd leak into the gist verbatim.
+      //   - score === 0: AniList treats 0 as un-rated and omits it; emitting it
+      //     wrote phantom `"score": 0` onto entries untouched by a chapter mark.
+      if (val === null || val === undefined) continue;
+      if (k === "score" && Number(val) === 0) continue;
+      sorted[k] = val;
+    }
     out[id] = sorted;
   }
   return out;

@@ -117,6 +117,21 @@ describe("parseProgress", () => {
     ).toBeUndefined();
   });
 
+  test("legacy scoreRaw=0 is un-rated — dropped, not migrated to score:0", () => {
+    // AniList uses 0 to mean "un-rated" and omits score from listData. A legacy
+    // entry that stored `scoreRaw: 0` must NOT resurface as `score: 0` — that
+    // leaks a phantom rating into the gist on the next push.
+    const out = parseProgress(
+      {
+        version: 1,
+        updatedAt: 0,
+        manga: { "1": { progress: 3, scoreRaw: 0, updatedAt: 5 } },
+      },
+      log,
+    );
+    expect(out.manga["1"].score).toBeUndefined();
+  });
+
   test("parses from a JSON string", () => {
     expect(
       parseProgress('{"version":1,"updatedAt":5,"manga":{}}', log),
@@ -260,6 +275,37 @@ describe("serializeProgress", () => {
     const i10 = s.indexOf('"10":');
     expect(i1).toBeLessThan(i2);
     expect(i2).toBeLessThan(i10);
+  });
+
+  test("omits un-rated score (0) — AniList treats 0 as un-rated/absent", () => {
+    // Regression: a chapter-mark push wrote `+ "score": 0` onto entries that
+    // weren't part of the event (they carried an un-rated 0 in $storage), since
+    // serializeProgress copied the key verbatim. score=0 must serialize as absent.
+    const doc: LocalProgress = {
+      version: 1,
+      updatedAt: 0,
+      manga: {
+        "1": { progress: 227, score: 0, status: "CURRENT", updatedAt: 50 },
+      },
+      anime: {},
+    };
+    expect(serializeProgress(doc)).not.toContain('"score"');
+  });
+
+  test("omits null fields rehydrated from $storage's undefined→null trip", () => {
+    // $storage round-trips undefined object fields to JSON null; JSON.stringify
+    // keeps null, so without stripping they'd leak into the gist as `null`.
+    const doc = {
+      version: 1,
+      updatedAt: 0,
+      manga: {
+        "1": { progress: 5, score: null, status: null, updatedAt: 1 },
+      },
+      anime: {},
+    } as unknown as LocalProgress;
+    const s = serializeProgress(doc);
+    expect(s).not.toContain('"score"');
+    expect(s).not.toContain('"status"');
   });
 });
 

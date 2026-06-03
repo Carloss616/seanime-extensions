@@ -3279,7 +3279,9 @@ var sharedLib = (...args) => {
         log2.warn(`${label} entry ${k} missing updatedAt, treating as 0`);
       }
       const { scoreRaw, ...rest } = v;
-      if (scoreRaw != null && rest.score == null) rest.score = scoreRaw;
+      if (scoreRaw != null && Number(scoreRaw) > 0 && rest.score == null) {
+        rest.score = scoreRaw;
+      }
       out[k] = { ...rest, updatedAt };
     }
     return out;
@@ -3315,7 +3317,12 @@ var sharedLib = (...args) => {
     for (const id of ids) {
       const e = map[id];
       const sorted = {};
-      for (const k of Object.keys(e).sort()) sorted[k] = e[k];
+      for (const k of Object.keys(e).sort()) {
+        const val = e[k];
+        if (val === null || val === undefined) continue;
+        if (k === "score" && Number(val) === 0) continue;
+        sorted[k] = val;
+      }
       out[id] = sorted;
     }
     return out;
