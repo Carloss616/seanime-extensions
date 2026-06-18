@@ -6,6 +6,7 @@
   "scripts": {
     "build": "bun run scripts/build.ts",
     "icon": "bun run scripts/svg2png.ts",
+    "discord-post": "bun run scripts/discord-post.ts",
     "sync:types": "bun run scripts/sync-types.ts",
     "postbuild": "bun run check:fix",
     "typecheck": "tsc --noEmit && tsc --noEmit -p scripts/tsconfig.json",

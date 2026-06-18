@@ -16,6 +16,7 @@ bun run typecheck    # tsc --noEmit over src/+types/ and over scripts/ (two conf
 bun run check        # biome lint + format check (check:fix to autofix)
 bun run test         # bun test — unit tests in co-located src/**/*.test.ts
 bun run icon         # scripts/svg2png.ts — render an SVG icon to assets/icon.png
+bun run discord-post <id>  # scripts/discord-post.ts — print the Discord submission post for an extension, filled from its manifest.json
 ```
 
 `<type>` folders are: `custom-source`, `manga-provider`, `anime-torrent-provider`, `onlinestream-provider`, `plugin` (the build's `VALID_TYPES` in [scripts/build.ts](scripts/build.ts) validates each manifest's `type`).
