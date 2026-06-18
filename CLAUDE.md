@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A personal collection of [seanime](https://github.com/5rahim/seanime) extensions. Each extension is a TypeScript entry (`code.ts`) plus a `manifest.json`. The build transpiles `code.ts` to a sibling `code.js`; the manifest's `payloadURI` points at the raw GitHub URL of that `code.js`, which is what seanime fetches and runs. Both source and built `code.js` are committed.
 
-Current extensions: two custom-sources (`mangaupdates`, `local-catalog`) and two plugins (`mangaupdates-sync`, `local-catalog-manager`). `local-catalog` + `local-catalog-manager` are a pair — the plugin manages a catalog the custom-source serves; `mangaupdates` + `mangaupdates-sync` likewise pair a source with its tracker plugin. Code shared across these lives in the repo-root `src/_utils/` and `src/_components/` (see "Cross-extension shared code").
+Current extensions: two custom-sources (`mangaupdates`, `local-catalog`) and three plugins (`mangaupdates-sync`, `local-catalog-manager`, `library-grid-layout`). `local-catalog` + `local-catalog-manager` are a pair — the plugin manages a catalog the custom-source serves; `mangaupdates` + `mangaupdates-sync` likewise pair a source with its tracker plugin. `library-grid-layout` is standalone — a UI-only plugin that overrides the cards-per-row of the manga & anime library grids via `ctx.dom` inline styles (no hooks, no network). Code shared across these lives in the repo-root `src/_utils/` and `src/_components/` (see "Cross-extension shared code").
 
 ## Build commands
 
