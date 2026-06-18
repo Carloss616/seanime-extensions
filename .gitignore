@@ -5,6 +5,7 @@ __pycache__/
 .idea/
 .vscode/
 .tsbuildinfo
+.omc
 
 # Per-developer dev manifests. They bake in an absolute filesystem path in
 # `payloadURI` and `isDevelopment: true`, so they MUST NOT be shared — and
