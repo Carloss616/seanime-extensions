@@ -73,13 +73,16 @@ if (!m) {
   }
 }
 
+const toCode = (s: string) => `\`${s}\``;
+
 // Additional notes auto-derived from the manifest's declared capabilities.
 const notes: string[] = [];
 const scopes = m.plugin?.permissions?.scopes;
 if (scopes?.length) {
-  notes.push(`Requested permission scopes: ${scopes.map((s) => `\`${s}\``).join(", ")}.`);
+  notes.push(`Requested permission scopes: ${scopes.map(toCode).join(", ")}.`);
 }
-const domains = m.plugin?.permissions?.allow?.networkAccess?.allowedDomains?.map((s) => `\`${s}\``);
+const domains =
+  m.plugin?.permissions?.allow?.networkAccess?.allowedDomains?.map(toCode);
 notes.push(
   domains?.length
     ? `Network access: ${domains.join(", ")}.`
