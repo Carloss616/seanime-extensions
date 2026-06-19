@@ -1,30 +1,75 @@
-# Local Catalog (Custom)
+<div align="center">
 
-A seanime **custom-source** that serves a manga catalog you curate yourself, for titles that are not on AniList / MangaUpdates (or not yet uploaded). The entries show up in your manga collection like any AniList media; you read them with any installed manga provider (matched by title) or the built-in local reader.
+<img src="https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/local-catalog/assets/icon.png" width="96" alt="Local Catalog icon" />
 
-This extension provides **metadata only** — it does not serve chapter pages.
+# 📚 Local Catalog
 
-## Configuration
+![Type](https://img.shields.io/badge/type-custom--source-8b5cf6?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-2.0.0-22c55e?style=for-the-badge)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 
-Open the extension's config in seanime and set one of:
+**A seanime custom-source that serves a manga catalog you curate yourself.**
 
-- **Catalog URL** — a URL returning the catalog JSON. It is fetched with a plain
-  `GET` and **no authentication**, so it must be publicly reachable:
-  - a **public or _secret_ GitHub Gist** raw URL (`https://gist.githubusercontent.com/<user>/<id>/raw/catalog.json`) — a *secret* gist works without a token, its raw URL is just unlisted;
+[Features](#-features) · [Quick Start](#-quick-start) · [How it works](#-how-it-works) · [Catalog format](#-catalog-format)
+
+</div>
+
+---
+
+## 💡 Concept
+
+> For titles that aren't on AniList / MangaUpdates (or aren't uploaded yet).
+
+You curate the metadata; the titles then show up in your manga collection like any AniList media, and you read them with any installed manga provider (matched by title) or the built-in local reader.
+
+> [!IMPORTANT]
+> This source provides **metadata only** — it does not host or serve chapter pages.
+
+---
+
+## ✨ Features
+
+| Feature | Description |
+| ------- | ----------- |
+| Two catalog sources | Curate entries from a **remote URL** or **inline JSON**. |
+| Native shapes | Entries use seanime's `AL_BaseManga` shape — cover, banner, genres, status, dates and more. |
+| In-memory cache | Configurable TTL (`Cache minutes`). |
+| Companion plugin | Pairs with [Local Catalog Manager](../../plugins/local-catalog-manager/) for in-app editing and cross-device sync. |
+
+---
+
+## 🚀 Quick Start
+
+1. Install from the [marketplace](../../../README.md#-quick-start), or paste this extension's `manifest.json` raw URL into seanime → *Add Extension*.
+2. Open the extension's config and set **one** catalog source (see below).
+3. Open your manga collection — your entries appear there.
+
+### Configuration
+
+Set **one** catalog source:
+
+- **Catalog URL** — a URL returning the catalog JSON, fetched with a plain `GET` and **no authentication**, so it must be publicly reachable:
+  - a **public or _secret_ GitHub Gist** raw URL (`https://gist.githubusercontent.com/<user>/<id>/raw/catalog.json`) — a *secret* gist works without a token; its raw URL is just unlisted;
   - a **public repo** raw URL;
   - a **local HTTP server**, e.g. `http://localhost:8000/catalog.json`.
-
-  **No token is needed.** Truly private gists/repos (that require auth) are **not**
-  supported — the extension cannot send an `Authorization` header. (Writing a
-  catalog back to a Gist, which *does* need a token, is the job of the planned v2
-  CRUD plugin, not this source.)
-- **Inline catalog JSON** — paste the catalog JSON directly (used when Catalog URL is empty). This field ships with a one-record example as its default, so you can see the shape and edit it in place; replace it with your own entries (or clear it and use a Catalog URL instead).
+- **Inline catalog JSON** — paste the catalog JSON directly (used when Catalog URL is empty). Ships with a one-record example as its default so you can see the shape and edit in place.
 
 **Cache minutes** controls how long the parsed catalog is cached in memory (default `10`; `0` disables caching). Edits propagate after the TTL expires.
 
-> A custom-source cannot read a device-local file path directly (seanime only grants it `fetch` + config). Use a local HTTP server and point Catalog URL at it if you want a file on disk.
+> [!NOTE]
+> No token is supported. Truly private gists/repos that require auth are **not** reachable — the extension cannot send an `Authorization` header. Writing a catalog *back* to a Gist (which does need a token) is the job of the [Local Catalog Manager](../../plugins/local-catalog-manager/) plugin, not this source.
+>
+> A custom-source also can't read a device-local file path directly (seanime only grants it `fetch` + config). Use a local HTTP server and point **Catalog URL** at it if you want a file on disk.
 
-## Catalog format
+---
+
+## 🔧 How it works
+
+When you set a **Catalog URL**, the source fetches and parses that JSON (caching it for *Cache minutes*); otherwise it uses the **Inline catalog JSON**. Each record is normalized to seanime's native `AL_BaseManga` shape, so entries show up in your manga collection like any AniList media. When you open one, seanime calls your selected manga provider's search with the entry's title(s) and lists its chapters.
+
+---
+
+## 📋 Catalog format
 
 ```jsonc
 {
@@ -58,29 +103,22 @@ Open the extension's config in seanime and set one of:
 }
 ```
 
-- Entries use seanime's native `AL_BaseManga` shape. `id` and a non-empty
-  `title` are required; everything else is optional. A bare array `[ … ]` is
-  also accepted and treated as `manga`.
-- `title` may be a string (coerced to `{ userPreferred, english }`) or the full
-  `{ english, romaji, native, userPreferred }` object.
-- `updatedAt` (per record and at the envelope) is merge-metadata managed by the
-  `local-catalog-manager` plugin; hand-authored catalogs can omit it.
-- The `anime` namespace is reserved for a future release — the source does not
-  serve anime yet.
+- `id` and a non-empty `title` are required; everything else is optional. A bare array `[ … ]` is also accepted and treated as `manga`.
+- `title` may be a string (coerced to `{ userPreferred, english }`) or the full `{ english, romaji, native, userPreferred }` object.
+- `updatedAt` (per record and at the envelope) is merge-metadata managed by the [Local Catalog Manager](../../plugins/local-catalog-manager/) plugin; hand-authored catalogs can omit it.
+- The `anime` namespace is reserved for a future release — the source does not serve anime yet.
 
-> **Breaking change (v2):** the format moved from the old flat shape
-> (`cover`/`banner`/`year`/`country`) to native `AL_BaseManga`. Regenerate any
-> hand-written catalog accordingly.
+> [!WARNING]
+> **Breaking change (v2):** the format moved from the old flat shape (`cover`/`banner`/`year`/`country`) to native `AL_BaseManga`. Regenerate any hand-written catalog accordingly.
 
-## Reading
+---
 
-The custom-source only supplies metadata. When you open an entry, seanime calls your selected manga provider's search with the entry's title(s) and lists its chapters.
+## 📖 Reading
 
-## Roadmap
+The custom-source supplies metadata only. To read, install a `manga-provider` extension (e.g. MangaDex); seanime matches the entry to it by title.
 
-A companion **plugin** (`local-catalog-manager`, a separate extension) over this same catalog format is planned. Not included yet. Scope:
+---
 
-- **CRUD** — tray + command-palette UI to add/edit/delete entries, persisting the catalog to a Gist that the Catalog URL points at (token in `$storage`) plus a local backup.
-- **Sync / auto-sync** — keep the same library *and* reading position across devices:
-  - **catalog** (metadata) auto pull/push with the Gist. The scheduled auto-sync is a configurable on/off toggle (default off) and **only applies when a Catalog URL/Gist is used** — with inline JSON there is nothing remote to sync, so it is disabled;
-  - **reading progress** (list status / chapter progress / score), kept in a *separate* sync document keyed by the entry `id`, so it stays out of the catalog. Captured via the progress hooks (like `mangaupdates-sync`) and restored on other devices. Since seanime stores custom-source progress only locally, this is what makes it portable; it does **not** push to AniList/MU.
+## 📄 License
+
+[Carlos Espinoza](https://github.com/Carloss616). Licensed under [MIT](../../../LICENSE). Part of [seanime-extensions](../../../).

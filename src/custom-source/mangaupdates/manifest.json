@@ -9,7 +9,7 @@
   "author": "Carloss616",
   "icon": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/mangaupdates/assets/icon.png",
   "website": "https://www.mangaupdates.com/",
-  "readme": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/mangaupdates/README.md",
+  "readme": "https://github.com/Carloss616/seanime-extensions/blob/main/src/custom-source/mangaupdates/README.md",
   "lang": "en",
   "payloadURI": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/mangaupdates/code.js"
 }

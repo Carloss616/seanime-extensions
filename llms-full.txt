@@ -1,0 +1,79 @@
+# seanime-extensions
+
+A personal collection of extensions for seanime (https://github.com/5rahim/seanime), a media server and client for anime & manga. All five are manga-focused. Author: Carlos Espinoza (https://github.com/Carloss616). Licensed under MIT. Repository: https://github.com/Carloss616/seanime-extensions.
+
+## Overview
+
+seanime supports third-party extensions: TypeScript bundles it fetches from a URL and runs in a sandboxed goja runtime (Go's JS engine — no Node, no browser). Each extension here is a `code.ts` entry plus a `manifest.json`. The build transpiles `code.ts` to a sibling `code.js` (the `payloadURI` target) with Bun, and regenerates a top-level `marketplace.json` that lets users install the whole set from the seanime UI. Both source and built payload are committed.
+
+Extension types: `custom-source` (a metadata provider for the collection) and `plugin` (lifecycle hooks + UI via `$app`, `$ui`, `$anilist`, `$storage`).
+
+## Extensions
+
+1. Local Catalog (custom-source, v2.0.0)
+   - Serves a manga catalog you curate yourself, for titles not on AniList / MangaUpdates.
+   - Metadata only — does not serve chapter pages; you read with any installed manga-provider (matched by title).
+   - Source of catalog data: a public/secret Gist raw URL, a public repo raw URL, a local HTTP server, or inline JSON. No auth header is sent, so private gists/repos are unsupported.
+   - Entries use seanime's native AL_BaseManga shape. `id` + non-empty `title` required; the rest optional. v2 replaced the old flat shape (cover/banner/year/country).
+   - Configurable in-memory cache TTL (Cache minutes).
+
+2. Local Catalog Manager (plugin, v2.0.2)
+   - Companion to Local Catalog: add/edit/delete entries from the tray, a manga-page button, or the command palette.
+   - Gist mode (GitHub PAT with `gist` scope): pushes catalog.json to a secret Gist the source reads; supports manual Pull and scheduled Auto-sync (interval configurable, default 30 min, uses the `cron` scope).
+   - Local mode (no token): entries persist in plugin storage; user copies serialized JSON into the source's Inline catalog JSON field.
+   - Reading-progress sync (Gist mode): captures chapter/status/score via onPre/PostUpdateEntry + onPre/PostUpdateEntryProgress hooks, pushes to progress.json in the same Gist, and restores on other devices via $anilist.updateEntry. Per-entry last-write-wins by updatedAt; orphan-progress cleanup button.
+   - Permissions: storage, anilist, cron; networkAccess to api.github.com + gist.githubusercontent.com.
+
+3. MangaUpdates (custom-source, v1.0.1)
+   - Adds MangaUpdates as a search & details metadata source via the public MangaUpdates API. No API key required.
+   - Methods: listManga → POST /v1/series/search; getMangaDetails → GET /v1/series/{id}; getManga (batch) → parallel GET. Anime methods stubbed (still reachable, so kept defined).
+   - Not a reader — MangaUpdates tracks scanlation releases, not pages.
+   - Maps the MU `record` onto AL_BaseManga (series_id→id, url→siteUrl, title, image→coverImage, genres, associated→synonyms, bayesian_rating×10→meanScore, year→startDate.year, type→format).
+
+4. MangaUpdates Sync (plugin, v1.0.3)
+   - Pushes reading state (progress, status, score) to MangaUpdates whenever seanime updates an entry — chapter "+1" bumps and manual edits.
+   - Two hook pairs in init(): Pre hook stashes payload in $store, the matching Post hook pushes to MU only after AniList accepts the update (lock-step). Each callback is a self-contained module (goja serializes callbacks via .toString() into a fresh runtime, so helpers must be inlined).
+   - Requests: POST /v1/lists/series/update (status + chapter; integer list_id), POST /v1/lists/series (add fallback), PUT /v1/series/{id}/rating (score; the list-update payload drops rating).
+   - Resolves MU series_id by: (1) custom-source fast path — decoded from the synthetic mediaId of `mangaupdates` custom-source entries, no network; (2) explicit user link in $storage via the manga-page button; (3) opt-in title-search fallback (off by default, can mismatch).
+   - Status map: CURRENT→0, PLANNING→1, COMPLETED→2, DROPPED→3, PAUSED→4, REPEATING→0. Score: AniList scoreRaw/10 clamped [0,10].
+   - Config: username, password, autoSyncOnProgress, syncScore, autoMatchFallback, injectEntryIcon. Permissions: storage, anilist; networkAccess to api.mangaupdates.com.
+   - Known limits: push-only; 412 five-second update delay not retried; credentials stored plaintext in $storage; no repeat-count sync; score-clearing not pushed.
+
+5. Library Grid Layout (plugin, v1.0.0)
+   - UI-only: sets cards-per-row of the manga & anime library grids, with a separate column count per screen size (Mobile/Tablet/Laptop/Desktop), edited live from a tray panel.
+   - Reads the live viewport width and sets an inline grid-template-columns on the grid containers ([data-media-card-grid] and the virtualized [data-media-card-lazy-grid]); inline styles outrank Tailwind grid-cols-* classes. Re-applies on grid mount, new main tab, and resize across a tier.
+   - Monotonic constraint (smaller screen ≤ bigger screen columns), values clamped 1–12, seanime-default toggle to restore the native grid. Permission: storage only; no network.
+
+## Architecture
+
+- Build: scripts/build.ts (Bun). For each src/*/*/code.ts it validates the sibling manifest (type whitelist; payloadURI must be the sibling code.js), bundles modules/*.ts standalone, re-emits each as a self-contained function, writes code.js, then regenerates marketplace.json. Never hand-edit marketplace.json.
+- The modules/ convention: seanime runs each hook and the $ui.register callback in an isolated goja runtime (serialized via .toString()), so a callback cannot read module-scope variables — helpers must be inlined into the callback body. Put each isolated callback in modules/ (one export), shared helpers in utils/, import normally; the build inlines them. Custom-sources aren't serialized per-callback, so they can be a single code.ts.
+- Shared code lives in src/_utils/ and src/_components/ (imported by relative path; the build follows the import graph).
+- types/ holds the partial .d.ts surface for the goja runtime (core, custom-source, plugin, mu-api).
+- Tooling: Bun (bundle/test/tasks), TypeScript (typecheck), Biome (lint/format).
+
+## Repository layout
+
+src/<type>/<id>/{code.ts, code.js, manifest.json, assets/icon.png, modules/, utils/, README.md}
+src/_utils/, src/_components/  — cross-extension shared code
+types/  — goja runtime .d.ts
+scripts/build.ts  — build + regen marketplace.json
+marketplace.json  — generated index (never edit by hand)
+
+## Commands
+
+- bun run build — build every extension + regenerate marketplace.json
+- bun run typecheck — tsc --noEmit over src/+types/ and scripts/
+- bun run check — Biome lint + format (check:fix to autofix)
+- bun run test — bun test (co-located src/**/*.test.ts)
+
+## Install in seanime
+
+- Marketplace: Settings → Extensions → set marketplace URL to https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/marketplace.json
+- Single extension: Add Extension → paste an extension's manifest.json raw URL
+- Local: copy a manifest.json into $SEANIME_DATA_DIR/extensions/ and reload
+
+## Roadmap
+
+- Done: MangaUpdates source + sync; Local Catalog source + manager; cross-device catalog & progress sync via Gist; library grid control.
+- Planned: anime support in Local Catalog (anime namespace reserved, not served yet); pull-diff UI for MangaUpdates Sync (currently push-only).

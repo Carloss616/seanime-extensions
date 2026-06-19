@@ -9,7 +9,7 @@
   "author": "Carloss616",
   "icon": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/library-grid-layout/assets/icon.png",
   "website": "https://github.com/Carloss616/seanime-extensions",
-  "readme": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/library-grid-layout/README.md",
+  "readme": "https://github.com/Carloss616/seanime-extensions/blob/main/src/plugins/library-grid-layout/README.md",
   "lang": "en",
   "plugin": {
     "version": "1",

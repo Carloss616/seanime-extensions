@@ -29,17 +29,16 @@
             "statusMessage": "Checking modules export split"
           }
         ]
-      }
-    ],
-    "Stop": [
+      },
       {
+        "matcher": "Edit|Write|MultiEdit",
         "hooks": [
           {
             "type": "agent",
             "model": "claude-sonnet-4-6",
             "timeout": 180,
             "statusMessage": "Syncing CLAUDE.md with changes",
-            "prompt": "A turn just ended in the seanime-extensions repo. Your ONLY job is to keep CLAUDE.md in sync with architecturally-significant changes — be conservative and cheap, never block, never message the user, and never edit any file except CLAUDE.md. STEP 1: run `git diff --name-only HEAD` and `git ls-files --others --exclude-standard` to list changed and new files. STEP 2 (cheap bail): if none of those paths are architecturally significant — scripts/build.ts or other scripts/*, types/*.d.ts, any manifest.json, a new src/<type>/<id>/ extension, new files under any modules/ or utils/, package.json scripts, biome.json or tsconfig — then do nothing and finish. STEP 3 (stamp bail): compute a sha of `git diff HEAD -- <the significant paths>` plus the sorted list of new significant files; if it equals the contents of \"$(git rev-parse --git-dir)/claude-md-sync.stamp\", do nothing and finish (already evaluated). Otherwise write that sha to the stamp file before continuing. STEP 4: if CLAUDE.md is itself already in the changed set, finish (the change is being documented manually). STEP 5: read the diff of the significant files and the relevant CLAUDE.md section, and decide whether the change alters or invalidates something CLAUDE.md documents or clearly should document (a build-pipeline rule, a naming/structure convention, a goja runtime gotcha, the extension inventory, a new type or hook). If yes, make a MINIMAL surgical edit to CLAUDE.md — touch only the affected sentence or section, match the existing tone and structure, never rewrite unrelated parts — then finish with a one-line note of what you changed. If no documentation change is warranted, finish without editing. When uncertain whether something is doc-worthy, prefer to leave CLAUDE.md untouched; the user reviews every change via git diff."
+            "prompt": "A file was just edited in the seanime-extensions repo. Your ONLY job is to keep CLAUDE.md in sync with architecturally-significant changes — be conservative and cheap, never block, never message the user, and never edit any file except CLAUDE.md. STEP 1: run `git diff --name-only HEAD` and `git ls-files --others --exclude-standard` to list changed and new files. STEP 2 (cheap bail): if none of those paths are architecturally significant — scripts/build.ts or other scripts/*, types/*.d.ts, any manifest.json, a new src/<type>/<id>/ extension, new files under any modules/ or utils/, package.json scripts, biome.json or tsconfig — then do nothing and finish. STEP 3 (stamp bail): compute a sha of `git diff HEAD -- <the significant paths>` plus the sorted list of new significant files; if it equals the contents of \"$(git rev-parse --git-dir)/claude-md-sync.stamp\", do nothing and finish (already evaluated). Otherwise write that sha to the stamp file before continuing. STEP 4: if CLAUDE.md is itself already in the changed set, finish (the change is being documented manually). STEP 5: read the diff of the significant files and the relevant CLAUDE.md section, and decide whether the change alters or invalidates something CLAUDE.md documents or clearly should document (a build-pipeline rule, a naming/structure convention, a goja runtime gotcha, the extension inventory, a new type or hook). If yes, make a MINIMAL surgical edit to CLAUDE.md — touch only the affected sentence or section, match the existing tone and structure, never rewrite unrelated parts — then finish with a one-line note of what you changed. If no documentation change is warranted, finish without editing. When uncertain whether something is doc-worthy, prefer to leave CLAUDE.md untouched; the user reviews every change via git diff."
           }
         ]
       }

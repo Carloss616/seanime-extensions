@@ -1,0 +1,11 @@
+# seanime-extensions
+
+> A personal collection of seanime custom-sources and plugins (manga-focused): track manga not on AniList, mirror reads to MangaUpdates, and tune the library grid.
+
+## About
+
+Each extension is a TypeScript `code.ts` + `manifest.json`. The Bun build transpiles `code.ts` to a sibling `code.js` that seanime fetches from a raw GitHub URL and runs in a sandboxed goja runtime; a generated `marketplace.json` indexes them all. Five extensions: two custom-sources (Local Catalog, MangaUpdates) and three plugins (Local Catalog Manager, MangaUpdates Sync, Library Grid Layout).
+
+- Author: Carlos Espinoza (https://github.com/Carloss616)
+- Repository: https://github.com/Carloss616/seanime-extensions
+- License: MIT

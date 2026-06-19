@@ -1,102 +1,142 @@
-# seanime-extensions
+<div align="center">
 
-Personal collection of [seanime](https://github.com/5rahim/seanime) extensions.
+# 🧩 seanime-extensions
 
-Official docs: <https://seanime.gitbook.io/seanime-extensions>
+![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)
+![Built with Bun](https://img.shields.io/badge/built%20with-Bun-14151a?style=for-the-badge&logo=bun&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![Extensions](https://img.shields.io/badge/extensions-5-blue?style=for-the-badge)
 
-## Extensions
+**A personal collection of [seanime](https://github.com/5rahim/seanime) custom-sources and plugins — track manga that isn't on AniList, mirror your reads to MangaUpdates, and tune the library grid.**
 
-| ID                      | Type          | Status                                            |
-| ----------------------- | ------------- | ------------------------------------------------- |
-| `local-catalog`         | custom-source | ready                                             |
-| `local-catalog-manager` | plugin        | ready                                             |
-| `mangaupdates`          | custom-source | ready                                             |
-| `mangaupdates-sync`     | plugin        | ready                                             |
+[Extensions](#-extensions) · [Quick Start](#-quick-start) · [Tech Stack](#-tech-stack) · [Development](#-development) · [Contributing](#-contributing)
 
-## Install in seanime
+<!-- TODO: marketplace screenshot / GIF -->
 
-**Local** (no hosting): copy the extension's `manifest.json` into `$SEANIME_DATA_DIR/extensions/` and reload extensions.
+</div>
 
-**Self-hosted marketplace** (lets you install all your extensions from the UI): in seanime → Settings → Extensions, set the marketplace URL to:
+---
+
+## 💡 Concept
+
+> seanime supports third-party extensions — TypeScript bundles it fetches and runs in a sandboxed [goja](https://github.com/dop251/goja) runtime.
+
+This repo is a small, manga-focused set of them. Each extension is a `code.ts` entry plus a `manifest.json`; the build transpiles it to a sibling `code.js` that seanime loads from a raw GitHub URL. Source and built payload are both committed, and a generated `marketplace.json` lets you install the whole set from the seanime UI.
+
+---
+
+## 🧩 Extensions
+
+| Extension | Type | What it does |
+| --------- | ---- | ------------ |
+| [Local Catalog](src/custom-source/local-catalog/) | custom-source | Serve a self-curated manga catalog for titles not on AniList / MangaUpdates. |
+| [Local Catalog Manager](src/plugins/local-catalog-manager/) | plugin | Add/edit/delete the local catalog from inside seanime and sync it (plus reading progress) to a GitHub Gist. |
+| [MangaUpdates](src/custom-source/mangaupdates/) | custom-source | Add MangaUpdates as a search & details metadata source. |
+| [MangaUpdates Sync](src/plugins/mangaupdates-sync/) | plugin | Push your reading progress, status and score to MangaUpdates. |
+| [Library Grid Layout](src/plugins/library-grid-layout/) | plugin | Set cards-per-row of the library grids, per screen size. |
+
+Two are pairs: **Local Catalog** + **Local Catalog Manager** (the plugin curates the catalog the source serves), and **MangaUpdates** + **MangaUpdates Sync** (the source finds titles, the plugin tracks them). **Library Grid Layout** is standalone.
+
+---
+
+## 🚀 Quick Start
+
+Install everything from the marketplace — in seanime go to *Settings → Extensions* and set the marketplace URL to:
+
 ```
 https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/marketplace.json
 ```
 
-**Single extension install**: in seanime → Add Extension → paste the raw URL of a specific `manifest.json`.
+<details>
+<summary>Other install methods</summary>
 
-## Layout
+- **Single extension** — *Add Extension*, then paste the raw URL of that extension's `manifest.json`.
+- **Local (no hosting)** — copy the extension's `manifest.json` into `$SEANIME_DATA_DIR/extensions/` and reload extensions.
+
+Each extension's own README covers its configuration.
+
+</details>
+
+---
+
+## 🏗 Tech Stack
+
+| Tool | Role |
+| ---- | ---- |
+| [Bun](https://bun.com/) | Bundler + test runner + task runner |
+| [TypeScript](https://www.typescriptlang.org/) | Source language (typechecked against the goja `.d.ts` surface) |
+| [Biome](https://biomejs.dev/) | Lint + format |
+| [goja](https://github.com/dop251/goja) | The Go JS engine seanime runs the bundles in (no Node, no browser) |
+
+<details>
+<summary>Repository layout</summary>
 
 ```
-.
-├─ src/
-│  └─ <type>/
-│     └─ <id>/
-│        ├─ code.ts                  entry TS source (registers hooks / UI)
-│        ├─ code.js                  built JS — the payloadURI target (generated)
-│        ├─ manifest.json            source-of-truth manifest (you edit this)
-│        ├─ assets/icon.png          icon (referenced by manifest `icon` URL)
-│        ├─ modules/                 one file per goja-isolated callback (optional)
-│        ├─ utils/                   shared helpers imported by modules (optional)
-│        └─ README.md
-├─ types/                            .d.ts surface for the goja runtime
-├─ scripts/build.ts                  build all + regen marketplace.json
-├─ marketplace.json                  auto-generated index — never edit by hand
-├─ tsconfig.json                     TS config for src/ + types/ (seanime globals)
-└─ scripts/tsconfig.json             TS config for the build script (Bun globals)
+src/
+  <type>/<id>/
+    code.ts        entry source — registers hooks / UI
+    code.js        built payload, the payloadURI target (generated)
+    manifest.json  source-of-truth manifest
+    assets/icon.png
+    modules/       one file per goja-isolated callback (optional)
+    utils/         helpers imported by modules (optional)
+    README.md
+  _utils/  _components/   code shared across extensions
+types/            .d.ts surface for the goja runtime
+scripts/build.ts  build all + regen marketplace.json
+marketplace.json  generated index — never edit by hand
 ```
 
-`<type>` is one of: `custom-source`, `manga-provider`, `anime-torrent-provider`, `onlinestream-provider`, `plugin`.
+`<type>` is one of `custom-source`, `manga-provider`, `anime-torrent-provider`, `onlinestream-provider`, `plugin`.
 
-## Build
+</details>
+
+---
+
+## 🛠 Development
 
 Requires [Bun](https://bun.com/) on PATH. Run `bun install` once.
 
-```bash
-bun run build        # build every extension + regen marketplace.json
-bun run typecheck    # type-check src/+types/ and the build script
-bun run check        # biome lint + format check (check:fix to autofix)
-```
+| Command | What it does |
+| ------- | ------------ |
+| `bun run build` | Build every extension (`code.ts` → `code.js`) and regenerate `marketplace.json`. |
+| `bun run typecheck` | `tsc --noEmit` over `src/` + `types/`, and over `scripts/`. |
+| `bun run check` | Biome lint + format check (`check:fix` to autofix). |
+| `bun run test` | Unit tests, co-located as `src/**/*.test.ts`. |
 
-For each `src/*/*/code.ts`, the build validates the sibling `manifest.json`
-(type whitelist, and `payloadURI` must be the sibling `code.js`), transpiles
-`code.ts` → `code.js` with `Bun.build`, and rewrites `marketplace.json` with one
-entry per extension — **don't edit `marketplace.json` by hand, it's overwritten.**
+> [!WARNING]
+> `marketplace.json` is generated from each `manifest.json` — never edit it by hand; it's overwritten on the next build.
 
-## Splitting an extension across files (the `modules/` convention)
+<details>
+<summary>How extensions are bundled (the <code>modules/</code> convention)</summary>
 
-seanime runs each hook (`$app.on*`) and the `$ui.register` callback in an
-**isolated goja runtime**: it serializes the callback via `.toString()` and
-re-evals it there. A callback **cannot read module-scope or `init()`-scope
-variables** — they read as `undefined` in the isolated runtime.
+seanime runs each hook (`$app.on*`) and the `$ui.register` callback in an **isolated goja runtime**: it serializes the callback with `.toString()` and re-evals it there. A callback therefore **cannot** read module-scope variables — any helper it needs must live physically inside its own body.
 
-So any helper a callback needs must end up *physically inside the callback's own
-body*. To keep that DRY:
+The convention that keeps that DRY: put each isolated callback in `modules/` (exporting one function), put shared helpers in `utils/`, and `import` them normally. The build bundles each `modules/*.ts` standalone and re-emits it as a self-contained function that carries its dependencies inline. See the wrapper comment in [scripts/build.ts](scripts/build.ts) for the exact mechanic.
 
-1. Put each isolated callback in its own file under `modules/`, exporting exactly
-   one function (e.g. `export const onPostUpdateEntry = (event) => { ... }`).
-2. Put shared helpers (classes/functions) under `utils/` and `import` them
-   normally into the module files.
-3. `code.ts` imports each module and registers it (`$app.onX(onPostUpdateEntry)`).
+A custom-source isn't serialized per-callback, so it can be a single `code.ts` — see [mangaupdates](src/custom-source/mangaupdates/).
 
-The build bundles each `modules/*.ts` standalone (inlining its `utils/` imports),
-then re-emits it as a self-contained function whose body carries all its deps —
-so the serialized callback is complete. See the wrapper comment in
-[scripts/build.ts](scripts/build.ts) for the exact mechanic and why an IIFE
-wrapper would `ReferenceError` at runtime.
+</details>
 
-A custom-source (whose methods are *not* serialized per-callback) doesn't need
-`modules/` — it can be a single `code.ts`. See `src/custom-source/mangaupdates/`.
+---
 
-## Adding a new extension
+## 🗺️ Roadmap
 
-Create `src/<type>/<id>/` with:
+- [x] MangaUpdates custom-source + reading-state sync
+- [x] Local Catalog custom-source + in-app manager
+- [x] Cross-device catalog & reading-progress sync via GitHub Gist
+- [x] Library grid column control
+- [ ] Anime support in Local Catalog (`anime` namespace is reserved, not served yet)
+- [ ] Pull-diff UI for MangaUpdates Sync (currently push-only)
 
-- `code.ts` — the entry (triple-slash-reference the `types/*.d.ts` you need).
-- `manifest.json` — set `id`, `type`, `manifestURI` (ending in `manifest.json`),
-  and `payloadURI` (the sibling `code.js` URL). Fill in `description`, `author`,
-  `icon` (point at `assets/icon.png`), etc.
-- `assets/icon.png`, `README.md`.
-- `modules/` + `utils/` if the extension has isolated callbacks needing helpers.
+---
 
-Then `bun run build`, and commit the source + `code.js`. The build accepts any
-`src/*/*/code.ts` regardless of the `<type>` folder name.
+## 🤝 Contributing
+
+Fork → branch (`feature/your-change`) → `bun run build && bun run typecheck && bun run test` → open a PR. New extensions go under `src/<type>/<id>/`; see the [bundling notes](#️-development) above and [CLAUDE.md](CLAUDE.md) for the runtime constraints.
+
+---
+
+## 📄 License
+
+[Carlos Espinoza](https://github.com/Carloss616). Licensed under [MIT](LICENSE).
