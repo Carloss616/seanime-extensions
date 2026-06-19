@@ -150,6 +150,23 @@ export function mergeCatalog(
   return Array.from(byId.values()).sort((a, b) => a.id - b.id);
 }
 
+// True when two catalogs hold byte-identical entries, ignoring array order.
+// Both sides are canonicalized (same key order, nullish dropped) before
+// comparison, so a $storage-rehydrated local (undefined→null round-trip) still
+// matches a freshly-parsed remote. Used to short-circuit a spurious "drift":
+// the link path flags drift whenever BOTH sides are non-empty, even when they
+// are the same data — e.g. re-linking a clean gist, which otherwise pauses
+// sync forever.
+export function catalogsEqual(
+  a: MangaCatalogEntry[],
+  b: MangaCatalogEntry[],
+): boolean {
+  if (a.length !== b.length) return false;
+  const norm = (list: MangaCatalogEntry[]) =>
+    JSON.stringify([...list].sort((x, y) => x.id - y.id).map(canonicalizeKeys));
+  return norm(a) === norm(b);
+}
+
 // Counts of ids unique to each side + ids in conflict (same id both sides).
 export function diffCatalog(
   local: MangaCatalogEntry[],

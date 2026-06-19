@@ -38,6 +38,7 @@ export const register = (ctx: $ui.Context) => {
     serializeCatalog,
     mergeCatalog,
     diffCatalog,
+    catalogsEqual,
     nextId,
     removeEntry,
     upsertEntry,
@@ -202,12 +203,22 @@ export const register = (ctx: $ui.Context) => {
         const remote = parseCatalog(content, log).manga;
         const now = Date.now();
         const merged = mergeCatalog(entries.get(), remote);
-        persistLocal(merged, now);
-        await client().updateGistFile(
-          gistId,
-          FILENAME,
-          serializeCatalog(merged, now),
-        );
+        // Push only when the merge actually changed the remote content.
+        // Otherwise we'd write a noise revision differing solely in the
+        // envelope updatedAt — what autoSync produced on every tick. Mirrors
+        // the progressMangaEquals guard in syncProgressInner.
+        if (catalogsEqual(merged, remote)) {
+          // Keep local in sync with remote without bumping K_UPDATED, so the
+          // next manual push doesn't re-serialize a newer date for free.
+          persistLocal(merged, $storage.get<number>(K_UPDATED) ?? now);
+        } else {
+          persistLocal(merged, now);
+          await client().updateGistFile(
+            gistId,
+            FILENAME,
+            serializeCatalog(merged, now),
+          );
+        }
         status.set(`Reloaded · ${ent(merged.length)}`);
         ctx.toast.success(`Catalog reloaded — ${ent(merged.length)}`);
         // Flush custom-source cache after the merged catalog is pushed.
@@ -801,7 +812,14 @@ export const register = (ctx: $ui.Context) => {
   if ($storage.has(K_DRIFT_REMOTE)) {
     const persistedDriftRemote =
       $storage.get<MangaCatalogEntry[]>(K_DRIFT_REMOTE) ?? [];
-    pendingDrift.set({ local: entries.get(), remote: persistedDriftRemote });
+    // Self-heal: a persisted drift whose remote now equals local is no longer
+    // a conflict (resolved to the same data, or a spurious "both non-empty"
+    // flag). Clear it + unpause instead of restoring a dead drift.
+    if (catalogsEqual(entries.get(), persistedDriftRemote)) {
+      pauseSync(null);
+    } else {
+      pendingDrift.set({ local: entries.get(), remote: persistedDriftRemote });
+    }
   }
   if ($storage.has(K_PROGRESS_DRIFT_REMOTE)) {
     const persistedProgressRemote = $storage.get<LocalProgress>(
@@ -979,6 +997,12 @@ export const register = (ctx: $ui.Context) => {
           parsed,
           `pulled ${ent(remote.length)} from remote`,
         );
+        return;
+      }
+      // Both sides hold the same data → nothing to resolve. Flagging drift
+      // here is the bug where re-linking a clean gist paused sync forever.
+      if (catalogsEqual(local, remote)) {
+        await syncProgressOnLink(parsed, `in sync — ${ent(local.length)}`);
         return;
       }
       // Any other state (both have, OR local-has + remote-empty) is a real

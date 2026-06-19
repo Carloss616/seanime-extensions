@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  catalogsEqual,
   coerceTitle,
   diffCatalog,
   mergeCatalog,
@@ -281,5 +282,33 @@ describe("diffCatalog", () => {
       remoteOnly: 0,
       conflicts: 0,
     });
+  });
+});
+
+describe("catalogsEqual", () => {
+  test("same entries, different array order → equal", () => {
+    const a = [
+      { id: 2, title: { userPreferred: "B" }, updatedAt: 9 },
+      { id: 1, title: { userPreferred: "A" }, updatedAt: 9 },
+    ];
+    const b = [
+      { id: 1, title: { userPreferred: "A" }, updatedAt: 9 },
+      { id: 2, title: { userPreferred: "B" }, updatedAt: 9 },
+    ];
+    expect(catalogsEqual(a, b)).toBe(true);
+  });
+
+  test("null fields (storage round-trip) match dropped fields", () => {
+    const local = [{ id: 1, title: { userPreferred: "A" }, coverImage: null }];
+    const remote = [{ id: 1, title: { userPreferred: "A" } }];
+    expect(catalogsEqual(local as never, remote)).toBe(true);
+  });
+
+  test("differing length / field value → not equal", () => {
+    const a = [{ id: 1, title: { userPreferred: "A" } }];
+    expect(catalogsEqual(a, [])).toBe(false);
+    expect(catalogsEqual(a, [{ id: 1, title: { userPreferred: "Z" } }])).toBe(
+      false,
+    );
   });
 });

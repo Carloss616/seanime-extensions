@@ -14,6 +14,7 @@ import {
   isCustomSourceId,
 } from "../../../_utils/custom-source-id";
 import {
+  catalogsEqual,
   coerceTitle,
   diffCatalog,
   mergeCatalog,
@@ -56,6 +57,7 @@ export const sharedLib = () => ({
   serializeCatalog,
   mergeCatalog,
   diffCatalog,
+  catalogsEqual,
   upsertEntry,
   removeEntry,
   nextId,

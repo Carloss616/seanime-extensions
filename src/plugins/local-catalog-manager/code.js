@@ -629,6 +629,7 @@ var register = (...args) => {
       serializeCatalog,
       mergeCatalog,
       diffCatalog,
+      catalogsEqual,
       nextId,
       removeEntry,
       upsertEntry,
@@ -774,12 +775,16 @@ var register = (...args) => {
           const remote = parseCatalog(content, log).manga;
           const now = Date.now();
           const merged = mergeCatalog(entries.get(), remote);
-          persistLocal(merged, now);
-          await client().updateGistFile(
-            gistId,
-            CATALOG_FILENAME,
-            serializeCatalog(merged, now),
-          );
+          if (catalogsEqual(merged, remote)) {
+            persistLocal(merged, $storage.get(K_UPDATED) ?? now);
+          } else {
+            persistLocal(merged, now);
+            await client().updateGistFile(
+              gistId,
+              CATALOG_FILENAME,
+              serializeCatalog(merged, now),
+            );
+          }
           status.set(`Reloaded · ${ent(merged.length)}`);
           ctx.toast.success(`Catalog reloaded — ${ent(merged.length)}`);
           invalidateClientCaches({ catalog: true });
@@ -1148,7 +1153,14 @@ var register = (...args) => {
     };
     if ($storage.has(K_DRIFT_REMOTE)) {
       const persistedDriftRemote = $storage.get(K_DRIFT_REMOTE) ?? [];
-      pendingDrift.set({ local: entries.get(), remote: persistedDriftRemote });
+      if (catalogsEqual(entries.get(), persistedDriftRemote)) {
+        pauseSync(null);
+      } else {
+        pendingDrift.set({
+          local: entries.get(),
+          remote: persistedDriftRemote,
+        });
+      }
     }
     if ($storage.has(K_PROGRESS_DRIFT_REMOTE)) {
       const persistedProgressRemote = $storage.get(K_PROGRESS_DRIFT_REMOTE);
@@ -1286,6 +1298,10 @@ var register = (...args) => {
             parsed,
             `pulled ${ent(remote.length)} from remote`,
           );
+          return;
+        }
+        if (catalogsEqual(local, remote)) {
+          await syncProgressOnLink(parsed, `in sync — ${ent(local.length)}`);
           return;
         }
         pendingDrift.set({ local, remote });
@@ -3181,6 +3197,14 @@ var sharedLib = (...args) => {
     }
     return Array.from(byId.values()).sort((a, b) => a.id - b.id);
   }
+  function catalogsEqual(a, b) {
+    if (a.length !== b.length) return false;
+    const norm = (list) =>
+      JSON.stringify(
+        [...list].sort((x, y) => x.id - y.id).map(canonicalizeKeys),
+      );
+    return norm(a) === norm(b);
+  }
   function diffCatalog(local, remote) {
     const localIds = new Set(local.map((e) => e.id));
     const remoteIds = new Set(remote.map((e) => e.id));
@@ -3618,6 +3642,7 @@ var sharedLib = (...args) => {
     serializeCatalog,
     mergeCatalog,
     diffCatalog,
+    catalogsEqual,
     upsertEntry,
     removeEntry,
     nextId,
