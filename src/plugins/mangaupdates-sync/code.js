@@ -152,26 +152,6 @@ var register = (...args) => {
       },
     });
   }
-  var PILL_PALETTE = {
-    success: { bg: "rgba(80,200,120,0.15)", fg: "rgba(140,220,160,1)" },
-    info: { bg: "rgba(120,170,255,0.15)", fg: "rgba(160,200,255,1)" },
-    warning: { bg: "rgba(255,200,0,0.15)", fg: "rgba(255,220,80,1)" },
-    alert: { bg: "rgba(255,120,120,0.15)", fg: "rgba(255,150,150,1)" },
-    gray: { bg: "rgba(255,255,255,0.06)", fg: "rgba(255,255,255,0.6)" },
-  };
-  function pill(tray, label, intent = "gray") {
-    const { bg, fg } = PILL_PALETTE[intent] ?? PILL_PALETTE.gray;
-    return tray.span(label, {
-      style: {
-        fontSize: "0.7rem",
-        fontWeight: "500",
-        padding: "2px 8px",
-        borderRadius: "10px",
-        background: bg,
-        color: fg,
-      },
-    });
-  }
   function renderEntryListSection(tray, cfg) {
     const coverBox = (src) =>
       src
@@ -208,7 +188,12 @@ var register = (...args) => {
         );
       }
       if (row.status) {
-        segs.push(pill(tray, row.status.label, row.status.intent));
+        segs.push(
+          tray.badge(row.status.label, {
+            intent: row.status.intent ?? "gray",
+            size: "sm",
+          }),
+        );
       }
       if (row.chapter != null && row.chapter !== "") {
         segs.push(

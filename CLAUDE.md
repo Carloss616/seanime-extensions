@@ -46,7 +46,7 @@ Affects only `modules/*.ts` (not the entry `code.ts`, `utils/*`, or non-module f
 Code reused by more than one extension lives at the repo root, outside any `<type>/<id>/` folder, and is imported with relative paths (`../../../_utils/logger`):
 
 - `src/_utils/` — `logger`, `constants`, `anilist-status`, `custom-source-id` (the mediaId encode/decode helpers), plus `mangaupdates/` and `local-catalog/` domain helpers. Each extension's per-extension `utils/*` wrapper (e.g. `mu-client.ts`) now extends a shared base (`_utils/mangaupdates/client.ts`) instead of reimplementing it.
-- `src/_components/` — declarative `$ui` builders: `entry-list`, `alert-box`, `divider`, `pill`.
+- `src/_components/` — declarative `$ui` builders: `entry-list`, `divider`. (No `pill`/`alert-box` — use the native `tray.badge` / `tray.alert`. `tray.alert` only takes `title`/`description`/`intent` strings, so banners that need action buttons render the buttons as sibling `tray.flex` rows below the alert, not inside it.)
 
 No build changes were needed: `Bun.build` follows the import graph regardless of file location, so these inline into each `modules/*.ts` / `utils/*` exactly like a sibling `utils/` import (and thus survive the per-callback `.toString()` serialization). The `src/*/*/code.ts` build glob never matches them (wrong depth / filename), so they are not treated as extensions.
 

@@ -4,10 +4,10 @@
 // the color mapping stays consistent (local-catalog-manager + mangaupdates-
 // sync). Pure data + a pure formatter — safe to inline into goja callbacks.
 
-import type { PillIntent } from "../_components/pill";
+import type { EntryListIntent } from "../_components/entry-list";
 
 // AL_MediaStatus → pill color. NOT_YET_RELEASED defaults to gray.
-export const STATUS_INTENT: Record<$app.AL_MediaStatus, PillIntent> = {
+export const STATUS_INTENT: Record<$app.AL_MediaStatus, EntryListIntent> = {
   RELEASING: "success",
   FINISHED: "info",
   HIATUS: "warning",
@@ -19,7 +19,7 @@ export const STATUS_INTENT: Record<$app.AL_MediaStatus, PillIntent> = {
 // when there's no status (so the row simply omits the pill).
 export function statusToPill(
   status: $app.AL_MediaStatus | undefined,
-): { label: string; intent: PillIntent } | undefined {
+): { label: string; intent: EntryListIntent } | undefined {
   if (!status) return undefined;
   return {
     label: status.replace(/_/g, " ").toLowerCase(),

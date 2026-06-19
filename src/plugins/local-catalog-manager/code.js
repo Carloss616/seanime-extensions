@@ -366,51 +366,12 @@ var onPreUpdateEntryProgress = (...args) => {
 
 // src/plugins/local-catalog-manager/modules/register.ts
 var register = (...args) => {
-  var ALERT_PALETTE = {
-    success: { bg: "rgba(80,200,120,0.15)", border: "rgba(140,220,160,1)" },
-    info: { bg: "rgba(120,170,255,0.15)", border: "rgba(160,200,255,1)" },
-    warning: { bg: "rgba(255,200,0,0.15)", border: "rgba(255,220,80,1)" },
-    alert: { bg: "rgba(255,120,120,0.15)", border: "rgba(255,150,150,1)" },
-    gray: { bg: "rgba(255,255,255,0.06)", border: "rgba(255,255,255,0.6)" },
-  };
-  function alertBox(tray, children, opts = {}) {
-    const p = ALERT_PALETTE[opts.intent ?? "warning"] ?? ALERT_PALETTE.warning;
-    return tray.div(children, {
-      style: {
-        padding: "10px 12px",
-        borderRadius: "6px",
-        background: p.bg,
-        borderLeft: `3px solid ${p.border}`,
-        marginBottom: "8px",
-      },
-    });
-  }
   function divider(tray) {
     return tray.div([], {
       style: {
         borderTop: "1px solid rgba(255,255,255,0.1)",
         marginTop: "10px",
         paddingTop: "8px",
-      },
-    });
-  }
-  var PILL_PALETTE = {
-    success: { bg: "rgba(80,200,120,0.15)", fg: "rgba(140,220,160,1)" },
-    info: { bg: "rgba(120,170,255,0.15)", fg: "rgba(160,200,255,1)" },
-    warning: { bg: "rgba(255,200,0,0.15)", fg: "rgba(255,220,80,1)" },
-    alert: { bg: "rgba(255,120,120,0.15)", fg: "rgba(255,150,150,1)" },
-    gray: { bg: "rgba(255,255,255,0.06)", fg: "rgba(255,255,255,0.6)" },
-  };
-  function pill(tray, label, intent = "gray") {
-    const { bg, fg } = PILL_PALETTE[intent] ?? PILL_PALETTE.gray;
-    return tray.span(label, {
-      style: {
-        fontSize: "0.7rem",
-        fontWeight: "500",
-        padding: "2px 8px",
-        borderRadius: "10px",
-        background: bg,
-        color: fg,
       },
     });
   }
@@ -450,7 +411,12 @@ var register = (...args) => {
         );
       }
       if (row.status) {
-        segs.push(pill(tray, row.status.label, row.status.intent));
+        segs.push(
+          tray.badge(row.status.label, {
+            intent: row.status.intent ?? "gray",
+            size: "sm",
+          }),
+        );
       }
       if (row.chapter != null && row.chapter !== "") {
         segs.push(
@@ -2150,15 +2116,17 @@ var register = (...args) => {
         const gid = effectiveGistId();
         const owner = $storage.get(K_OWNER) ?? "";
         const expanded2 = bindingExpanded.get();
+        const drifting = hasDrift();
         const headerRow = modeHeader("\uD83C\uDF10", "Gist mode", {
           right: [
             gid
-              ? pill(tray, "\uD83D\uDD17 Linked", "success")
-              : pill(tray, "\uD83D\uDD13 Not linked", "gray"),
+              ? tray.badge("\uD83D\uDD17 Linked", { intent: "success" })
+              : tray.badge("\uD83D\uDD13 Not linked", { intent: "gray" }),
             tray.tooltip(
               tray.button(expanded2 ? "↑" : "✏️", {
                 onClick: "lcm-toggle-binding",
                 size: "sm",
+                disabled: drifting,
               }),
               {
                 text: expanded2
@@ -2211,6 +2179,7 @@ var register = (...args) => {
                     tray.button("\uD83D\uDCCB", {
                       onClick: "lcm-show-raw-url",
                       size: "sm",
+                      disabled: drifting,
                     }),
                     { text: "Copy raw catalog URL" },
                   ),
@@ -2218,6 +2187,7 @@ var register = (...args) => {
                     tray.button("\uD83D\uDD13", {
                       onClick: "lcm-unlink-gist",
                       size: "sm",
+                      disabled: drifting,
                     }),
                     { text: "Unlink gist (keep on GitHub)" },
                   ),
@@ -2233,6 +2203,7 @@ var register = (...args) => {
                           ? "lcm-delete-gist-confirm"
                           : "lcm-delete-gist-arm",
                         size: "sm",
+                        disabled: drifting,
                       },
                     ),
                     {
@@ -2303,7 +2274,7 @@ var register = (...args) => {
       const items = [
         modeHeader("\uD83D\uDD12", "Local mode", {
           right: [
-            pill(tray, "\uD83D\uDCBB this device only", "gray"),
+            tray.badge("\uD83D\uDCBB this device only", { intent: "gray" }),
             tray.tooltip(
               tray.button(expanded ? "↑" : "⚠️", {
                 onClick: "lcm-toggle-binding",
@@ -2320,26 +2291,12 @@ var register = (...args) => {
       ];
       if (expanded) {
         items.push(
-          alertBox(
-            tray,
-            [
-              tray.text(
-                "⚠️ Plugin and custom-source can't sync directly — seanime sandboxes extensions. Copy the JSON below into the custom-source's Inline catalog JSON field after every edit.",
-                { style: { fontSize: "0.8rem" } },
-              ),
-              tray.text(
-                "\uD83D\uDCA1 Tip: set a GitHub token in the plugin config to switch to Gist mode — automatic sync, no copy-paste.",
-                {
-                  style: {
-                    fontSize: "0.8rem",
-                    marginTop: "4px",
-                    opacity: "0.85",
-                  },
-                },
-              ),
-            ],
-            { intent: "info" },
-          ),
+          tray.alert({
+            title: "Plugin and custom-source can't sync directly",
+            description:
+              "seanime sandboxes extensions. Copy the JSON below into the custom-source's Inline catalog JSON field after every edit. \uD83D\uDCA1 Tip: set a GitHub token in the plugin config to switch to Gist mode — automatic sync, no copy-paste.",
+            intent: "info",
+          }),
         );
       }
       if (status.get()) {
@@ -2645,33 +2602,51 @@ var register = (...args) => {
       });
       if (hasToken()) {
         const layers = [];
+        const actionBox = (buttonRows) =>
+          tray.div(
+            [
+              tray.div([], {
+                style: {
+                  position: "absolute",
+                  top: "-7px",
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  width: "0",
+                  height: "0",
+                  borderLeft: "7px solid transparent",
+                  borderRight: "7px solid transparent",
+                  borderBottom: "7px solid rgba(255,255,255,0.18)",
+                },
+              }),
+              tray.stack(buttonRows, {
+                gap: 2,
+                style: { alignItems: "center" },
+              }),
+            ],
+            {
+              style: {
+                position: "relative",
+                marginTop: "8px",
+                padding: "12px",
+                borderRadius: "8px",
+                border: "1px solid rgba(255,255,255,0.18)",
+                background: "rgba(255,255,255,0.04)",
+              },
+            },
+          );
         const drift = pendingDrift.get();
         if (drift) {
           const d = diffCatalog(drift.local, drift.remote);
           const resolveBusy = busyAction.get() === "resolve-drift";
           layers.push(
-            alertBox(tray, [
-              tray.text("⚠️ DRIFT DETECTED", {
-                style: {
-                  fontSize: "0.75rem",
-                  fontWeight: "700",
-                  letterSpacing: "0.1em",
-                  marginBottom: "4px",
-                },
-              }),
-              tray.text(
-                `Local has ${ent(drift.local.length)}, remote has ${ent(drift.remote.length)}. ${d.conflicts > 0 ? `${d.conflicts} id(s) in conflict.` : "No id conflicts."}`,
-                {
-                  style: { fontSize: "0.8rem", opacity: "0.85" },
-                },
-              ),
-              tray.text("Sync is paused until you resolve. Pick one:", {
-                style: {
-                  fontSize: "0.75rem",
-                  opacity: "0.7",
-                  marginTop: "6px",
-                },
-              }),
+            tray.alert({
+              title: "Drift detected",
+              description: `Local has ${ent(drift.local.length)}, remote has ${ent(drift.remote.length)}. ${d.conflicts > 0 ? `${d.conflicts} id(s) in conflict.` : "No id conflicts."} Sync is paused until you resolve — pick one:`,
+              intent: "warning",
+            }),
+          );
+          layers.push(
+            actionBox([
               tray.flex(
                 [
                   tray.button(
@@ -2685,7 +2660,7 @@ var register = (...args) => {
                     onClick: "lcm-drift-local-wins",
                   }),
                 ],
-                { gap: 2, style: { marginTop: "8px" } },
+                { gap: 2 },
               ),
               tray.flex(
                 [
@@ -2696,7 +2671,7 @@ var register = (...args) => {
                     onClick: "lcm-drift-cancel",
                   }),
                 ],
-                { gap: 2, style: { marginTop: "4px" } },
+                { gap: 2 },
               ),
             ]),
           );
@@ -2708,29 +2683,14 @@ var register = (...args) => {
           const remoteCount = Object.keys(progressDrift.remote.manga).length;
           const resolveProgBusy = busyAction.get() === "resolve-progress-drift";
           layers.push(
-            alertBox(tray, [
-              tray.text("⚠️ READING PROGRESS DRIFT", {
-                style: {
-                  fontSize: "0.75rem",
-                  fontWeight: "700",
-                  letterSpacing: "0.1em",
-                  marginBottom: "4px",
-                },
-              }),
-              tray.text(
-                `Local has ${localCount} ${localCount === 1 ? "entry" : "entries"}, remote has ${remoteCount}. ${pd.conflicts > 0 ? `${pd.conflicts} id(s) in conflict.` : "No id conflicts."}${pd.localOnly + pd.remoteOnly > 0 ? ` ${pd.localOnly} local-only · ${pd.remoteOnly} remote-only.` : ""}`,
-                { style: { fontSize: "0.8rem", opacity: "0.85" } },
-              ),
-              tray.text(
-                "Progress sync paused. Merge uses per-entry LWW (recommended); Local/Remote take one side wholesale.",
-                {
-                  style: {
-                    fontSize: "0.75rem",
-                    opacity: "0.7",
-                    marginTop: "6px",
-                  },
-                },
-              ),
+            tray.alert({
+              title: "Reading progress drift",
+              description: `Local has ${localCount} ${localCount === 1 ? "entry" : "entries"}, remote has ${remoteCount}. ${pd.conflicts > 0 ? `${pd.conflicts} id(s) in conflict.` : "No id conflicts."}${pd.localOnly + pd.remoteOnly > 0 ? ` ${pd.localOnly} local-only · ${pd.remoteOnly} remote-only.` : ""} Progress sync paused — Merge uses per-entry LWW (recommended); Local/Remote take one side wholesale.`,
+              intent: "warning",
+            }),
+          );
+          layers.push(
+            actionBox([
               tray.flex(
                 [
                   tray.button(
@@ -2744,7 +2704,7 @@ var register = (...args) => {
                     onClick: "lcm-progress-drift-local-wins",
                   }),
                 ],
-                { gap: 2, style: { marginTop: "8px" } },
+                { gap: 2 },
               ),
               tray.flex(
                 [
@@ -2755,7 +2715,7 @@ var register = (...args) => {
                     onClick: "lcm-progress-drift-cancel",
                   }),
                 ],
-                { gap: 2, style: { marginTop: "4px" } },
+                { gap: 2 },
               ),
             ]),
           );
@@ -2782,42 +2742,12 @@ var register = (...args) => {
         }),
         ...(isNew && gistMode
           ? [
-              alertBox(
-                tray,
-                [
-                  tray.div(
-                    [
-                      tray.span("ℹ️ New entries "),
-                      tray.span("only", { style: { fontStyle: "italic" } }),
-                      tray.span(" show if the source's "),
-                      tray.span("Catalog URL", {
-                        style: { fontWeight: "700" },
-                      }),
-                      tray.span(" is the "),
-                      tray.span("unversioned", {
-                        style: { fontWeight: "700", fontStyle: "italic" },
-                      }),
-                      tray.span(" gist raw URL "),
-                      tray.span("(no ", { style: { opacity: "0.75" } }),
-                      tray.span("/<sha>/", {
-                        style: { fontFamily: "monospace", fontWeight: "600" },
-                      }),
-                      tray.span(")", { style: { opacity: "0.75" } }),
-                      tray.span(". Copy it with the "),
-                      tray.span("\uD83D\uDCCB", {
-                        style: { fontWeight: "700" },
-                      }),
-                      tray.span(" button in "),
-                      tray.span("Gist binding", {
-                        style: { fontWeight: "700" },
-                      }),
-                      tray.span("."),
-                    ],
-                    { style: { fontSize: "0.8rem", lineHeight: "1.5" } },
-                  ),
-                ],
-                { intent: "info" },
-              ),
+              tray.alert({
+                title: "New entries need the unversioned Catalog URL",
+                description:
+                  "New entries only show if the source's Catalog URL is the unversioned gist raw URL (no /<sha>/). Copy it with the \uD83D\uDCCB button in Gist binding.",
+                intent: "info",
+              }),
             ]
           : []),
         tray.text("TITLE *", {

@@ -15,15 +15,17 @@
 // pre-built, because their onClick handlers close over per-plugin state.
 
 import { divider } from "./divider";
-import { type PillIntent, pill } from "./pill";
+
+// Subset of the native tray.badge intents this list uses (the caller maps its
+// domain status → intent; e.g. AniList RELEASING → "success").
+export type EntryListIntent = "success" | "info" | "warning" | "alert" | "gray";
 
 export interface EntryListRow {
   cover?: string;
   title: string;
   year?: number;
-  // Rendered as a colored pill. `intent` drives the palette (the caller maps
-  // its domain status → intent; e.g. AniList RELEASING → "success").
-  status?: { label: string; intent?: PillIntent };
+  // Rendered as a native tray.badge. `intent` drives the color.
+  status?: { label: string; intent?: EntryListIntent };
   // Rendered as "c.{chapter}".
   chapter?: number | string;
   // "Open ↗" underlined external link (new tab) with an optional tooltip.
@@ -99,7 +101,12 @@ export function renderEntryListSection(
       );
     }
     if (row.status) {
-      segs.push(pill(tray, row.status.label, row.status.intent));
+      segs.push(
+        tray.badge(row.status.label, {
+          intent: row.status.intent ?? "gray",
+          size: "sm",
+        }),
+      );
     }
     if (row.chapter != null && row.chapter !== "") {
       segs.push(

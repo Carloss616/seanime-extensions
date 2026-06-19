@@ -26,6 +26,7 @@ function fakeTray() {
     stack: mk("stack"),
     text: mk("text"),
     span: mk("span"),
+    badge: mk("badge"),
     input: mk("input"),
     button: mk("button"),
     a: mk("a"),
@@ -225,23 +226,23 @@ describe("renderEntryListSection — opinionated rows", () => {
     const spans = argsOf(walk(out), "span");
     expect(argsOf(walk(out), "text")).toContain("Berserk");
     expect(spans).toContain("2018");
-    expect(spans).toContain("releasing"); // pill label
+    expect(argsOf(walk(out), "badge")).toContain("releasing"); // status badge
     expect(spans).toContain("c.227");
   });
 
-  test("status pill carries the intent palette color", () => {
+  test("status badge carries the intent", () => {
     const out = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [{ title: "A", status: { label: "auto", intent: "warning" } }],
       totalCount: 1,
       searchActive: false,
     });
-    const pillNode = walk(out).find(
-      (n) => n.kind === "span" && n.arg === "auto",
+    const badgeNode = walk(out).find(
+      (n) => n.kind === "badge" && n.arg === "auto",
     );
     expect(
-      (pillNode?.opts?.style as Record<string, string> | undefined)?.background,
-    ).toBe("rgba(255,200,0,0.15)");
+      (badgeNode?.opts as Record<string, unknown> | undefined)?.intent,
+    ).toBe("warning");
   });
 
   test("renders Open ↗ external link (with tooltip) and Open → in-place button", () => {
