@@ -2,10 +2,11 @@
 var register = (...args) => {
   var ICON_PX = 36;
   function trayHeader(tray, opts = {}) {
-    const title = opts.title ?? "Library Grid Layout";
+    const title = String(opts.title ?? "Library Grid Layout");
     const iconUrl =
       opts.iconUrl ??
       "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/library-grid-layout/assets/icon.png";
+    const subtitle = opts.subtitle == null ? "" : String(opts.subtitle);
     const textCol = [
       tray.text(title, {
         style: {
@@ -16,9 +17,9 @@ var register = (...args) => {
         },
       }),
     ];
-    if (opts.subtitle) {
+    if (subtitle) {
       textCol.push(
-        tray.text(opts.subtitle, {
+        tray.text(subtitle, {
           style: {
             fontSize: "0.8rem",
             lineHeight: "1.3",

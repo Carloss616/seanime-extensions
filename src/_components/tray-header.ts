@@ -32,8 +32,16 @@ export function trayHeader(
   tray: $ui.Tray,
   opts: TrayHeaderOptions = {},
 ): unknown {
-  const title = opts.title ?? __MANIFEST_NAME__;
+  const title = String(opts.title ?? __MANIFEST_NAME__);
   const iconUrl = opts.iconUrl ?? __MANIFEST_ICON__;
+  // Coerce at the trust boundary: subtitle (and title) often come from an
+  // $anilist.getManga() title field, which crosses the goja↔Go boundary as a
+  // wrapped string. A wrapped empty string is TRUTHY, so a bare `|| fallback`
+  // in the caller doesn't catch it and `if (opts.subtitle)` lets it through —
+  // then tray.text panics with "text is required". String() unwraps it to a
+  // real primitive so the empty-check below works. See CLAUDE.md "Goja value
+  // comparison".
+  const subtitle = opts.subtitle == null ? "" : String(opts.subtitle);
 
   // Title + subtitle stacked; the flex-1 makes this column push the right nodes
   // to the far edge.
@@ -47,9 +55,9 @@ export function trayHeader(
       },
     }),
   ];
-  if (opts.subtitle) {
+  if (subtitle) {
     textCol.push(
-      tray.text(opts.subtitle, {
+      tray.text(subtitle, {
         style: {
           fontSize: "0.8rem",
           lineHeight: "1.3",

@@ -238,7 +238,7 @@ var register = (...args) => {
         textDecoration: "underline",
         whiteSpace: "nowrap",
       };
-      if (row.openExternal) {
+      if (row.openExternal?.href) {
         const link = tray.a([tray.span("Open ↗")], {
           href: row.openExternal.href,
           target: "_blank",
@@ -274,7 +274,7 @@ var register = (...args) => {
       });
       const middle = tray.stack(
         [
-          tray.text(row.title, {
+          tray.text(String(row.title || "Untitled"), {
             style: {
               fontWeight: "600",
               fontSize: "0.9rem",
@@ -390,10 +390,11 @@ var register = (...args) => {
   }
   var ICON_PX = 36;
   function trayHeader(tray, opts = {}) {
-    const title = opts.title ?? "MangaUpdates Sync";
+    const title = String(opts.title ?? "MangaUpdates Sync");
     const iconUrl =
       opts.iconUrl ??
       "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/mangaupdates-sync/assets/icon.png";
+    const subtitle = opts.subtitle == null ? "" : String(opts.subtitle);
     const textCol = [
       tray.text(title, {
         style: {
@@ -404,9 +405,9 @@ var register = (...args) => {
         },
       }),
     ];
-    if (opts.subtitle) {
+    if (subtitle) {
       textCol.push(
-        tray.text(opts.subtitle, {
+        tray.text(subtitle, {
           style: {
             fontSize: "0.8rem",
             lineHeight: "1.3",

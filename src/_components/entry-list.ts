@@ -133,7 +133,7 @@ export function renderEntryListSection(
       textDecoration: "underline",
       whiteSpace: "nowrap",
     };
-    if (row.openExternal) {
+    if (row.openExternal?.href) {
       const link = tray.a([tray.span("Open ↗")], {
         href: row.openExternal.href,
         target: "_blank",
@@ -170,7 +170,9 @@ export function renderEntryListSection(
     });
     const middle = tray.stack(
       [
-        tray.text(row.title, {
+        // Coerce at the trust boundary: row.title may arrive empty/null from
+        // $storage or an AniList lookup, and tray.text panics on a falsy text.
+        tray.text(String(row.title || "Untitled"), {
           style: {
             fontWeight: "600",
             fontSize: "0.9rem",
