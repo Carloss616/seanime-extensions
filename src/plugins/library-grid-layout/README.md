@@ -5,7 +5,7 @@
 # 🖼️ Library Grid Layout
 
 ![Type](https://img.shields.io/badge/type-plugin-3b82f6?style=for-the-badge)
-![Version](https://img.shields.io/badge/version-1.0.0-22c55e?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-1.1.0-22c55e?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 
 **Set how many cards per row the manga & anime library grids show — a separate column count per screen size, edited live from a tray panel.**

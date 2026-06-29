@@ -22,29 +22,30 @@
 
   <!-- Row 2: Material 3 Expressive slider.
        Row gap = column gap = 38 (cards bottom 315 -> handle top 353).
-       Center y = 381. -->
+       Track spans x=64..448; handle centered at x=256. Center y = 381. -->
   <g>
     <!-- inactive track (right of handle) -->
-    <rect x="254" y="372" width="194" height="18" rx="9" fill="#ffffff" fill-opacity="0.35"/>
+    <rect x="273" y="372" width="175" height="18" rx="9" fill="#ffffff" fill-opacity="0.35"/>
     <!-- active track (left of handle) -->
-    <rect x="64" y="372" width="156" height="18" rx="9" fill="#ffffff"/>
-    <!-- step tick marks (kept clear of the rounded track ends and the handle) -->
+    <rect x="64" y="372" width="175" height="18" rx="9" fill="#ffffff"/>
+    <!-- step tick marks (symmetric about center, clear of rounded ends + handle) -->
     <g fill="#6d28d9">
-      <circle cx="87" cy="381" r="3.5"/>
-      <circle cx="117" cy="381" r="3.5"/>
-      <circle cx="147" cy="381" r="3.5"/>
-      <circle cx="177" cy="381" r="3.5"/>
-      <circle cx="207" cy="381" r="3.5"/>
+      <circle cx="76" cy="381" r="3.5"/>
+      <circle cx="106" cy="381" r="3.5"/>
+      <circle cx="136" cy="381" r="3.5"/>
+      <circle cx="166" cy="381" r="3.5"/>
+      <circle cx="196" cy="381" r="3.5"/>
+      <circle cx="226" cy="381" r="3.5"/>
     </g>
     <g fill="#ffffff" fill-opacity="0.9">
-      <circle cx="267" cy="381" r="3.5"/>
-      <circle cx="297" cy="381" r="3.5"/>
-      <circle cx="327" cy="381" r="3.5"/>
-      <circle cx="357" cy="381" r="3.5"/>
-      <circle cx="387" cy="381" r="3.5"/>
-      <circle cx="417" cy="381" r="3.5"/>
+      <circle cx="286" cy="381" r="3.5"/>
+      <circle cx="316" cy="381" r="3.5"/>
+      <circle cx="346" cy="381" r="3.5"/>
+      <circle cx="376" cy="381" r="3.5"/>
+      <circle cx="406" cy="381" r="3.5"/>
+      <circle cx="436" cy="381" r="3.5"/>
     </g>
     <!-- handle: vertical pill, taller than the track, with a gap on each side -->
-    <rect x="229" y="353" width="16" height="56" rx="8" fill="#ffffff"/>
+    <rect x="248" y="353" width="16" height="56" rx="8" fill="#ffffff"/>
   </g>
 </svg>

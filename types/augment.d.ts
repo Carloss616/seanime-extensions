@@ -8,6 +8,17 @@
 // declaration, no emit.
 declare const __MANIFEST_ID__: string;
 
+// Bundle-time literal: scripts/build.ts replaces this with the owning
+// extension's manifest `name` (human-readable). Used by the shared tray header
+// (src/_components/tray-header.ts) to label each plugin's tray modal. Type-only,
+// no runtime emit — same mechanism as __MANIFEST_ID__.
+declare const __MANIFEST_NAME__: string;
+
+// Bundle-time literal: scripts/build.ts replaces this with the owning
+// extension's manifest `icon` URL. Used as the default left icon of the shared
+// tray header (src/_components/tray-header.ts). Type-only, no runtime emit.
+declare const __MANIFEST_ICON__: string;
+
 // goja exposes a console shim; seanime does not declare it in its goja types.
 interface Console {
   log(...args: unknown[]): void;

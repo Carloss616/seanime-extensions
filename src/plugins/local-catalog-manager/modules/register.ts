@@ -3,10 +3,10 @@ import {
   type EntryListRow,
   renderEntryListSection,
 } from "../../../_components/entry-list";
+import { trayHeader } from "../../../_components/tray-header";
 import { statusToPill } from "../../../_utils/anilist-status";
-import { GITHUB_RAW_WORKSPACE } from "../../../_utils/constants";
 import {
-  CATALOG_FILENAME as FILENAME,
+  CATALOG_FILENAME,
   K_CATALOG,
   K_DRIFT_FRESH_GIST,
   K_DRIFT_REMOTE,
@@ -20,9 +20,9 @@ import {
   K_RAW,
   K_SYNC_PAUSED,
   K_UPDATED,
-  SOURCE_PREFIX as PREFIX_SITEURL,
   PROGRESS_FILENAME,
   SHARED_LIB_NAME,
+  SOURCE_PREFIX,
 } from "../utils/constants";
 import type { sharedLib } from "./shared-lib";
 
@@ -61,10 +61,7 @@ export const register = (ctx: $ui.Context) => {
   } = $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
   const log = createLogger();
 
-  const tray = ctx.newTray({
-    iconUrl: `${GITHUB_RAW_WORKSPACE}/src/plugins/local-catalog-manager/assets/icon.png`,
-    withContent: true,
-  });
+  const tray = ctx.newTray({ iconUrl: __MANIFEST_ICON__, withContent: true });
 
   const view = ctx.state<"list" | "form" | "setup">("list");
   const entries = ctx.state<MangaCatalogEntry[]>(
@@ -160,7 +157,7 @@ export const register = (ctx: $ui.Context) => {
         const collection = await ctx.manga.getCollection();
         const lookup = buildMediaIdLookup(
           collection,
-          PREFIX_SITEURL,
+          SOURCE_PREFIX,
           decodeLocalId,
           { extId: $storage.get<number>(K_EXT_ID) ?? undefined },
         );
@@ -199,7 +196,7 @@ export const register = (ctx: $ui.Context) => {
     }
     await runBusy("reload-catalog", async () => {
       try {
-        const content = await client().getGistFile(gistId, FILENAME);
+        const content = await client().getGistFile(gistId, CATALOG_FILENAME);
         const remote = parseCatalog(content, log).manga;
         const now = Date.now();
         const merged = mergeCatalog(entries.get(), remote);
@@ -215,7 +212,7 @@ export const register = (ctx: $ui.Context) => {
           persistLocal(merged, now);
           await client().updateGistFile(
             gistId,
-            FILENAME,
+            CATALOG_FILENAME,
             serializeCatalog(merged, now),
           );
         }
@@ -281,7 +278,7 @@ export const register = (ctx: $ui.Context) => {
     const collection = await ctx.manga.getCollection();
     const lookup = buildMediaIdLookup(
       collection,
-      PREFIX_SITEURL,
+      SOURCE_PREFIX,
       decodeLocalId,
       { extId: $storage.get<number>(K_EXT_ID) ?? undefined },
     );
@@ -509,7 +506,7 @@ export const register = (ctx: $ui.Context) => {
       const candidate = encodeMediaId(extId, probeLocalId);
       try {
         const m = $anilist.getManga(candidate);
-        if (m?.siteUrl && m.siteUrl.indexOf(PREFIX_SITEURL) === 0) {
+        if (m?.siteUrl && m.siteUrl.indexOf(SOURCE_PREFIX) === 0) {
           $storage.set(K_EXT_ID, extId);
           return extId;
         }
@@ -708,7 +705,7 @@ export const register = (ctx: $ui.Context) => {
   function refreshLookupsFromCollection(collection: $app.Manga_Collection) {
     const extId = $storage.get<number>(K_EXT_ID) ?? undefined;
     mediaIdLookup.set(
-      buildMediaIdLookup(collection, PREFIX_SITEURL, decodeLocalId, {
+      buildMediaIdLookup(collection, SOURCE_PREFIX, decodeLocalId, {
         extId,
       }),
     );
@@ -722,7 +719,7 @@ export const register = (ctx: $ui.Context) => {
           isOurs = decodeExtId(mid) === extId;
         } else {
           const su = e.media?.siteUrl ?? "";
-          isOurs = su.indexOf(PREFIX_SITEURL) === 0;
+          isOurs = su.indexOf(SOURCE_PREFIX) === 0;
         }
         if (!isOurs) continue;
         listData.set(decodeLocalId(mid), e.listData ?? {});
@@ -915,7 +912,7 @@ export const register = (ctx: $ui.Context) => {
         const localEntries = entries.get();
         // Seed with an empty catalog so the gist file is valid JSON immediately.
         const initial = serializeCatalog([], Date.now());
-        const info = await client().createGist(FILENAME, initial);
+        const info = await client().createGist(CATALOG_FILENAME, initial);
         $storage.set(K_GIST, info.id);
         $storage.set(K_OWNER, info.owner);
         $storage.set(K_RAW, info.rawUrl);
@@ -971,7 +968,10 @@ export const register = (ctx: $ui.Context) => {
         // GET we'd already be making — persist them so "Show raw catalog
         // URL" works right away (the empty K_RAW from the pre-fetch bind
         // was the cause of "Raw URL not stored yet" after every link).
-        const info = await client().getGistFileWithInfo(parsed, FILENAME);
+        const info = await client().getGistFileWithInfo(
+          parsed,
+          CATALOG_FILENAME,
+        );
         $storage.set(K_OWNER, info.owner);
         $storage.set(K_RAW, info.rawUrl);
         rawUrl.set(info.rawUrl);
@@ -1104,7 +1104,7 @@ export const register = (ctx: $ui.Context) => {
         try {
           await client().updateGistFile(
             gistId,
-            FILENAME,
+            CATALOG_FILENAME,
             serializeCatalog(resolved, now),
           );
           ctx.toast.success(
@@ -1149,7 +1149,7 @@ export const register = (ctx: $ui.Context) => {
         const collection = await ctx.manga.getCollection();
         const lookup = buildMediaIdLookup(
           collection,
-          PREFIX_SITEURL,
+          SOURCE_PREFIX,
           decodeLocalId,
           { extId: $storage.get<number>(K_EXT_ID) ?? undefined },
         );
@@ -1299,7 +1299,7 @@ export const register = (ctx: $ui.Context) => {
       try {
         let gistId = effectiveGistId();
         if (!gistId) {
-          const info = await client().createGist(FILENAME, json);
+          const info = await client().createGist(CATALOG_FILENAME, json);
           $storage.set(K_GIST, info.id);
           $storage.set(K_OWNER, info.owner);
           $storage.set(K_RAW, info.rawUrl);
@@ -1307,7 +1307,7 @@ export const register = (ctx: $ui.Context) => {
           gistId = info.id;
           ctx.toast.success("Created Gist. Copy the raw URL into the source.");
         } else {
-          await client().updateGistFile(gistId, FILENAME, json);
+          await client().updateGistFile(gistId, CATALOG_FILENAME, json);
         }
         persistLocal(next, updatedAt);
         status.set(`Synced ${ent(next.length)}`);
@@ -1332,7 +1332,7 @@ export const register = (ctx: $ui.Context) => {
     }
     await runBusy("pull-catalog", async () => {
       try {
-        const content = await client().getGistFile(gistId, FILENAME);
+        const content = await client().getGistFile(gistId, CATALOG_FILENAME);
         const remote = parseCatalog(content, log).manga;
         persistLocal(remote, Date.now());
         ctx.toast.success(`Pulled ${ent(remote.length)}`);
@@ -1728,42 +1728,12 @@ export const register = (ctx: $ui.Context) => {
         fontWeight: "700",
         opacity: "0.55",
         letterSpacing: "0.1em",
-        marginBottom: "4px",
       },
     });
   const sectionDivider = () => divider(tray);
 
-  const modeHeader = (
-    icon: string,
-    title: string,
-    opts: { subtitle?: string; right?: unknown[] } = {},
-  ) => {
-    const titleChildren: unknown[] = [
-      tray.span(`${icon} `),
-      tray.span(title, {
-        style: { fontWeight: "600", fontSize: "0.95rem" },
-      }),
-    ];
-    if (opts.subtitle) {
-      titleChildren.push(
-        tray.span(` · ${opts.subtitle}`, {
-          style: { opacity: "0.65", fontSize: "0.85rem" },
-        }),
-      );
-    }
-    return tray.flex(
-      [
-        tray.div(titleChildren, {
-          style: { flex: "1", alignSelf: "center", minWidth: "0" },
-        }),
-        ...(opts.right ?? []),
-      ],
-      { gap: 2, style: { alignItems: "center" } },
-    );
-  };
-
   const statCard = (value: string, label: string) =>
-    tray.div(
+    tray.stack(
       [
         tray.text(value, {
           style: {
@@ -1778,14 +1748,14 @@ export const register = (ctx: $ui.Context) => {
             opacity: "0.6",
             textTransform: "uppercase",
             letterSpacing: "0.08em",
-            marginTop: "2px",
           },
         }),
       ],
       {
+        gap: 1,
         style: {
           flex: "1",
-          padding: "10px 12px",
+          padding: "12px",
           borderRadius: "6px",
           background: "rgba(255,255,255,0.03)",
           border: "1px solid rgba(255,255,255,0.06)",
@@ -1794,7 +1764,7 @@ export const register = (ctx: $ui.Context) => {
       },
     );
 
-  function renderProgressSection() {
+  function renderProgressSection(opts: { leadingDivider?: boolean } = {}) {
     // Header row: section title on left, reload (gist only) + orphan toggle
     // on right. In local mode the stat cards still work (progress is cached
     // in $storage by the hooks); the reload button hides because there's no
@@ -1830,7 +1800,7 @@ export const register = (ctx: $ui.Context) => {
       );
     }
     const sub: unknown[] = [
-      sectionDivider(),
+      ...(opts.leadingDivider === false ? [] : [sectionDivider()]),
       tray.flex(
         [
           tray.div([sectionHeader("📖 READING PROGRESS")], {
@@ -1838,7 +1808,7 @@ export const register = (ctx: $ui.Context) => {
           }),
           ...headerActions,
         ],
-        { gap: 2, style: { alignItems: "center", marginBottom: "6px" } },
+        { gap: 2, style: { alignItems: "center" } },
       ),
       tray.flex(
         [
@@ -1898,7 +1868,7 @@ export const register = (ctx: $ui.Context) => {
             gap: 2,
             style: {
               alignItems: "center",
-              padding: "4px 8px",
+              padding: "8px",
               borderRadius: "4px",
               background: "rgba(255,255,255,0.02)",
             },
@@ -1906,7 +1876,7 @@ export const register = (ctx: $ui.Context) => {
         );
       });
       sub.push(
-        tray.stack(orphanRows, { style: { marginTop: "4px" } }),
+        tray.stack(orphanRows, { gap: 2 }),
         tray.flex(
           [
             tray.button("⛔ Delete all orphans", {
@@ -1915,7 +1885,7 @@ export const register = (ctx: $ui.Context) => {
               intent: "alert-subtle",
             }),
           ],
-          { style: { marginTop: "4px", justifyContent: "flex-end" } },
+          { style: { justifyContent: "flex-end" } },
         ),
       );
     }
@@ -1926,12 +1896,11 @@ export const register = (ctx: $ui.Context) => {
             fontSize: "0.75rem",
             opacity: "0.6",
             fontStyle: "italic",
-            marginTop: "4px",
           },
         }),
       );
     }
-    return tray.stack(sub);
+    return tray.stack(sub, { gap: 2 });
   }
 
   function renderSync() {
@@ -1942,24 +1911,9 @@ export const register = (ctx: $ui.Context) => {
       // While a drift is pending the user must resolve it via the drift banner;
       // managing the gist binding here would be confusing, so disable it.
       const drifting = hasDrift();
-      const headerRow = modeHeader("🌐", "Gist mode", {
-        right: [
-          gid
-            ? tray.badge("🔗 Linked", { intent: "success" })
-            : tray.badge("🔓 Not linked", { intent: "gray" }),
-          tray.tooltip(
-            tray.button(expanded ? "↑" : "✏️", {
-              onClick: "lcm-toggle-binding",
-              size: "sm",
-              disabled: drifting,
-            }),
-            {
-              text: expanded ? "Collapse gist details" : "Manage gist binding",
-            },
-          ),
-        ],
-      });
-      const items: unknown[] = [headerRow];
+      // The mode/linked/toggle row is rendered by the top trayHeader now; this
+      // section carries only the status line + (when expanded) binding details.
+      const items: unknown[] = [];
       // Status line only when there's an explicit op result ("Synced N",
       // "Reloaded · N", …) — the ENTRIES header + Linked pill already convey
       // the steady state, so there's no static fallback.
@@ -1970,7 +1924,6 @@ export const register = (ctx: $ui.Context) => {
             style: {
               fontSize: "0.75rem",
               opacity: "0.6",
-              marginTop: "2px",
             },
           }),
         );
@@ -2041,8 +1994,7 @@ export const register = (ctx: $ui.Context) => {
                 gap: 2,
                 style: {
                   alignItems: "center",
-                  marginTop: "6px",
-                  padding: "6px 8px",
+                  padding: "8px",
                   borderRadius: "4px",
                   background: "rgba(255,255,255,0.03)",
                 },
@@ -2060,7 +2012,7 @@ export const register = (ctx: $ui.Context) => {
                   size: "sm",
                 }),
               ],
-              { style: { marginTop: "6px" } },
+              {},
             ),
             tray.flex(
               [
@@ -2082,7 +2034,11 @@ export const register = (ctx: $ui.Context) => {
           );
         }
       }
-      return tray.stack(items);
+      // Collapsed with no status line → nothing to show. Return null so the
+      // caller skips it (no empty stack adding a stray gap + a divider that
+      // would double up with the header's bottom border).
+      if (items.length === 0) return null;
+      return tray.stack(items, { gap: 2 });
     }
     // Local-only mode (no GitHub token configured).
     const localCount = entries.get().length;
@@ -2091,24 +2047,8 @@ export const register = (ctx: $ui.Context) => {
       $storage.get<number>(K_UPDATED) ?? Date.now(),
     );
     const expanded = bindingExpanded.get();
-    const items: unknown[] = [
-      modeHeader("🔒", "Local mode", {
-        right: [
-          tray.badge("💻 this device only", { intent: "gray" }),
-          tray.tooltip(
-            tray.button(expanded ? "↑" : "⚠️", {
-              onClick: "lcm-toggle-binding",
-              size: "sm",
-            }),
-            {
-              text: expanded
-                ? "Collapse local limitation"
-                : "Show local limitation",
-            },
-          ),
-        ],
-      }),
-    ];
+    // The mode/badge/toggle row is rendered by the top trayHeader now.
+    const items: unknown[] = [];
     if (expanded) {
       items.push(
         tray.alert({
@@ -2129,7 +2069,6 @@ export const register = (ctx: $ui.Context) => {
     const hintStyle = {
       fontSize: "0.75rem",
       opacity: "0.6",
-      marginTop: "-4px",
     };
     // Output: two read-only monospace code blocks (catalog + progress), both
     // collapsible. tray.input has no readOnly prop, so we render as styled
@@ -2159,7 +2098,7 @@ export const register = (ctx: $ui.Context) => {
               },
             ),
           ],
-          { gap: 2, style: { alignItems: "center", marginTop: "10px" } },
+          { gap: 2, style: { alignItems: "center" } },
         ),
       ];
       if (opts.expanded) {
@@ -2179,7 +2118,7 @@ export const register = (ctx: $ui.Context) => {
             ],
             {
               style: {
-                padding: "8px 10px",
+                padding: "8px",
                 borderRadius: "4px",
                 background: "rgba(255,255,255,0.04)",
                 maxHeight: "160px",
@@ -2262,7 +2201,7 @@ export const register = (ctx: $ui.Context) => {
           ),
           ...importButtons,
         ],
-        { gap: 2, style: { alignItems: "end", marginTop: "10px" } },
+        { gap: 2, style: { alignItems: "end" } },
       ),
       tray.text(
         hasLocalData
@@ -2271,7 +2210,7 @@ export const register = (ctx: $ui.Context) => {
         { style: hintStyle },
       ),
     );
-    return tray.stack(items);
+    return tray.stack(items, { gap: 2 });
   }
 
   function renderList() {
@@ -2501,7 +2440,6 @@ export const register = (ctx: $ui.Context) => {
           {
             style: {
               position: "relative",
-              marginTop: "8px",
               padding: "12px",
               borderRadius: "8px",
               border: "1px solid rgba(255,255,255,0.18)",
@@ -2514,38 +2452,41 @@ export const register = (ctx: $ui.Context) => {
         const d = diffCatalog(drift.local, drift.remote);
         const resolveBusy = busyAction.get() === "resolve-drift";
         layers.push(
-          tray.alert({
-            title: "Drift detected",
-            description: `Local has ${ent(drift.local.length)}, remote has ${ent(drift.remote.length)}. ${d.conflicts > 0 ? `${d.conflicts} id(s) in conflict.` : "No id conflicts."} Sync is paused until you resolve — pick one:`,
-            intent: "warning",
-          }),
-        );
-        layers.push(
-          actionBox([
-            tray.flex(
-              [
-                tray.button(resolveBusy ? "⏳ Working…" : "🔀 Merge", {
-                  onClick: "lcm-drift-merge",
-                  intent: "primary",
-                }),
-                tray.button("↑ Local wins", {
-                  onClick: "lcm-drift-local-wins",
-                }),
-              ],
-              { gap: 2 },
-            ),
-            tray.flex(
-              [
-                tray.button("↓ Remote wins", {
-                  onClick: "lcm-drift-remote-wins",
-                }),
-                tray.button("✕ Cancel link", {
-                  onClick: "lcm-drift-cancel",
-                }),
-              ],
-              { gap: 2 },
-            ),
-          ]),
+          tray.stack(
+            [
+              tray.alert({
+                title: "Drift detected",
+                description: `Local has ${ent(drift.local.length)}, remote has ${ent(drift.remote.length)}. ${d.conflicts > 0 ? `${d.conflicts} id(s) in conflict.` : "No id conflicts."} Sync is paused until you resolve — pick one:`,
+                intent: "warning",
+              }),
+              actionBox([
+                tray.flex(
+                  [
+                    tray.button(resolveBusy ? "⏳ Working…" : "🔀 Merge", {
+                      onClick: "lcm-drift-merge",
+                      intent: "primary",
+                    }),
+                    tray.button("↑ Local wins", {
+                      onClick: "lcm-drift-local-wins",
+                    }),
+                  ],
+                  { gap: 2 },
+                ),
+                tray.flex(
+                  [
+                    tray.button("↓ Remote wins", {
+                      onClick: "lcm-drift-remote-wins",
+                    }),
+                    tray.button("✕ Cancel link", {
+                      onClick: "lcm-drift-cancel",
+                    }),
+                  ],
+                  { gap: 2 },
+                ),
+              ]),
+            ],
+            { gap: 2 },
+          ),
         );
       }
       // Progress drift banner — same UX shape as the catalog one. Only the
@@ -2558,266 +2499,276 @@ export const register = (ctx: $ui.Context) => {
         const remoteCount = Object.keys(progressDrift.remote.manga).length;
         const resolveProgBusy = busyAction.get() === "resolve-progress-drift";
         layers.push(
-          tray.alert({
-            title: "Reading progress drift",
-            description: `Local has ${localCount} ${localCount === 1 ? "entry" : "entries"}, remote has ${remoteCount}. ${pd.conflicts > 0 ? `${pd.conflicts} id(s) in conflict.` : "No id conflicts."}${pd.localOnly + pd.remoteOnly > 0 ? ` ${pd.localOnly} local-only · ${pd.remoteOnly} remote-only.` : ""} Progress sync paused — Merge uses per-entry LWW (recommended); Local/Remote take one side wholesale.`,
-            intent: "warning",
-          }),
-        );
-        layers.push(
-          actionBox([
-            tray.flex(
-              [
-                tray.button(resolveProgBusy ? "⏳ Working…" : "🔀 Merge", {
-                  onClick: "lcm-progress-drift-merge",
-                  intent: "primary",
-                }),
-                tray.button("↑ Local wins", {
-                  onClick: "lcm-progress-drift-local-wins",
-                }),
-              ],
-              { gap: 2 },
-            ),
-            tray.flex(
-              [
-                tray.button("↓ Remote wins", {
-                  onClick: "lcm-progress-drift-remote-wins",
-                }),
-                tray.button("✕ Dismiss", {
-                  onClick: "lcm-progress-drift-cancel",
-                }),
-              ],
-              { gap: 2 },
-            ),
-          ]),
+          tray.stack(
+            [
+              tray.alert({
+                title: "Reading progress drift",
+                description: `Local has ${localCount} ${localCount === 1 ? "entry" : "entries"}, remote has ${remoteCount}. ${pd.conflicts > 0 ? `${pd.conflicts} id(s) in conflict.` : "No id conflicts."}${pd.localOnly + pd.remoteOnly > 0 ? ` ${pd.localOnly} local-only · ${pd.remoteOnly} remote-only.` : ""} Progress sync paused — Merge uses per-entry LWW (recommended); Local/Remote take one side wholesale.`,
+                intent: "warning",
+              }),
+              actionBox([
+                tray.flex(
+                  [
+                    tray.button(resolveProgBusy ? "⏳ Working…" : "🔀 Merge", {
+                      onClick: "lcm-progress-drift-merge",
+                      intent: "primary",
+                    }),
+                    tray.button("↑ Local wins", {
+                      onClick: "lcm-progress-drift-local-wins",
+                    }),
+                  ],
+                  { gap: 2 },
+                ),
+                tray.flex(
+                  [
+                    tray.button("↓ Remote wins", {
+                      onClick: "lcm-progress-drift-remote-wins",
+                    }),
+                    tray.button("✕ Dismiss", {
+                      onClick: "lcm-progress-drift-cancel",
+                    }),
+                  ],
+                  { gap: 2 },
+                ),
+              ]),
+            ],
+            { gap: 2 },
+          ),
         );
       }
-      layers.push(renderSync());
+      const sync = renderSync();
+      if (sync) layers.push(sync);
       // READING PROGRESS goes BEFORE entries — it's the "live state"
       // surface (stats, drift, orphans). Hidden while any drift is pending
       // (catalog drift first, progress drift second — both have their own
-      // banner above and the section's buttons would bail anyway).
+      // banner above and the section's buttons would bail anyway). Its leading
+      // divider is suppressed when it's the first section (nothing above but
+      // the header, whose bottom border already separates).
       if (!drift && !progressDrift) {
-        layers.push(renderProgressSection());
+        layers.push(
+          renderProgressSection({ leadingDivider: layers.length > 0 }),
+        );
       }
-      layers.push(tray.stack(entriesSection));
-      return tray.stack(layers);
+      layers.push(entriesSection);
+      return tray.stack(layers, { gap: 4 });
     }
     // Local mode: header + callout + JSON I/O → progress section → entries.
     // Progress works locally (hooks save to $storage); the reload button
     // hides itself in local mode but stat cards + orphan cleanup remain.
-    return tray.stack([
-      renderSync(),
-      renderProgressSection(),
-      tray.stack(entriesSection),
-    ]);
+    const localSync = renderSync();
+    return tray.stack(
+      [
+        ...(localSync ? [localSync] : []),
+        renderProgressSection({ leadingDivider: !!localSync }),
+        entriesSection,
+      ],
+      { gap: 4 },
+    );
   }
 
   function renderForm() {
     const isNew = editingId.get() === 0;
     const gistMode = hasToken() && !!effectiveGistId();
-    return tray.stack([
-      tray.text(isNew ? "New entry" : `Edit #${editingId.get()}`, {
-        style: { fontWeight: "600", fontSize: "1rem", marginBottom: "4px" },
-      }),
-      // Gist mode only: a new entry won't surface in the source if its Catalog
-      // URL is pinned to a revision (…/raw/<sha>/…) — that snapshot never sees
-      // later edits. Remind the user to use the unversioned raw URL.
-      ...(isNew && gistMode
-        ? [
-            tray.alert({
-              title: "New entries need the unversioned Catalog URL",
-              description:
-                "New entries only show if the source's Catalog URL is the unversioned gist raw URL (no /<sha>/). Copy it with the 📋 button in Gist binding.",
-              intent: "info",
-            }),
-          ]
-        : []),
-      tray.text("TITLE *", {
-        style: {
-          fontSize: "0.7rem",
-          fontWeight: "700",
-          opacity: "0.55",
-          letterSpacing: "0.1em",
-          marginBottom: "4px",
-        },
-      }),
-      tray.input("English", {
-        placeholder: "Solo Leveling",
-        fieldRef: fEnglish,
-      }),
-      tray.input("Romaji", {
-        placeholder: "Na Honjaman Level Up",
-        fieldRef: fRomaji,
-      }),
-      tray.input("Native", {
-        placeholder: "나 혼자만 레벨업",
-        fieldRef: fNative,
-      }),
-      tray.select("Preferred display title", {
-        options: PREFERRED_OPTS,
-        fieldRef: fPreferred,
-      }),
-      tray.div([], {
-        style: {
-          borderTop: "1px solid rgba(255,255,255,0.15)",
-          marginTop: "16px",
-          marginBottom: "4px",
-        },
-      }),
-      tray.text("OPTIONAL", {
-        style: {
-          fontSize: "0.7rem",
-          fontWeight: "700",
-          opacity: "0.55",
-          letterSpacing: "0.1em",
-          marginBottom: "4px",
-        },
-      }),
-      tray.input("Synonyms (comma-separated)", {
-        placeholder: "e.g. Alias 1, Alias 2",
-        fieldRef: fSynonyms,
-      }),
-      tray.input("Cover URL", {
-        placeholder: "https://…",
-        fieldRef: fCover,
-      }),
-      tray.input("Banner URL", {
-        placeholder: "https://…",
-        fieldRef: fBanner,
-      }),
-      tray.input("Description", { textarea: true, fieldRef: fDescription }),
-      tray.input("Genres (comma-separated)", {
-        placeholder: "e.g. Action, Adventure",
-        fieldRef: fGenres,
-      }),
-      tray.flex(
-        [
-          tray.div(
-            [
-              tray.select("Status", {
-                options: STATUS_OPTS,
-                fieldRef: fStatus,
+    return tray.stack(
+      [
+        tray.text(isNew ? "New entry" : `Edit #${editingId.get()}`, {
+          style: { fontWeight: "600", fontSize: "1rem" },
+        }),
+        // Gist mode only: a new entry won't surface in the source if its Catalog
+        // URL is pinned to a revision (…/raw/<sha>/…) — that snapshot never sees
+        // later edits. Remind the user to use the unversioned raw URL.
+        ...(isNew && gistMode
+          ? [
+              tray.alert({
+                title: "New entries need the unversioned Catalog URL",
+                description:
+                  "New entries only show if the source's Catalog URL is the unversioned gist raw URL (no /<sha>/). Copy it with the 📋 button in Gist binding.",
+                intent: "info",
               }),
-            ],
-            { style: { flex: "1", minWidth: "0" } },
-          ),
-          tray.div(
-            [
-              tray.select("Format", {
-                options: FORMAT_OPTS,
-                fieldRef: fFormat,
-              }),
-            ],
-            { style: { flex: "1", minWidth: "0" } },
-          ),
-        ],
-        { gap: 2 },
-      ),
-      tray.input("Chapters", { fieldRef: fChapters }),
-      tray.input("Volumes", { fieldRef: fVolumes }),
-      // Start date stacked as a 3-col row — matches AL_BaseManga_StartDate
-      // (year/month/day). Passing only Year shows "Jan YYYY" in seanime's
-      // entry header (its date format defaults month to January when
-      // missing), so set Month + Day too when known to get the right label.
-      tray.flex(
-        [
-          tray.div(
-            [
-              tray.input("Start year", {
-                placeholder: "YYYY",
-                fieldRef: fYear,
-              }),
-            ],
-            {
-              style: { flex: "1", minWidth: "0" },
-            },
-          ),
-          tray.div(
-            [
-              tray.select("Start month", {
-                options: MONTH_OPTS,
-                fieldRef: fMonth,
-              }),
-            ],
-            { style: { flex: "1", minWidth: "0" } },
-          ),
-          tray.div(
-            [tray.input("Start day", { placeholder: "DD", fieldRef: fDay })],
-            {
-              style: { flex: "1", minWidth: "0" },
-            },
-          ),
-        ],
-        { gap: 2 },
-      ),
-      tray.flex(
-        [
-          tray.div(
-            [
-              tray.input("End year", {
-                placeholder: "YYYY",
-                fieldRef: fEndYear,
-              }),
-            ],
-            {
-              style: { flex: "1", minWidth: "0" },
-            },
-          ),
-          tray.div(
-            [
-              tray.select("End month", {
-                options: MONTH_OPTS,
-                fieldRef: fEndMonth,
-              }),
-            ],
-            { style: { flex: "1", minWidth: "0" } },
-          ),
-          tray.div(
-            [tray.input("End day", { placeholder: "DD", fieldRef: fEndDay })],
-            {
-              style: { flex: "1", minWidth: "0" },
-            },
-          ),
-        ],
-        { gap: 2 },
-      ),
-      tray.input("Country", { placeholder: "e.g. JP", fieldRef: fCountry }),
-      tray.input("Site URL", {
-        placeholder: "https://…",
-        fieldRef: fSiteUrl,
-      }),
-      tray.flex(
-        [
-          tray.div(
-            [
-              tray.input("idMal", {
-                placeholder: "e.g. 113138",
-                fieldRef: fIdMal,
-              }),
-            ],
-            { style: { flex: "1", minWidth: "0" } },
-          ),
-          tray.div(
-            [
-              tray.input("Mean score", {
-                placeholder: "0-100",
-                fieldRef: fMeanScore,
-              }),
-            ],
-            {
-              style: { flex: "1", minWidth: "0" },
-            },
-          ),
-        ],
-        { gap: 2 },
-      ),
-      tray.switch("Adult", { fieldRef: fIsAdult }),
-      tray.flex([
-        tray.button("Save", { onClick: "lcm-save", intent: "primary" }),
-        tray.button("Cancel", { onClick: "lcm-cancel" }),
-      ]),
-    ]);
+            ]
+          : []),
+        tray.text("TITLE *", {
+          style: {
+            fontSize: "0.7rem",
+            fontWeight: "700",
+            opacity: "0.55",
+            letterSpacing: "0.1em",
+          },
+        }),
+        tray.input("English", {
+          placeholder: "Solo Leveling",
+          fieldRef: fEnglish,
+        }),
+        tray.input("Romaji", {
+          placeholder: "Na Honjaman Level Up",
+          fieldRef: fRomaji,
+        }),
+        tray.input("Native", {
+          placeholder: "나 혼자만 레벨업",
+          fieldRef: fNative,
+        }),
+        tray.select("Preferred display title", {
+          options: PREFERRED_OPTS,
+          fieldRef: fPreferred,
+        }),
+        divider(tray),
+        tray.text("OPTIONAL", {
+          style: {
+            fontSize: "0.7rem",
+            fontWeight: "700",
+            opacity: "0.55",
+            letterSpacing: "0.1em",
+          },
+        }),
+        tray.input("Synonyms (comma-separated)", {
+          placeholder: "e.g. Alias 1, Alias 2",
+          fieldRef: fSynonyms,
+        }),
+        tray.input("Cover URL", {
+          placeholder: "https://…",
+          fieldRef: fCover,
+        }),
+        tray.input("Banner URL", {
+          placeholder: "https://…",
+          fieldRef: fBanner,
+        }),
+        tray.input("Description", { textarea: true, fieldRef: fDescription }),
+        tray.input("Genres (comma-separated)", {
+          placeholder: "e.g. Action, Adventure",
+          fieldRef: fGenres,
+        }),
+        tray.flex(
+          [
+            tray.div(
+              [
+                tray.select("Status", {
+                  options: STATUS_OPTS,
+                  fieldRef: fStatus,
+                }),
+              ],
+              { style: { flex: "1", minWidth: "0" } },
+            ),
+            tray.div(
+              [
+                tray.select("Format", {
+                  options: FORMAT_OPTS,
+                  fieldRef: fFormat,
+                }),
+              ],
+              { style: { flex: "1", minWidth: "0" } },
+            ),
+          ],
+          { gap: 2 },
+        ),
+        tray.input("Chapters", { fieldRef: fChapters }),
+        tray.input("Volumes", { fieldRef: fVolumes }),
+        // Start date stacked as a 3-col row — matches AL_BaseManga_StartDate
+        // (year/month/day). Passing only Year shows "Jan YYYY" in seanime's
+        // entry header (its date format defaults month to January when
+        // missing), so set Month + Day too when known to get the right label.
+        tray.flex(
+          [
+            tray.div(
+              [
+                tray.input("Start year", {
+                  placeholder: "YYYY",
+                  fieldRef: fYear,
+                }),
+              ],
+              {
+                style: { flex: "1", minWidth: "0" },
+              },
+            ),
+            tray.div(
+              [
+                tray.select("Start month", {
+                  options: MONTH_OPTS,
+                  fieldRef: fMonth,
+                }),
+              ],
+              { style: { flex: "1", minWidth: "0" } },
+            ),
+            tray.div(
+              [tray.input("Start day", { placeholder: "DD", fieldRef: fDay })],
+              {
+                style: { flex: "1", minWidth: "0" },
+              },
+            ),
+          ],
+          { gap: 2 },
+        ),
+        tray.flex(
+          [
+            tray.div(
+              [
+                tray.input("End year", {
+                  placeholder: "YYYY",
+                  fieldRef: fEndYear,
+                }),
+              ],
+              {
+                style: { flex: "1", minWidth: "0" },
+              },
+            ),
+            tray.div(
+              [
+                tray.select("End month", {
+                  options: MONTH_OPTS,
+                  fieldRef: fEndMonth,
+                }),
+              ],
+              { style: { flex: "1", minWidth: "0" } },
+            ),
+            tray.div(
+              [tray.input("End day", { placeholder: "DD", fieldRef: fEndDay })],
+              {
+                style: { flex: "1", minWidth: "0" },
+              },
+            ),
+          ],
+          { gap: 2 },
+        ),
+        tray.input("Country", { placeholder: "e.g. JP", fieldRef: fCountry }),
+        tray.input("Site URL", {
+          placeholder: "https://…",
+          fieldRef: fSiteUrl,
+        }),
+        tray.flex(
+          [
+            tray.div(
+              [
+                tray.input("idMal", {
+                  placeholder: "e.g. 113138",
+                  fieldRef: fIdMal,
+                }),
+              ],
+              { style: { flex: "1", minWidth: "0" } },
+            ),
+            tray.div(
+              [
+                tray.input("Mean score", {
+                  placeholder: "0-100",
+                  fieldRef: fMeanScore,
+                }),
+              ],
+              {
+                style: { flex: "1", minWidth: "0" },
+              },
+            ),
+          ],
+          { gap: 2 },
+        ),
+        tray.switch("Adult", { fieldRef: fIsAdult }),
+        tray.flex(
+          [
+            tray.button("Save", { onClick: "lcm-save", intent: "primary" }),
+            tray.button("Cancel", { onClick: "lcm-cancel" }),
+          ],
+          { gap: 2 },
+        ),
+      ],
+      { gap: 2 },
+    );
   }
 
   const currentLocalId = ctx.state<number>(0);
@@ -2831,7 +2782,7 @@ export const register = (ctx: $ui.Context) => {
       m = undefined;
     }
     const siteUrl = m?.siteUrl ?? "";
-    if (siteUrl.indexOf(PREFIX_SITEURL) !== 0) return 0;
+    if (siteUrl.indexOf(SOURCE_PREFIX) !== 0) return 0;
     return decodeLocalId(mediaId);
   };
 
@@ -2984,7 +2935,49 @@ export const register = (ctx: $ui.Context) => {
   });
 
   tray.render(() => {
-    if (view.get() === "form") return renderForm();
-    return renderList();
+    // Form view keeps a bare identity header (the form has its own title).
+    if (view.get() === "form") {
+      return tray.stack([trayHeader(tray), renderForm()], { gap: 4 });
+    }
+    // List view folds the mode + linked status + binding toggle (was a
+    // separate modeHeader row inside renderSync) into the identity header.
+    const gid = effectiveGistId();
+    const expanded = bindingExpanded.get();
+    const drifting = hasDrift();
+    const right: unknown[] = hasToken()
+      ? [
+          gid
+            ? tray.badge("🔗 Linked", { intent: "success" })
+            : tray.badge("🔓 Not linked", { intent: "gray" }),
+          tray.tooltip(
+            tray.button(expanded ? "↑" : "✏️", {
+              onClick: "lcm-toggle-binding",
+              size: "sm",
+              disabled: drifting,
+            }),
+            {
+              text: expanded ? "Collapse gist details" : "Manage gist binding",
+            },
+          ),
+        ]
+      : [
+          tray.badge("💻 this device only", { intent: "gray" }),
+          tray.tooltip(
+            tray.button(expanded ? "↑" : "⚠️", {
+              onClick: "lcm-toggle-binding",
+              size: "sm",
+            }),
+            {
+              text: expanded
+                ? "Collapse local limitation"
+                : "Show local limitation",
+            },
+          ),
+        ];
+    const header = trayHeader(tray, {
+      subtitle: hasToken() ? "Gist mode" : "Local mode",
+      right,
+    });
+    return tray.stack([header, renderList()], { gap: 4 });
   });
 };

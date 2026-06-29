@@ -17,6 +17,31 @@ var onPostUpdateEntry = (...args) => {
   function setMULink(mediaId, link) {
     $storage.set(`${LINK_PREFIX}${mediaId}`, link);
   }
+  function mangaTitles(manga) {
+    if (!manga) return [];
+    const t = manga.title;
+    const list = [
+      t?.english,
+      t?.romaji,
+      t?.userPreferred,
+      ...(manga.synonyms ?? []),
+    ];
+    return [...new Set(list.map((s) => s?.trim()).filter((v) => !!v))];
+  }
+  function pickBestMatch(titles, results, minScore = 0.8) {
+    let best;
+    let bestScore = 0;
+    for (const r of results) {
+      let score = 0;
+      for (const t of titles)
+        score = Math.max(score, $scannerUtils.compareTitles(t, r.title));
+      if (score > bestScore) {
+        bestScore = score;
+        best = r;
+      }
+    }
+    return bestScore >= minScore ? best : undefined;
+  }
   var onPostUpdateEntry2 = (event) => {
     const { MUClient, createLogger } = $shared.use(SHARED_LIB_NAME);
     const log = createLogger();
@@ -62,16 +87,19 @@ var onPostUpdateEntry = (...args) => {
           !externalId &&
           ($getUserPreference("autoMatchFallback") ?? "false") === "true"
         ) {
-          const title =
-            manga?.title &&
-            (manga.title.english ||
-              manga.title.romaji ||
-              manga.title.userPreferred);
-          if (title) {
-            const match = (await mu.search(title, 25))[0];
+          const titles = mangaTitles(manga);
+          if (titles.length) {
+            const match = pickBestMatch(titles, await mu.search(titles[0], 25));
             if (match) {
               externalId = match.id;
               setMULink(mediaId, { ...match, linkedAt: Date.now() });
+              log.info(
+                `auto-matched media ${mediaId} -> MU ${match.id} "${match.title}"`,
+              );
+            } else {
+              log.warn(
+                `auto-match: no MU result cleared the similarity threshold for "${titles[0]}"`,
+              );
             }
           }
         }
@@ -145,11 +173,7 @@ var onPreUpdateEntry = (...args) => {
 var register = (...args) => {
   function divider(tray) {
     return tray.div([], {
-      style: {
-        borderTop: "1px solid rgba(255,255,255,0.1)",
-        marginTop: "10px",
-        paddingTop: "8px",
-      },
+      style: { borderTop: "1px solid rgba(255,255,255,0.1)" },
     });
   }
   function renderEntryListSection(tray, cfg) {
@@ -261,10 +285,10 @@ var register = (...args) => {
           }),
           tray.flex(subLineChildren, {
             gap: 0,
-            style: { alignItems: "center", marginTop: "2px" },
+            style: { alignItems: "center" },
           }),
         ],
-        { style: { flex: "1", minWidth: "0" } },
+        { gap: 1, style: { flex: "1", minWidth: "0" } },
       );
       const rowChildren = [coverBox(row.cover), middle];
       for (const a of row.actions ?? []) rowChildren.push(a);
@@ -272,7 +296,7 @@ var register = (...args) => {
         gap: 2,
         style: {
           alignItems: "center",
-          padding: "6px 8px",
+          padding: "8px",
           borderRadius: "4px",
           background: "rgba(255,255,255,0.02)",
           opacity: row.opacity != null ? String(row.opacity) : "1",
@@ -301,7 +325,7 @@ var register = (...args) => {
       ],
       {
         gap: 2,
-        style: { alignItems: "center", marginTop: "10px", marginBottom: "6px" },
+        style: { alignItems: "center" },
       },
     );
     const out = [];
@@ -333,7 +357,7 @@ var register = (...args) => {
       out.push(
         tray.flex(searchRowChildren, {
           gap: 2,
-          style: { alignItems: "end", marginBottom: "6px" },
+          style: { alignItems: "end" },
         }),
       );
     }
@@ -344,7 +368,7 @@ var register = (...args) => {
             fontSize: "0.8rem",
             opacity: "0.5",
             textAlign: "center",
-            padding: "10px 0",
+            padding: "8px 0",
           },
         }),
       );
@@ -355,14 +379,72 @@ var register = (...args) => {
             fontSize: "0.8rem",
             opacity: "0.5",
             textAlign: "center",
-            padding: "10px 0",
+            padding: "8px 0",
           },
         }),
       );
     } else {
       for (const row of cfg.rows) out.push(entryRow(row));
     }
-    return out;
+    return tray.stack(out, { gap: 2 });
+  }
+  var ICON_PX = 36;
+  function trayHeader(tray, opts = {}) {
+    const title = opts.title ?? "MangaUpdates Sync";
+    const iconUrl =
+      opts.iconUrl ??
+      "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/mangaupdates-sync/assets/icon.png";
+    const textCol = [
+      tray.text(title, {
+        style: {
+          fontWeight: "700",
+          fontSize: "1.15rem",
+          lineHeight: "1.2",
+          letterSpacing: "0.01em",
+        },
+      }),
+    ];
+    if (opts.subtitle) {
+      textCol.push(
+        tray.text(opts.subtitle, {
+          style: {
+            fontSize: "0.8rem",
+            lineHeight: "1.3",
+            opacity: "0.55",
+          },
+        }),
+      );
+    }
+    const row = [];
+    if (iconUrl) {
+      row.push(
+        tray.img(iconUrl, {
+          width: `${ICON_PX}px`,
+          height: `${ICON_PX}px`,
+          style: { borderRadius: "8px", objectFit: "contain", flexShrink: "0" },
+        }),
+      );
+    }
+    row.push(
+      tray.stack(textCol, { gap: 1, style: { flex: "1", minWidth: "0" } }),
+    );
+    if (opts.right?.length) {
+      row.push(
+        tray.flex(opts.right, {
+          gap: 2,
+          style: { alignItems: "center", flexShrink: "0" },
+        }),
+      );
+    }
+    return tray.div(
+      [tray.flex(row, { gap: 3, style: { alignItems: "center" } })],
+      {
+        style: {
+          paddingBottom: "8px",
+          borderBottom: "1px solid rgba(255,255,255,0.1)",
+        },
+      },
+    );
   }
   var STATUS_INTENT = {
     RELEASING: "success",
@@ -378,8 +460,6 @@ var register = (...args) => {
       intent: STATUS_INTENT[status] ?? "gray",
     };
   }
-  var GITHUB_RAW_WORKSPACE =
-    "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main";
   var mu_letter_default =
     '<svg stroke="currentColor" fill="currentColor" stroke-width="0" role="img" viewBox="0 0 24 24" class="text-lg" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path d="M0.5,21 L0.5,3 L4.5,3 L7.5,11 L10.5,3 L14.5,3 L14.5,21 L11.5,21 L11.5,11.5 L8.5,17 L6.5,17 L3.5,11.5 L3.5,21 Z M16.5,21 L16.5,3 L18.5,3 L18.5,17 L21.5,17 L21.5,3 L23.5,3 L23.5,21 Z"/></svg>';
   var SHARED_LIB_NAME = "mangaupdates-sync";
@@ -411,7 +491,8 @@ var register = (...args) => {
     const { MUClient, createLogger } = $shared.use(SHARED_LIB_NAME);
     const log = createLogger();
     const tray = ctx.newTray({
-      iconUrl: `${GITHUB_RAW_WORKSPACE}/src/plugins/mangaupdates-sync/assets/icon.png`,
+      iconUrl:
+        "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/mangaupdates-sync/assets/icon.png",
       withContent: true,
     });
     const currentMediaId = ctx.state(0);
@@ -437,8 +518,9 @@ var register = (...args) => {
     });
     ctx.screen.loadCurrent();
     const btn = ctx.action.newMangaPageButton({
-      label: "Link to MangaUpdates",
-      intent: "primary-subtle",
+      label: "MU \uD83D\uDD0D",
+      intent: "gray-subtle",
+      tooltipText: "Link to MangaUpdates",
     });
     ctx.effect(() => {
       const id = currentMediaId.get();
@@ -461,9 +543,13 @@ var register = (...args) => {
       btn.mount();
       const link = getMULink(id);
       if (!link) {
-        btn.setLabel("Link to MangaUpdates");
+        btn.setLabel("MU \uD83D\uDD0D");
+        btn.setIntent("gray-subtle");
+        btn.setTooltipText("Link to MangaUpdates");
       } else {
-        btn.setLabel(`Linked: ${link.title || `#${link.id}`}`);
+        btn.setLabel("MU ✅");
+        btn.setIntent("primary-subtle");
+        btn.setTooltipText(`Linked: ${link.title || `#${link.id}`}`);
       }
       tray.updateBadge({ number: 0 });
     }, [currentMediaId]);
@@ -813,7 +899,7 @@ var register = (...args) => {
           };
         });
         out.push(
-          ...renderEntryListSection(tray, {
+          renderEntryListSection(tray, {
             headerLabel: "RESULTS",
             rows: resultRows,
             totalCount: results.length,
@@ -828,7 +914,7 @@ var register = (...args) => {
           }),
         );
       }
-      return out;
+      return tray.stack(out, { gap: 2 });
     };
     tray.render(() => {
       linkedRefresh.get();
@@ -846,17 +932,16 @@ var register = (...args) => {
       const isCustomSource =
         !!media?.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0;
       const onEntry = !!id && !!media && !isCustomSource;
+      const link = onEntry ? getMULink(id) : undefined;
+      const entryTitle =
+        onEntry && media
+          ? (media.title &&
+              (media.title.english ||
+                media.title.userPreferred ||
+                media.title.romaji)) ||
+            `#${id}`
+          : undefined;
       if (onEntry && media && !expanded) {
-        const link = getMULink(id);
-        const title =
-          (media.title &&
-            (media.title.english ||
-              media.title.userPreferred ||
-              media.title.romaji)) ||
-          `#${id}`;
-        items.push(
-          tray.text(`Manga: ${title}`, { style: { fontWeight: "600" } }),
-        );
         const totalLinked = listMULinkIds().length;
         const showAllBtn = tray.button(`Show all (${totalLinked})`, {
           onClick: "mu-show-all",
@@ -865,7 +950,7 @@ var register = (...args) => {
         });
         if (link) {
           items.push(
-            ...renderEntryListSection(tray, {
+            renderEntryListSection(tray, {
               headerLabel: "LINKED",
               rows: [buildLinkedRow(id, link)],
               totalCount: 1,
@@ -878,13 +963,14 @@ var register = (...args) => {
               emptyText: "",
               noMatchText: "",
               showSearchRow: false,
+              leadingDivider: false,
             }),
           );
         } else {
           items.push(tray.text("Not linked yet."));
           if (totalLinked > 0) items.push(showAllBtn);
         }
-        items.push(...renderSearchUI(media, id, link));
+        items.push(renderSearchUI(media, id, link));
       } else {
         if (id && media && isCustomSource) {
           items.push(
@@ -906,9 +992,24 @@ var register = (...args) => {
                 }),
               ]
             : [];
-        items.push(...renderLinkedList(collapseBtn, items.length > 0));
+        items.push(renderLinkedList(collapseBtn, items.length > 0));
       }
-      return tray.stack(items);
+      return tray.stack(
+        [
+          trayHeader(tray, {
+            subtitle: entryTitle,
+            right: onEntry
+              ? [
+                  link
+                    ? tray.badge("\uD83D\uDD17 Linked", { intent: "success" })
+                    : tray.badge("\uD83D\uDD13 Not linked", { intent: "gray" }),
+                ]
+              : undefined,
+          }),
+          ...items,
+        ],
+        { gap: 4 },
+      );
     });
   };
   return register2(...args);

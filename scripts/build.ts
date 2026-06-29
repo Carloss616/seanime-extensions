@@ -71,14 +71,24 @@ const loadAndValidateManifest = async (entryDir: string): Promise<Manifest> => {
   return manifest;
 };
 
-const buildEntry = async (entryPath: string, manifestId: string) => {
+const buildEntry = async (
+  entryPath: string,
+  manifestId: string,
+  manifestName: string,
+  manifestIcon: string,
+) => {
   const entryDir = path.dirname(entryPath);
 
-  // Inject the manifest id as a bundle-time literal. Both Bun.build passes
-  // below replace the bare global `__MANIFEST_ID__` (declared type-only in
-  // types/core.d.ts) with this string, so `getManifestId()` resolves to the
-  // owning extension's id without any per-call path or per-plugin macro file.
-  const define = { __MANIFEST_ID__: JSON.stringify(manifestId) };
+  // Inject the manifest id + name + icon as bundle-time literals. Both Bun.build
+  // passes below replace the bare globals `__MANIFEST_ID__` / `__MANIFEST_NAME__`
+  // / `__MANIFEST_ICON__` (declared type-only in types/augment.d.ts) with these
+  // strings, so `getManifestId()` and the shared tray header resolve to the
+  // owning extension's values without any per-call path or per-plugin macro file.
+  const define = {
+    __MANIFEST_ID__: JSON.stringify(manifestId),
+    __MANIFEST_NAME__: JSON.stringify(manifestName),
+    __MANIFEST_ICON__: JSON.stringify(manifestIcon),
+  };
 
   // 1. Bundle every isolated module (modules/*.ts) standalone. Each bundle
   //    resolves its `../utils/*` imports and inlines those decls, so the module
@@ -195,7 +205,12 @@ const main = async () => {
   for (const entryPath of extensions) {
     const entryDir = path.dirname(entryPath);
     const manifest = await loadAndValidateManifest(entryDir);
-    await buildEntry(entryPath, manifest.id);
+    await buildEntry(
+      entryPath,
+      manifest.id,
+      String(manifest.name ?? manifest.id),
+      String(manifest.icon ?? ""),
+    );
     manifests.push(manifest);
     console.log(`built ${manifest.id.padEnd(24)} ${entryDir}`);
   }

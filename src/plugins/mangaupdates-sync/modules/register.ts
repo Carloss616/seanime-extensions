@@ -3,8 +3,8 @@ import {
   type EntryListRow,
   renderEntryListSection,
 } from "../../../_components/entry-list";
+import { trayHeader } from "../../../_components/tray-header";
 import { statusToPill } from "../../../_utils/anilist-status";
-import { GITHUB_RAW_WORKSPACE } from "../../../_utils/constants";
 import muLetterSvg from "../assets/mu-letter.svg";
 import { SHARED_LIB_NAME, SOURCE_PREFIX } from "../utils/constants";
 import {
@@ -25,12 +25,7 @@ export const register = (ctx: $ui.Context) => {
     $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
   const log = createLogger();
 
-  const tray = ctx.newTray({
-    // SeaImage silently blocks non-raster icon suffixes (incl. .ico), so
-    // point at the extension's own icon.png raw URL instead.
-    iconUrl: `${GITHUB_RAW_WORKSPACE}/src/plugins/mangaupdates-sync/assets/icon.png`,
-    withContent: true,
-  });
+  const tray = ctx.newTray({ iconUrl: __MANIFEST_ICON__, withContent: true });
 
   const currentMediaId = ctx.state(0);
   const searchInputRef = ctx.fieldRef<string>("");
@@ -69,8 +64,9 @@ export const register = (ctx: $ui.Context) => {
   ctx.screen.loadCurrent();
 
   const btn = ctx.action.newMangaPageButton({
-    label: "Link to MangaUpdates",
-    intent: "primary-subtle",
+    label: "MU 🔍",
+    intent: "gray-subtle",
+    tooltipText: "Link to MangaUpdates",
   });
 
   // Recompute the button label from $storage. Hides the button for
@@ -97,9 +93,13 @@ export const register = (ctx: $ui.Context) => {
     btn.mount();
     const link = getMULink(id);
     if (!link) {
-      btn.setLabel("Link to MangaUpdates");
+      btn.setLabel("MU 🔍");
+      btn.setIntent("gray-subtle");
+      btn.setTooltipText("Link to MangaUpdates");
     } else {
-      btn.setLabel(`Linked: ${link.title || `#${link.id}`}`);
+      btn.setLabel("MU ✅");
+      btn.setIntent("primary-subtle");
+      btn.setTooltipText(`Linked: ${link.title || `#${link.id}`}`);
     }
     tray.updateBadge({ number: 0 });
   }, [currentMediaId]);
@@ -386,7 +386,7 @@ export const register = (ctx: $ui.Context) => {
   const renderLinkedList = (
     inlineActions: unknown[] = [],
     leadingDivider = true,
-  ): unknown[] => {
+  ): unknown => {
     const filter = linkedFilter.get().toLowerCase();
     // listMULinkIds() enumerates only top-level `mu_link_<id>` keys — it skips
     // the dotted sub-keys $storage produces for object values
@@ -428,7 +428,7 @@ export const register = (ctx: $ui.Context) => {
     media: $app.AL_BaseManga,
     id: number,
     link: MULink | undefined,
-  ): unknown[] => {
+  ): unknown => {
     const out: unknown[] = [];
     const currentInput = (searchInputRef.current || "").trim();
 
@@ -558,7 +558,7 @@ export const register = (ctx: $ui.Context) => {
         };
       });
       out.push(
-        ...renderEntryListSection(tray, {
+        renderEntryListSection(tray, {
           headerLabel: "RESULTS",
           rows: resultRows,
           totalCount: results.length,
@@ -573,7 +573,7 @@ export const register = (ctx: $ui.Context) => {
         }),
       );
     }
-    return out;
+    return tray.stack(out, { gap: 2 });
   };
 
   // Tray content. Two modes:
@@ -602,19 +602,20 @@ export const register = (ctx: $ui.Context) => {
       !!media?.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0;
     const onEntry = !!id && !!media && !isCustomSource;
 
+    // Current entry's link + title feed the trayHeader (subtitle + linked
+    // badge); the "Manga: <title>" row that used to head entry-mode is gone.
+    const link = onEntry ? getMULink(id) : undefined;
+    const entryTitle =
+      onEntry && media
+        ? (media.title &&
+            (media.title.english ||
+              media.title.userPreferred ||
+              media.title.romaji)) ||
+          `#${id}`
+        : undefined;
+
     if (onEntry && media && !expanded) {
       // ---- Entry mode (collapsed): this entry's link + search ----
-      const link = getMULink(id);
-      const title =
-        (media.title &&
-          (media.title.english ||
-            media.title.userPreferred ||
-            media.title.romaji)) ||
-        `#${id}`;
-      items.push(
-        tray.text(`Manga: ${title}`, { style: { fontWeight: "600" } }),
-      );
-
       const totalLinked = listMULinkIds().length;
       const showAllBtn = tray.button(`Show all (${totalLinked})`, {
         onClick: "mu-show-all",
@@ -626,7 +627,7 @@ export const register = (ctx: $ui.Context) => {
         // Single-row section for this entry's link, with the "Show all (N)"
         // toggle in its header.
         items.push(
-          ...renderEntryListSection(tray, {
+          renderEntryListSection(tray, {
             headerLabel: "LINKED",
             rows: [buildLinkedRow(id, link)],
             totalCount: 1,
@@ -639,6 +640,8 @@ export const register = (ctx: $ui.Context) => {
             emptyText: "",
             noMatchText: "",
             showSearchRow: false,
+            // First content under the header — its bottom border already separates.
+            leadingDivider: false,
           }),
         );
       } else {
@@ -646,7 +649,7 @@ export const register = (ctx: $ui.Context) => {
         if (totalLinked > 0) items.push(showAllBtn);
       }
 
-      items.push(...renderSearchUI(media, id, link));
+      items.push(renderSearchUI(media, id, link));
     } else {
       // ---- Full-list mode: not a linkable entry, or expanded via toggle ----
       if (id && media && isCustomSource) {
@@ -672,9 +675,24 @@ export const register = (ctx: $ui.Context) => {
       // Suppress the leading divider when the list is the first thing in the
       // tray (no custom-source/load note above it) — else it shows as an
       // empty top line.
-      items.push(...renderLinkedList(collapseBtn, items.length > 0));
+      items.push(renderLinkedList(collapseBtn, items.length > 0));
     }
 
-    return tray.stack(items);
+    return tray.stack(
+      [
+        trayHeader(tray, {
+          subtitle: entryTitle,
+          right: onEntry
+            ? [
+                link
+                  ? tray.badge("🔗 Linked", { intent: "success" })
+                  : tray.badge("🔓 Not linked", { intent: "gray" }),
+              ]
+            : undefined,
+        }),
+        ...items,
+      ],
+      { gap: 4 },
+    );
   });
 };

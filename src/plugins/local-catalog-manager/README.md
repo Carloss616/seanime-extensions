@@ -5,7 +5,7 @@
 # 🗂️ Local Catalog Manager
 
 ![Type](https://img.shields.io/badge/type-plugin-3b82f6?style=for-the-badge)
-![Version](https://img.shields.io/badge/version-2.0.3-22c55e?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-2.1.0-22c55e?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 
 **Manage your [Local Catalog](../../custom-source/local-catalog/) from inside seanime — add, edit, delete entries — and sync it to a GitHub Gist.**

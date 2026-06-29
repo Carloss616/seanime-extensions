@@ -33,7 +33,7 @@ export class GistClient {
       headers: this.headers(),
       body: JSON.stringify({
         public: false,
-        description: "[seanime] local-catalog — entries + reading progress",
+        description: "Seanime local catalog and progress sync",
         files: { [filename]: { content } },
       }),
     });

@@ -368,11 +368,7 @@ var onPreUpdateEntryProgress = (...args) => {
 var register = (...args) => {
   function divider(tray) {
     return tray.div([], {
-      style: {
-        borderTop: "1px solid rgba(255,255,255,0.1)",
-        marginTop: "10px",
-        paddingTop: "8px",
-      },
+      style: { borderTop: "1px solid rgba(255,255,255,0.1)" },
     });
   }
   function renderEntryListSection(tray, cfg) {
@@ -484,10 +480,10 @@ var register = (...args) => {
           }),
           tray.flex(subLineChildren, {
             gap: 0,
-            style: { alignItems: "center", marginTop: "2px" },
+            style: { alignItems: "center" },
           }),
         ],
-        { style: { flex: "1", minWidth: "0" } },
+        { gap: 1, style: { flex: "1", minWidth: "0" } },
       );
       const rowChildren = [coverBox(row.cover), middle];
       for (const a of row.actions ?? []) rowChildren.push(a);
@@ -495,7 +491,7 @@ var register = (...args) => {
         gap: 2,
         style: {
           alignItems: "center",
-          padding: "6px 8px",
+          padding: "8px",
           borderRadius: "4px",
           background: "rgba(255,255,255,0.02)",
           opacity: row.opacity != null ? String(row.opacity) : "1",
@@ -524,7 +520,7 @@ var register = (...args) => {
       ],
       {
         gap: 2,
-        style: { alignItems: "center", marginTop: "10px", marginBottom: "6px" },
+        style: { alignItems: "center" },
       },
     );
     const out = [];
@@ -556,7 +552,7 @@ var register = (...args) => {
       out.push(
         tray.flex(searchRowChildren, {
           gap: 2,
-          style: { alignItems: "end", marginBottom: "6px" },
+          style: { alignItems: "end" },
         }),
       );
     }
@@ -567,7 +563,7 @@ var register = (...args) => {
             fontSize: "0.8rem",
             opacity: "0.5",
             textAlign: "center",
-            padding: "10px 0",
+            padding: "8px 0",
           },
         }),
       );
@@ -578,14 +574,72 @@ var register = (...args) => {
             fontSize: "0.8rem",
             opacity: "0.5",
             textAlign: "center",
-            padding: "10px 0",
+            padding: "8px 0",
           },
         }),
       );
     } else {
       for (const row of cfg.rows) out.push(entryRow(row));
     }
-    return out;
+    return tray.stack(out, { gap: 2 });
+  }
+  var ICON_PX = 36;
+  function trayHeader(tray, opts = {}) {
+    const title = opts.title ?? "Local Catalog Manager";
+    const iconUrl =
+      opts.iconUrl ??
+      "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/local-catalog-manager/assets/icon.png";
+    const textCol = [
+      tray.text(title, {
+        style: {
+          fontWeight: "700",
+          fontSize: "1.15rem",
+          lineHeight: "1.2",
+          letterSpacing: "0.01em",
+        },
+      }),
+    ];
+    if (opts.subtitle) {
+      textCol.push(
+        tray.text(opts.subtitle, {
+          style: {
+            fontSize: "0.8rem",
+            lineHeight: "1.3",
+            opacity: "0.55",
+          },
+        }),
+      );
+    }
+    const row = [];
+    if (iconUrl) {
+      row.push(
+        tray.img(iconUrl, {
+          width: `${ICON_PX}px`,
+          height: `${ICON_PX}px`,
+          style: { borderRadius: "8px", objectFit: "contain", flexShrink: "0" },
+        }),
+      );
+    }
+    row.push(
+      tray.stack(textCol, { gap: 1, style: { flex: "1", minWidth: "0" } }),
+    );
+    if (opts.right?.length) {
+      row.push(
+        tray.flex(opts.right, {
+          gap: 2,
+          style: { alignItems: "center", flexShrink: "0" },
+        }),
+      );
+    }
+    return tray.div(
+      [tray.flex(row, { gap: 3, style: { alignItems: "center" } })],
+      {
+        style: {
+          paddingBottom: "8px",
+          borderBottom: "1px solid rgba(255,255,255,0.1)",
+        },
+      },
+    );
   }
   var STATUS_INTENT = {
     RELEASING: "success",
@@ -601,8 +655,6 @@ var register = (...args) => {
       intent: STATUS_INTENT[status] ?? "gray",
     };
   }
-  var GITHUB_RAW_WORKSPACE =
-    "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main";
   var SHARED_LIB_NAME = "local-catalog-manager";
   var SOURCE_PREFIX = "ext_custom_source_local-catalog";
   var CATALOG_FILENAME = "seanime-local-catalog.json";
@@ -652,7 +704,8 @@ var register = (...args) => {
     } = $shared.use(SHARED_LIB_NAME);
     const log = createLogger();
     const tray = ctx.newTray({
-      iconUrl: `${GITHUB_RAW_WORKSPACE}/src/plugins/local-catalog-manager/assets/icon.png`,
+      iconUrl:
+        "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/local-catalog-manager/assets/icon.png",
       withContent: true,
     });
     const view = ctx.state("list");
@@ -1933,36 +1986,11 @@ var register = (...args) => {
           fontWeight: "700",
           opacity: "0.55",
           letterSpacing: "0.1em",
-          marginBottom: "4px",
         },
       });
     const sectionDivider = () => divider(tray);
-    const modeHeader = (icon, title, opts = {}) => {
-      const titleChildren = [
-        tray.span(`${icon} `),
-        tray.span(title, {
-          style: { fontWeight: "600", fontSize: "0.95rem" },
-        }),
-      ];
-      if (opts.subtitle) {
-        titleChildren.push(
-          tray.span(` · ${opts.subtitle}`, {
-            style: { opacity: "0.65", fontSize: "0.85rem" },
-          }),
-        );
-      }
-      return tray.flex(
-        [
-          tray.div(titleChildren, {
-            style: { flex: "1", alignSelf: "center", minWidth: "0" },
-          }),
-          ...(opts.right ?? []),
-        ],
-        { gap: 2, style: { alignItems: "center" } },
-      );
-    };
     const statCard = (value, label) =>
-      tray.div(
+      tray.stack(
         [
           tray.text(value, {
             style: {
@@ -1977,14 +2005,14 @@ var register = (...args) => {
               opacity: "0.6",
               textTransform: "uppercase",
               letterSpacing: "0.08em",
-              marginTop: "2px",
             },
           }),
         ],
         {
+          gap: 1,
           style: {
             flex: "1",
-            padding: "10px 12px",
+            padding: "12px",
             borderRadius: "6px",
             background: "rgba(255,255,255,0.03)",
             border: "1px solid rgba(255,255,255,0.06)",
@@ -1992,7 +2020,7 @@ var register = (...args) => {
           },
         },
       );
-    function renderProgressSection() {
+    function renderProgressSection(opts = {}) {
       const linked = hasToken() && !!effectiveGistId();
       const oCount = orphanCount();
       const oExpanded = orphansExpanded.get();
@@ -2024,7 +2052,7 @@ var register = (...args) => {
         );
       }
       const sub = [
-        sectionDivider(),
+        ...(opts.leadingDivider === false ? [] : [sectionDivider()]),
         tray.flex(
           [
             tray.div([sectionHeader("\uD83D\uDCD6 READING PROGRESS")], {
@@ -2032,7 +2060,7 @@ var register = (...args) => {
             }),
             ...headerActions,
           ],
-          { gap: 2, style: { alignItems: "center", marginBottom: "6px" } },
+          { gap: 2, style: { alignItems: "center" } },
         ),
         tray.flex(
           [
@@ -2092,7 +2120,7 @@ var register = (...args) => {
               gap: 2,
               style: {
                 alignItems: "center",
-                padding: "4px 8px",
+                padding: "8px",
                 borderRadius: "4px",
                 background: "rgba(255,255,255,0.02)",
               },
@@ -2100,7 +2128,7 @@ var register = (...args) => {
           );
         });
         sub.push(
-          tray.stack(orphanRows, { style: { marginTop: "4px" } }),
+          tray.stack(orphanRows, { gap: 2 }),
           tray.flex(
             [
               tray.button("⛔ Delete all orphans", {
@@ -2109,7 +2137,7 @@ var register = (...args) => {
                 intent: "alert-subtle",
               }),
             ],
-            { style: { marginTop: "4px", justifyContent: "flex-end" } },
+            { style: { justifyContent: "flex-end" } },
           ),
         );
       }
@@ -2120,12 +2148,11 @@ var register = (...args) => {
               fontSize: "0.75rem",
               opacity: "0.6",
               fontStyle: "italic",
-              marginTop: "4px",
             },
           }),
         );
       }
-      return tray.stack(sub);
+      return tray.stack(sub, { gap: 2 });
     }
     function renderSync() {
       if (hasToken()) {
@@ -2133,26 +2160,7 @@ var register = (...args) => {
         const owner = $storage.get(K_OWNER) ?? "";
         const expanded2 = bindingExpanded.get();
         const drifting = hasDrift();
-        const headerRow = modeHeader("\uD83C\uDF10", "Gist mode", {
-          right: [
-            gid
-              ? tray.badge("\uD83D\uDD17 Linked", { intent: "success" })
-              : tray.badge("\uD83D\uDD13 Not linked", { intent: "gray" }),
-            tray.tooltip(
-              tray.button(expanded2 ? "↑" : "✏️", {
-                onClick: "lcm-toggle-binding",
-                size: "sm",
-                disabled: drifting,
-              }),
-              {
-                text: expanded2
-                  ? "Collapse gist details"
-                  : "Manage gist binding",
-              },
-            ),
-          ],
-        });
-        const items2 = [headerRow];
+        const items2 = [];
         const statusLine = status.get();
         if (statusLine) {
           items2.push(
@@ -2160,7 +2168,6 @@ var register = (...args) => {
               style: {
                 fontSize: "0.75rem",
                 opacity: "0.6",
-                marginTop: "2px",
               },
             }),
           );
@@ -2233,8 +2240,7 @@ var register = (...args) => {
                   gap: 2,
                   style: {
                     alignItems: "center",
-                    marginTop: "6px",
-                    padding: "6px 8px",
+                    padding: "8px",
                     borderRadius: "4px",
                     background: "rgba(255,255,255,0.03)",
                   },
@@ -2255,7 +2261,7 @@ var register = (...args) => {
                     },
                   ),
                 ],
-                { style: { marginTop: "6px" } },
+                {},
               ),
               tray.flex(
                 [
@@ -2279,7 +2285,8 @@ var register = (...args) => {
             );
           }
         }
-        return tray.stack(items2);
+        if (items2.length === 0) return null;
+        return tray.stack(items2, { gap: 2 });
       }
       const localCount = entries.get().length;
       const jsonOut = serializeCatalog(
@@ -2287,24 +2294,7 @@ var register = (...args) => {
         $storage.get(K_UPDATED) ?? Date.now(),
       );
       const expanded = bindingExpanded.get();
-      const items = [
-        modeHeader("\uD83D\uDD12", "Local mode", {
-          right: [
-            tray.badge("\uD83D\uDCBB this device only", { intent: "gray" }),
-            tray.tooltip(
-              tray.button(expanded ? "↑" : "⚠️", {
-                onClick: "lcm-toggle-binding",
-                size: "sm",
-              }),
-              {
-                text: expanded
-                  ? "Collapse local limitation"
-                  : "Show local limitation",
-              },
-            ),
-          ],
-        }),
-      ];
+      const items = [];
       if (expanded) {
         items.push(
           tray.alert({
@@ -2325,7 +2315,6 @@ var register = (...args) => {
       const hintStyle = {
         fontSize: "0.75rem",
         opacity: "0.6",
-        marginTop: "-4px",
       };
       const renderCodeBlockSection = (opts) => {
         const out = [
@@ -2344,7 +2333,7 @@ var register = (...args) => {
                 },
               ),
             ],
-            { gap: 2, style: { alignItems: "center", marginTop: "10px" } },
+            { gap: 2, style: { alignItems: "center" } },
           ),
         ];
         if (opts.expanded) {
@@ -2364,7 +2353,7 @@ var register = (...args) => {
               ],
               {
                 style: {
-                  padding: "8px 10px",
+                  padding: "8px",
                   borderRadius: "4px",
                   background: "rgba(255,255,255,0.04)",
                   maxHeight: "160px",
@@ -2440,7 +2429,7 @@ var register = (...args) => {
             ),
             ...importButtons,
           ],
-          { gap: 2, style: { alignItems: "end", marginTop: "10px" } },
+          { gap: 2, style: { alignItems: "end" } },
         ),
         tray.text(
           hasLocalData
@@ -2449,7 +2438,7 @@ var register = (...args) => {
           { style: hintStyle },
         ),
       );
-      return tray.stack(items);
+      return tray.stack(items, { gap: 2 });
     }
     function renderList() {
       const allEntries = entries.get();
@@ -2642,7 +2631,6 @@ var register = (...args) => {
             {
               style: {
                 position: "relative",
-                marginTop: "8px",
                 padding: "12px",
                 borderRadius: "8px",
                 border: "1px solid rgba(255,255,255,0.18)",
@@ -2655,41 +2643,44 @@ var register = (...args) => {
           const d = diffCatalog(drift.local, drift.remote);
           const resolveBusy = busyAction.get() === "resolve-drift";
           layers.push(
-            tray.alert({
-              title: "Drift detected",
-              description: `Local has ${ent(drift.local.length)}, remote has ${ent(drift.remote.length)}. ${d.conflicts > 0 ? `${d.conflicts} id(s) in conflict.` : "No id conflicts."} Sync is paused until you resolve — pick one:`,
-              intent: "warning",
-            }),
-          );
-          layers.push(
-            actionBox([
-              tray.flex(
-                [
-                  tray.button(
-                    resolveBusy ? "⏳ Working…" : "\uD83D\uDD00 Merge",
-                    {
-                      onClick: "lcm-drift-merge",
-                      intent: "primary",
-                    },
+            tray.stack(
+              [
+                tray.alert({
+                  title: "Drift detected",
+                  description: `Local has ${ent(drift.local.length)}, remote has ${ent(drift.remote.length)}. ${d.conflicts > 0 ? `${d.conflicts} id(s) in conflict.` : "No id conflicts."} Sync is paused until you resolve — pick one:`,
+                  intent: "warning",
+                }),
+                actionBox([
+                  tray.flex(
+                    [
+                      tray.button(
+                        resolveBusy ? "⏳ Working…" : "\uD83D\uDD00 Merge",
+                        {
+                          onClick: "lcm-drift-merge",
+                          intent: "primary",
+                        },
+                      ),
+                      tray.button("↑ Local wins", {
+                        onClick: "lcm-drift-local-wins",
+                      }),
+                    ],
+                    { gap: 2 },
                   ),
-                  tray.button("↑ Local wins", {
-                    onClick: "lcm-drift-local-wins",
-                  }),
-                ],
-                { gap: 2 },
-              ),
-              tray.flex(
-                [
-                  tray.button("↓ Remote wins", {
-                    onClick: "lcm-drift-remote-wins",
-                  }),
-                  tray.button("✕ Cancel link", {
-                    onClick: "lcm-drift-cancel",
-                  }),
-                ],
-                { gap: 2 },
-              ),
-            ]),
+                  tray.flex(
+                    [
+                      tray.button("↓ Remote wins", {
+                        onClick: "lcm-drift-remote-wins",
+                      }),
+                      tray.button("✕ Cancel link", {
+                        onClick: "lcm-drift-cancel",
+                      }),
+                    ],
+                    { gap: 2 },
+                  ),
+                ]),
+              ],
+              { gap: 2 },
+            ),
           );
         }
         const progressDrift = pendingProgressDrift.get();
@@ -2699,254 +2690,272 @@ var register = (...args) => {
           const remoteCount = Object.keys(progressDrift.remote.manga).length;
           const resolveProgBusy = busyAction.get() === "resolve-progress-drift";
           layers.push(
-            tray.alert({
-              title: "Reading progress drift",
-              description: `Local has ${localCount} ${localCount === 1 ? "entry" : "entries"}, remote has ${remoteCount}. ${pd.conflicts > 0 ? `${pd.conflicts} id(s) in conflict.` : "No id conflicts."}${pd.localOnly + pd.remoteOnly > 0 ? ` ${pd.localOnly} local-only · ${pd.remoteOnly} remote-only.` : ""} Progress sync paused — Merge uses per-entry LWW (recommended); Local/Remote take one side wholesale.`,
-              intent: "warning",
-            }),
-          );
-          layers.push(
-            actionBox([
-              tray.flex(
-                [
-                  tray.button(
-                    resolveProgBusy ? "⏳ Working…" : "\uD83D\uDD00 Merge",
-                    {
-                      onClick: "lcm-progress-drift-merge",
-                      intent: "primary",
-                    },
+            tray.stack(
+              [
+                tray.alert({
+                  title: "Reading progress drift",
+                  description: `Local has ${localCount} ${localCount === 1 ? "entry" : "entries"}, remote has ${remoteCount}. ${pd.conflicts > 0 ? `${pd.conflicts} id(s) in conflict.` : "No id conflicts."}${pd.localOnly + pd.remoteOnly > 0 ? ` ${pd.localOnly} local-only · ${pd.remoteOnly} remote-only.` : ""} Progress sync paused — Merge uses per-entry LWW (recommended); Local/Remote take one side wholesale.`,
+                  intent: "warning",
+                }),
+                actionBox([
+                  tray.flex(
+                    [
+                      tray.button(
+                        resolveProgBusy ? "⏳ Working…" : "\uD83D\uDD00 Merge",
+                        {
+                          onClick: "lcm-progress-drift-merge",
+                          intent: "primary",
+                        },
+                      ),
+                      tray.button("↑ Local wins", {
+                        onClick: "lcm-progress-drift-local-wins",
+                      }),
+                    ],
+                    { gap: 2 },
                   ),
-                  tray.button("↑ Local wins", {
-                    onClick: "lcm-progress-drift-local-wins",
-                  }),
-                ],
-                { gap: 2 },
-              ),
-              tray.flex(
-                [
-                  tray.button("↓ Remote wins", {
-                    onClick: "lcm-progress-drift-remote-wins",
-                  }),
-                  tray.button("✕ Dismiss", {
-                    onClick: "lcm-progress-drift-cancel",
-                  }),
-                ],
-                { gap: 2 },
-              ),
-            ]),
+                  tray.flex(
+                    [
+                      tray.button("↓ Remote wins", {
+                        onClick: "lcm-progress-drift-remote-wins",
+                      }),
+                      tray.button("✕ Dismiss", {
+                        onClick: "lcm-progress-drift-cancel",
+                      }),
+                    ],
+                    { gap: 2 },
+                  ),
+                ]),
+              ],
+              { gap: 2 },
+            ),
           );
         }
-        layers.push(renderSync());
+        const sync = renderSync();
+        if (sync) layers.push(sync);
         if (!drift && !progressDrift) {
-          layers.push(renderProgressSection());
+          layers.push(
+            renderProgressSection({ leadingDivider: layers.length > 0 }),
+          );
         }
-        layers.push(tray.stack(entriesSection));
-        return tray.stack(layers);
+        layers.push(entriesSection);
+        return tray.stack(layers, { gap: 4 });
       }
-      return tray.stack([
-        renderSync(),
-        renderProgressSection(),
-        tray.stack(entriesSection),
-      ]);
+      const localSync = renderSync();
+      return tray.stack(
+        [
+          ...(localSync ? [localSync] : []),
+          renderProgressSection({ leadingDivider: !!localSync }),
+          entriesSection,
+        ],
+        { gap: 4 },
+      );
     }
     function renderForm() {
       const isNew = editingId.get() === 0;
       const gistMode = hasToken() && !!effectiveGistId();
-      return tray.stack([
-        tray.text(isNew ? "New entry" : `Edit #${editingId.get()}`, {
-          style: { fontWeight: "600", fontSize: "1rem", marginBottom: "4px" },
-        }),
-        ...(isNew && gistMode
-          ? [
-              tray.alert({
-                title: "New entries need the unversioned Catalog URL",
-                description:
-                  "New entries only show if the source's Catalog URL is the unversioned gist raw URL (no /<sha>/). Copy it with the \uD83D\uDCCB button in Gist binding.",
-                intent: "info",
-              }),
-            ]
-          : []),
-        tray.text("TITLE *", {
-          style: {
-            fontSize: "0.7rem",
-            fontWeight: "700",
-            opacity: "0.55",
-            letterSpacing: "0.1em",
-            marginBottom: "4px",
-          },
-        }),
-        tray.input("English", {
-          placeholder: "Solo Leveling",
-          fieldRef: fEnglish,
-        }),
-        tray.input("Romaji", {
-          placeholder: "Na Honjaman Level Up",
-          fieldRef: fRomaji,
-        }),
-        tray.input("Native", {
-          placeholder: "나 혼자만 레벨업",
-          fieldRef: fNative,
-        }),
-        tray.select("Preferred display title", {
-          options: PREFERRED_OPTS,
-          fieldRef: fPreferred,
-        }),
-        tray.div([], {
-          style: {
-            borderTop: "1px solid rgba(255,255,255,0.15)",
-            marginTop: "16px",
-            marginBottom: "4px",
-          },
-        }),
-        tray.text("OPTIONAL", {
-          style: {
-            fontSize: "0.7rem",
-            fontWeight: "700",
-            opacity: "0.55",
-            letterSpacing: "0.1em",
-            marginBottom: "4px",
-          },
-        }),
-        tray.input("Synonyms (comma-separated)", {
-          placeholder: "e.g. Alias 1, Alias 2",
-          fieldRef: fSynonyms,
-        }),
-        tray.input("Cover URL", {
-          placeholder: "https://…",
-          fieldRef: fCover,
-        }),
-        tray.input("Banner URL", {
-          placeholder: "https://…",
-          fieldRef: fBanner,
-        }),
-        tray.input("Description", { textarea: true, fieldRef: fDescription }),
-        tray.input("Genres (comma-separated)", {
-          placeholder: "e.g. Action, Adventure",
-          fieldRef: fGenres,
-        }),
-        tray.flex(
-          [
-            tray.div(
-              [
-                tray.select("Status", {
-                  options: STATUS_OPTS,
-                  fieldRef: fStatus,
+      return tray.stack(
+        [
+          tray.text(isNew ? "New entry" : `Edit #${editingId.get()}`, {
+            style: { fontWeight: "600", fontSize: "1rem" },
+          }),
+          ...(isNew && gistMode
+            ? [
+                tray.alert({
+                  title: "New entries need the unversioned Catalog URL",
+                  description:
+                    "New entries only show if the source's Catalog URL is the unversioned gist raw URL (no /<sha>/). Copy it with the \uD83D\uDCCB button in Gist binding.",
+                  intent: "info",
                 }),
-              ],
-              { style: { flex: "1", minWidth: "0" } },
-            ),
-            tray.div(
-              [
-                tray.select("Format", {
-                  options: FORMAT_OPTS,
-                  fieldRef: fFormat,
-                }),
-              ],
-              { style: { flex: "1", minWidth: "0" } },
-            ),
-          ],
-          { gap: 2 },
-        ),
-        tray.input("Chapters", { fieldRef: fChapters }),
-        tray.input("Volumes", { fieldRef: fVolumes }),
-        tray.flex(
-          [
-            tray.div(
-              [
-                tray.input("Start year", {
-                  placeholder: "YYYY",
-                  fieldRef: fYear,
-                }),
-              ],
-              {
-                style: { flex: "1", minWidth: "0" },
-              },
-            ),
-            tray.div(
-              [
-                tray.select("Start month", {
-                  options: MONTH_OPTS,
-                  fieldRef: fMonth,
-                }),
-              ],
-              { style: { flex: "1", minWidth: "0" } },
-            ),
-            tray.div(
-              [tray.input("Start day", { placeholder: "DD", fieldRef: fDay })],
-              {
-                style: { flex: "1", minWidth: "0" },
-              },
-            ),
-          ],
-          { gap: 2 },
-        ),
-        tray.flex(
-          [
-            tray.div(
-              [
-                tray.input("End year", {
-                  placeholder: "YYYY",
-                  fieldRef: fEndYear,
-                }),
-              ],
-              {
-                style: { flex: "1", minWidth: "0" },
-              },
-            ),
-            tray.div(
-              [
-                tray.select("End month", {
-                  options: MONTH_OPTS,
-                  fieldRef: fEndMonth,
-                }),
-              ],
-              { style: { flex: "1", minWidth: "0" } },
-            ),
-            tray.div(
-              [tray.input("End day", { placeholder: "DD", fieldRef: fEndDay })],
-              {
-                style: { flex: "1", minWidth: "0" },
-              },
-            ),
-          ],
-          { gap: 2 },
-        ),
-        tray.input("Country", { placeholder: "e.g. JP", fieldRef: fCountry }),
-        tray.input("Site URL", {
-          placeholder: "https://…",
-          fieldRef: fSiteUrl,
-        }),
-        tray.flex(
-          [
-            tray.div(
-              [
-                tray.input("idMal", {
-                  placeholder: "e.g. 113138",
-                  fieldRef: fIdMal,
-                }),
-              ],
-              { style: { flex: "1", minWidth: "0" } },
-            ),
-            tray.div(
-              [
-                tray.input("Mean score", {
-                  placeholder: "0-100",
-                  fieldRef: fMeanScore,
-                }),
-              ],
-              {
-                style: { flex: "1", minWidth: "0" },
-              },
-            ),
-          ],
-          { gap: 2 },
-        ),
-        tray.switch("Adult", { fieldRef: fIsAdult }),
-        tray.flex([
-          tray.button("Save", { onClick: "lcm-save", intent: "primary" }),
-          tray.button("Cancel", { onClick: "lcm-cancel" }),
-        ]),
-      ]);
+              ]
+            : []),
+          tray.text("TITLE *", {
+            style: {
+              fontSize: "0.7rem",
+              fontWeight: "700",
+              opacity: "0.55",
+              letterSpacing: "0.1em",
+            },
+          }),
+          tray.input("English", {
+            placeholder: "Solo Leveling",
+            fieldRef: fEnglish,
+          }),
+          tray.input("Romaji", {
+            placeholder: "Na Honjaman Level Up",
+            fieldRef: fRomaji,
+          }),
+          tray.input("Native", {
+            placeholder: "나 혼자만 레벨업",
+            fieldRef: fNative,
+          }),
+          tray.select("Preferred display title", {
+            options: PREFERRED_OPTS,
+            fieldRef: fPreferred,
+          }),
+          divider(tray),
+          tray.text("OPTIONAL", {
+            style: {
+              fontSize: "0.7rem",
+              fontWeight: "700",
+              opacity: "0.55",
+              letterSpacing: "0.1em",
+            },
+          }),
+          tray.input("Synonyms (comma-separated)", {
+            placeholder: "e.g. Alias 1, Alias 2",
+            fieldRef: fSynonyms,
+          }),
+          tray.input("Cover URL", {
+            placeholder: "https://…",
+            fieldRef: fCover,
+          }),
+          tray.input("Banner URL", {
+            placeholder: "https://…",
+            fieldRef: fBanner,
+          }),
+          tray.input("Description", { textarea: true, fieldRef: fDescription }),
+          tray.input("Genres (comma-separated)", {
+            placeholder: "e.g. Action, Adventure",
+            fieldRef: fGenres,
+          }),
+          tray.flex(
+            [
+              tray.div(
+                [
+                  tray.select("Status", {
+                    options: STATUS_OPTS,
+                    fieldRef: fStatus,
+                  }),
+                ],
+                { style: { flex: "1", minWidth: "0" } },
+              ),
+              tray.div(
+                [
+                  tray.select("Format", {
+                    options: FORMAT_OPTS,
+                    fieldRef: fFormat,
+                  }),
+                ],
+                { style: { flex: "1", minWidth: "0" } },
+              ),
+            ],
+            { gap: 2 },
+          ),
+          tray.input("Chapters", { fieldRef: fChapters }),
+          tray.input("Volumes", { fieldRef: fVolumes }),
+          tray.flex(
+            [
+              tray.div(
+                [
+                  tray.input("Start year", {
+                    placeholder: "YYYY",
+                    fieldRef: fYear,
+                  }),
+                ],
+                {
+                  style: { flex: "1", minWidth: "0" },
+                },
+              ),
+              tray.div(
+                [
+                  tray.select("Start month", {
+                    options: MONTH_OPTS,
+                    fieldRef: fMonth,
+                  }),
+                ],
+                { style: { flex: "1", minWidth: "0" } },
+              ),
+              tray.div(
+                [
+                  tray.input("Start day", {
+                    placeholder: "DD",
+                    fieldRef: fDay,
+                  }),
+                ],
+                {
+                  style: { flex: "1", minWidth: "0" },
+                },
+              ),
+            ],
+            { gap: 2 },
+          ),
+          tray.flex(
+            [
+              tray.div(
+                [
+                  tray.input("End year", {
+                    placeholder: "YYYY",
+                    fieldRef: fEndYear,
+                  }),
+                ],
+                {
+                  style: { flex: "1", minWidth: "0" },
+                },
+              ),
+              tray.div(
+                [
+                  tray.select("End month", {
+                    options: MONTH_OPTS,
+                    fieldRef: fEndMonth,
+                  }),
+                ],
+                { style: { flex: "1", minWidth: "0" } },
+              ),
+              tray.div(
+                [
+                  tray.input("End day", {
+                    placeholder: "DD",
+                    fieldRef: fEndDay,
+                  }),
+                ],
+                {
+                  style: { flex: "1", minWidth: "0" },
+                },
+              ),
+            ],
+            { gap: 2 },
+          ),
+          tray.input("Country", { placeholder: "e.g. JP", fieldRef: fCountry }),
+          tray.input("Site URL", {
+            placeholder: "https://…",
+            fieldRef: fSiteUrl,
+          }),
+          tray.flex(
+            [
+              tray.div(
+                [
+                  tray.input("idMal", {
+                    placeholder: "e.g. 113138",
+                    fieldRef: fIdMal,
+                  }),
+                ],
+                { style: { flex: "1", minWidth: "0" } },
+              ),
+              tray.div(
+                [
+                  tray.input("Mean score", {
+                    placeholder: "0-100",
+                    fieldRef: fMeanScore,
+                  }),
+                ],
+                {
+                  style: { flex: "1", minWidth: "0" },
+                },
+              ),
+            ],
+            { gap: 2 },
+          ),
+          tray.switch("Adult", { fieldRef: fIsAdult }),
+          tray.flex(
+            [
+              tray.button("Save", { onClick: "lcm-save", intent: "primary" }),
+              tray.button("Cancel", { onClick: "lcm-cancel" }),
+            ],
+            { gap: 2 },
+          ),
+        ],
+        { gap: 2 },
+      );
     }
     const currentLocalId = ctx.state(0);
     const localIdFromMediaId = (mediaId) => {
@@ -3069,8 +3078,49 @@ var register = (...args) => {
       disarmDelete();
     });
     tray.render(() => {
-      if (view.get() === "form") return renderForm();
-      return renderList();
+      if (view.get() === "form") {
+        return tray.stack([trayHeader(tray), renderForm()], { gap: 4 });
+      }
+      const gid = effectiveGistId();
+      const expanded = bindingExpanded.get();
+      const drifting = hasDrift();
+      const right = hasToken()
+        ? [
+            gid
+              ? tray.badge("\uD83D\uDD17 Linked", { intent: "success" })
+              : tray.badge("\uD83D\uDD13 Not linked", { intent: "gray" }),
+            tray.tooltip(
+              tray.button(expanded ? "↑" : "✏️", {
+                onClick: "lcm-toggle-binding",
+                size: "sm",
+                disabled: drifting,
+              }),
+              {
+                text: expanded
+                  ? "Collapse gist details"
+                  : "Manage gist binding",
+              },
+            ),
+          ]
+        : [
+            tray.badge("\uD83D\uDCBB this device only", { intent: "gray" }),
+            tray.tooltip(
+              tray.button(expanded ? "↑" : "⚠️", {
+                onClick: "lcm-toggle-binding",
+                size: "sm",
+              }),
+              {
+                text: expanded
+                  ? "Collapse local limitation"
+                  : "Show local limitation",
+              },
+            ),
+          ];
+      const header = trayHeader(tray, {
+        subtitle: hasToken() ? "Gist mode" : "Local mode",
+        right,
+      });
+      return tray.stack([header, renderList()], { gap: 4 });
     });
   };
   return register2(...args);
@@ -3431,7 +3481,7 @@ var sharedLib = (...args) => {
         headers: this.headers(),
         body: JSON.stringify({
           public: false,
-          description: "[seanime] local-catalog — entries + reading progress",
+          description: "Seanime local catalog and progress sync",
           files: { [filename]: { content } },
         }),
       });

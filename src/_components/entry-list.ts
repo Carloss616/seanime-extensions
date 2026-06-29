@@ -63,7 +63,7 @@ export interface EntryListSectionConfig {
 export function renderEntryListSection(
   tray: $ui.Tray,
   cfg: EntryListSectionConfig,
-): unknown[] {
+): unknown {
   const coverBox = (src?: string) =>
     src
       ? tray.img({
@@ -181,10 +181,11 @@ export function renderEntryListSection(
         }),
         tray.flex(subLineChildren, {
           gap: 0,
-          style: { alignItems: "center", marginTop: "2px" },
+          style: { alignItems: "center" },
         }),
       ],
-      { style: { flex: "1", minWidth: "0" } },
+      // gap: 1 (4px) between title and its metadata sub-line.
+      { gap: 1, style: { flex: "1", minWidth: "0" } },
     );
     const rowChildren: unknown[] = [coverBox(row.cover), middle];
     for (const a of row.actions ?? []) rowChildren.push(a);
@@ -192,7 +193,7 @@ export function renderEntryListSection(
       gap: 2,
       style: {
         alignItems: "center",
-        padding: "6px 8px",
+        padding: "8px",
         borderRadius: "4px",
         background: "rgba(255,255,255,0.02)",
         opacity: row.opacity != null ? String(row.opacity) : "1",
@@ -222,7 +223,7 @@ export function renderEntryListSection(
     ],
     {
       gap: 2,
-      style: { alignItems: "center", marginTop: "10px", marginBottom: "6px" },
+      style: { alignItems: "center" },
     },
   );
 
@@ -256,7 +257,7 @@ export function renderEntryListSection(
     out.push(
       tray.flex(searchRowChildren, {
         gap: 2,
-        style: { alignItems: "end", marginBottom: "6px" },
+        style: { alignItems: "end" },
       }),
     );
   }
@@ -268,7 +269,7 @@ export function renderEntryListSection(
           fontSize: "0.8rem",
           opacity: "0.5",
           textAlign: "center",
-          padding: "10px 0",
+          padding: "8px 0",
         },
       }),
     );
@@ -279,7 +280,7 @@ export function renderEntryListSection(
           fontSize: "0.8rem",
           opacity: "0.5",
           textAlign: "center",
-          padding: "10px 0",
+          padding: "8px 0",
         },
       }),
     );
@@ -287,5 +288,8 @@ export function renderEntryListSection(
     for (const row of cfg.rows) out.push(entryRow(row));
   }
 
-  return out;
+  // A self-contained section: 8px internal rhythm regardless of how the caller
+  // composes it (so the page-level gap can't leak into the rows). The leading
+  // divider, when present, is the first child and the gap spaces it.
+  return tray.stack(out, { gap: 2 });
 }

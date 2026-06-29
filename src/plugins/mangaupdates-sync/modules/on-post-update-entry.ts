@@ -4,6 +4,7 @@ import {
 } from "../../../_utils/custom-source-id";
 import { SHARED_LIB_NAME, SOURCE_PREFIX } from "../utils/constants";
 import { getMULink, setMULink } from "../utils/link-store";
+import { mangaTitles, pickBestMatch } from "../utils/match";
 import type { sharedLib } from "./shared-lib";
 
 export const onPostUpdateEntry = (
@@ -71,22 +72,27 @@ export const onPostUpdateEntry = (
       }
 
       // 3. Opt-in title-search fallback. Default OFF for new installs (safer).
-      //    Caches the first hit as a link (top match — may be wrong, since it's
-      //    an unconfirmed title guess rather than a manual pick).
+      //    Verifies the candidate against ALL known AniList titles with
+      //    seanime's native scanner matcher and only auto-links above a
+      //    similarity threshold — the bare top hit matches badly (spin-offs,
+      //    adaptations, partial-name series) and a wrong link gets cached.
       if (
         !externalId &&
         ($getUserPreference("autoMatchFallback") ?? "false") === "true"
       ) {
-        const title =
-          manga?.title &&
-          (manga.title.english ||
-            manga.title.romaji ||
-            manga.title.userPreferred);
-        if (title) {
-          const match = (await mu.search(title, 25))[0];
+        const titles = mangaTitles(manga);
+        if (titles.length) {
+          const match = pickBestMatch(titles, await mu.search(titles[0], 25));
           if (match) {
             externalId = match.id;
             setMULink(mediaId, { ...match, linkedAt: Date.now() });
+            log.info(
+              `auto-matched media ${mediaId} -> MU ${match.id} "${match.title}"`,
+            );
+          } else {
+            log.warn(
+              `auto-match: no MU result cleared the similarity threshold for "${titles[0]}"`,
+            );
           }
         }
       }

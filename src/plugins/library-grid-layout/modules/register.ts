@@ -1,4 +1,4 @@
-import { GITHUB_RAW_WORKSPACE } from "../../../_utils/constants";
+import { trayHeader } from "../../../_components/tray-header";
 
 // Tray UI that overrides the column count of seanime's media library grids
 // (manga + anime), per screen-size scope. seanime fixes columns per breakpoint
@@ -143,10 +143,7 @@ export const register = (ctx: $ui.Context) => {
     applyToGrids(grids, cfg);
   });
 
-  const tray = ctx.newTray({
-    iconUrl: `${GITHUB_RAW_WORKSPACE}/src/plugins/library-grid-layout/assets/icon.png`,
-    withContent: true,
-  });
+  const tray = ctx.newTray({ iconUrl: __MANIFEST_ICON__, withContent: true });
 
   tray.render(() => {
     const usingDefault = useDefault.get();
@@ -173,7 +170,7 @@ export const register = (ctx: $ui.Context) => {
                 style: { fontSize: "0.68rem", opacity: "0.5" },
               }),
             ],
-            { gap: 0 },
+            { gap: 1 },
           ),
           tray.flex(
             [
@@ -223,30 +220,9 @@ export const register = (ctx: $ui.Context) => {
         .lgl-monitor { border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; padding: 12px 12px 8px; background: rgba(255,255,255,0.04); }
         .lgl-screen { display: grid; gap: 6px; }
         .lgl-card { aspect-ratio: 3 / 4; border-radius: 5px; background: linear-gradient(160deg, rgba(167,139,250,0.85), rgba(124,58,237,0.85)); box-shadow: 0 1px 2px rgba(0,0,0,0.25); }
-        .lgl-caption { margin-top: 10px; font-size: 0.7rem; opacity: 0.55; text-align: center; }
+        .lgl-caption { margin-top: 8px; font-size: 0.7rem; opacity: 0.55; text-align: center; }
         .lgl-heading { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.55; }
       `),
-
-      tray.flex(
-        [
-          tray.text("Library grid columns", {
-            style: { fontWeight: "700", fontSize: "1.05rem" },
-          }),
-          usingDefault
-            ? tray.badge("seanime default", { intent: "gray", size: "md" })
-            : tray.badge(`${active.label}: ${activeN}`, {
-                intent: "primary",
-                size: "md",
-              }),
-        ],
-        { style: { justifyContent: "space-between", alignItems: "center" } },
-      ),
-      tray.text(
-        "Cards per row in the manga & anime libraries, per screen size.",
-        {
-          style: { fontSize: "0.8rem", opacity: "0.6" },
-        },
-      ),
 
       tray.switch("Use seanime's default layout", {
         value: usingDefault,
@@ -288,8 +264,15 @@ export const register = (ctx: $ui.Context) => {
           { className: "lgl-monitor" },
         ),
 
-        tray.text("Adjust each size", { className: "lgl-heading" }),
-        tray.stack(SCOPES.map(scopeRow), { gap: 1 }),
+        // Heading + its scope rows stay grouped (8px); the page gap (16px)
+        // separates this group from the surrounding sections.
+        tray.stack(
+          [
+            tray.text("Adjust each size", { className: "lgl-heading" }),
+            tray.stack(SCOPES.map(scopeRow), { gap: 2 }),
+          ],
+          { gap: 2 },
+        ),
 
         tray.flex(
           [
@@ -311,6 +294,22 @@ export const register = (ctx: $ui.Context) => {
       );
     }
 
-    return tray.stack(items, { gap: 4 });
+    return tray.stack(
+      [
+        trayHeader(tray, {
+          subtitle: "Columns per screen size",
+          right: [
+            usingDefault
+              ? tray.badge("seanime default", { intent: "gray", size: "md" })
+              : tray.badge(`${active.label}: ${activeN}`, {
+                  intent: "primary",
+                  size: "md",
+                }),
+          ],
+        }),
+        ...items,
+      ],
+      { gap: 4 },
+    );
   });
 };

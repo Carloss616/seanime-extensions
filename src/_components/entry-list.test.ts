@@ -93,13 +93,15 @@ describe("renderEntryListSection — header & search", () => {
   });
 
   test("prepends a leading divider by default", () => {
+    // Returns a self-contained stack; its first child is the divider div.
     const out = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [{ title: "A" }],
       totalCount: 1,
       searchActive: false,
-    }) as FakeNode[];
-    const first = out[0];
+    }) as FakeNode;
+    expect(out.kind).toBe("stack");
+    const first = (out.children as FakeNode[])[0];
     expect(first.kind).toBe("div");
     expect(
       (first.opts?.style as Record<string, string> | undefined)?.borderTop,
@@ -113,11 +115,11 @@ describe("renderEntryListSection — header & search", () => {
       totalCount: 1,
       searchActive: false,
       leadingDivider: false,
-    }) as FakeNode[];
-    // First node is now the header flex, not the divider div.
-    expect(out[0].kind).toBe("flex");
+    }) as FakeNode;
+    // First child is now the header flex, not the divider div.
+    expect((out.children as FakeNode[])[0].kind).toBe("flex");
     expect(
-      out.some(
+      walk(out).some(
         (n) =>
           n.kind === "div" &&
           (n.opts?.style as Record<string, string> | undefined)?.borderTop !==

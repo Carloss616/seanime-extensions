@@ -12,13 +12,6 @@ export const SHARED_LIB_NAME = __MANIFEST_ID__;
 // hook events against this prefix to skip non-local-catalog entries.
 export const SOURCE_PREFIX = "ext_custom_source_local-catalog";
 
-// Manifest id of the sibling custom-source. The plugin uses this with
-// `ctx.extensions.disable` / `.enable` to flush the custom-source's in-
-// memory cache after pushing a new catalog to the gist — the custom-source
-// holds parsed entries for `cacheMinutes` and there's no cross-extension
-// channel to invalidate it otherwise.
-export const CUSTOM_SOURCE_ID = "local-catalog";
-
 // Gist file names (both files live in the same gist — see README).
 export const CATALOG_FILENAME = "seanime-local-catalog.json";
 export const PROGRESS_FILENAME = "seanime-local-progress.json";
