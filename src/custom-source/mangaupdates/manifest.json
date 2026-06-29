@@ -1,7 +1,7 @@
 {
   "id": "mangaupdates",
   "name": "MangaUpdates",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "manifestURI": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/custom-source/mangaupdates/manifest.json",
   "language": "typescript",
   "type": "custom-source",

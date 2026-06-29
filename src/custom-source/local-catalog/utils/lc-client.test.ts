@@ -176,7 +176,10 @@ describe("LCClient.loadCatalog", () => {
     await client.loadCatalog();
     fail = true;
     nowBox.t = 11 * 60000;
+    const realError = console.error;
+    console.error = () => {}; // the failed-refetch path logs by design; mute it
     const result = await client.loadCatalog();
+    console.error = realError;
     expect(result.map((e) => e.id)).toEqual([1]); // kept the stale entry
   });
 
