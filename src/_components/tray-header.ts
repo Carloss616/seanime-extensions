@@ -93,15 +93,9 @@ export function trayHeader(
     );
   }
 
-  // paddingBottom 8px sets the gap between the header content and the rule;
-  // spacing below the rule comes from the parent stack's gap.
-  return tray.div(
-    [tray.flex(row, { gap: 3, style: { alignItems: "center" } })],
-    {
-      style: {
-        paddingBottom: "8px",
-        borderBottom: "1px solid rgba(255,255,255,0.1)",
-      },
-    },
-  );
+  // No border/padding of its own: the caller emits a `divider(tray)` right
+  // after this header (page-stack siblings), so the stack's gap spaces the rule
+  // equally on both sides — the uniform rhythm (see CLAUDE.md). Returns just the
+  // identity row.
+  return tray.flex(row, { gap: 3, style: { alignItems: "center" } });
 }

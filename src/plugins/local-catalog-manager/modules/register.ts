@@ -1,8 +1,9 @@
-import { divider } from "../../../_components/divider";
+import { divider, joinDividers } from "../../../_components/divider";
 import {
   type EntryListRow,
   renderEntryListSection,
 } from "../../../_components/entry-list";
+import { LABEL_STYLE } from "../../../_components/text";
 import { trayHeader } from "../../../_components/tray-header";
 import { statusToPill } from "../../../_utils/anilist-status";
 import {
@@ -1722,15 +1723,7 @@ export const register = (ctx: $ui.Context) => {
   ];
 
   const sectionHeader = (label: string) =>
-    tray.text(label, {
-      style: {
-        fontSize: "0.7rem",
-        fontWeight: "700",
-        opacity: "0.55",
-        letterSpacing: "0.1em",
-      },
-    });
-  const sectionDivider = () => divider(tray);
+    tray.text(label, { style: LABEL_STYLE });
 
   const statCard = (value: string, label: string) =>
     tray.stack(
@@ -1742,14 +1735,7 @@ export const register = (ctx: $ui.Context) => {
             lineHeight: "1.3",
           },
         }),
-        tray.text(label, {
-          style: {
-            fontSize: "0.65rem",
-            opacity: "0.6",
-            textTransform: "uppercase",
-            letterSpacing: "0.08em",
-          },
-        }),
+        tray.text(label, { style: LABEL_STYLE }),
       ],
       {
         gap: 1,
@@ -1764,7 +1750,7 @@ export const register = (ctx: $ui.Context) => {
       },
     );
 
-  function renderProgressSection(opts: { leadingDivider?: boolean } = {}) {
+  function renderProgressSection() {
     // Header row: section title on left, reload (gist only) + orphan toggle
     // on right. In local mode the stat cards still work (progress is cached
     // in $storage by the hooks); the reload button hides because there's no
@@ -1800,7 +1786,6 @@ export const register = (ctx: $ui.Context) => {
       );
     }
     const sub: unknown[] = [
-      ...(opts.leadingDivider === false ? [] : [sectionDivider()]),
       tray.flex(
         [
           tray.div([sectionHeader("📖 READING PROGRESS")], {
@@ -2541,28 +2526,23 @@ export const register = (ctx: $ui.Context) => {
       // READING PROGRESS goes BEFORE entries — it's the "live state"
       // surface (stats, drift, orphans). Hidden while any drift is pending
       // (catalog drift first, progress drift second — both have their own
-      // banner above and the section's buttons would bail anyway). Its leading
-      // divider is suppressed when it's the first section (nothing above but
-      // the header, whose bottom border already separates).
+      // banner above and the section's buttons would bail anyway).
       if (!drift && !progressDrift) {
-        layers.push(
-          renderProgressSection({ leadingDivider: layers.length > 0 }),
-        );
+        layers.push(renderProgressSection());
       }
       layers.push(entriesSection);
-      return tray.stack(layers, { gap: 4 });
+      // joinDividers drops a rule between each present block; the page gap (12px)
+      // spaces every divider equally on both sides.
+      return tray.stack(joinDividers(tray, layers), { gap: 3 });
     }
     // Local mode: header + callout + JSON I/O → progress section → entries.
     // Progress works locally (hooks save to $storage); the reload button
     // hides itself in local mode but stat cards + orphan cleanup remain.
+    // renderSync() may be null → joinDividers skips it (no stray divider).
     const localSync = renderSync();
     return tray.stack(
-      [
-        ...(localSync ? [localSync] : []),
-        renderProgressSection({ leadingDivider: !!localSync }),
-        entriesSection,
-      ],
-      { gap: 4 },
+      joinDividers(tray, [localSync, renderProgressSection(), entriesSection]),
+      { gap: 3 },
     );
   }
 
@@ -2587,14 +2567,7 @@ export const register = (ctx: $ui.Context) => {
               }),
             ]
           : []),
-        tray.text("TITLE *", {
-          style: {
-            fontSize: "0.7rem",
-            fontWeight: "700",
-            opacity: "0.55",
-            letterSpacing: "0.1em",
-          },
-        }),
+        tray.text("TITLE *", { style: LABEL_STYLE }),
         tray.input("English", {
           placeholder: "Solo Leveling",
           fieldRef: fEnglish,
@@ -2612,14 +2585,7 @@ export const register = (ctx: $ui.Context) => {
           fieldRef: fPreferred,
         }),
         divider(tray),
-        tray.text("OPTIONAL", {
-          style: {
-            fontSize: "0.7rem",
-            fontWeight: "700",
-            opacity: "0.55",
-            letterSpacing: "0.1em",
-          },
-        }),
+        tray.text("OPTIONAL", { style: LABEL_STYLE }),
         tray.input("Synonyms (comma-separated)", {
           placeholder: "e.g. Alias 1, Alias 2",
           fieldRef: fSynonyms,
@@ -2937,7 +2903,9 @@ export const register = (ctx: $ui.Context) => {
   tray.render(() => {
     // Form view keeps a bare identity header (the form has its own title).
     if (view.get() === "form") {
-      return tray.stack([trayHeader(tray), renderForm()], { gap: 4 });
+      return tray.stack(joinDividers(tray, [trayHeader(tray), renderForm()]), {
+        gap: 3,
+      });
     }
     // List view folds the mode + linked status + binding toggle (was a
     // separate modeHeader row inside renderSync) into the identity header.
@@ -2978,6 +2946,6 @@ export const register = (ctx: $ui.Context) => {
       subtitle: hasToken() ? "Gist mode" : "Local mode",
       right,
     });
-    return tray.stack([header, renderList()], { gap: 4 });
+    return tray.stack(joinDividers(tray, [header, renderList()]), { gap: 3 });
   });
 };

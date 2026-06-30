@@ -1,3 +1,5 @@
+import { divider } from "../../../_components/divider";
+import { CAPTION_STYLE, LABEL_STYLE } from "../../../_components/text";
 import { trayHeader } from "../../../_components/tray-header";
 
 // Tray UI that overrides the column count of seanime's media library grids
@@ -167,7 +169,7 @@ export const register = (ctx: $ui.Context) => {
                 style: { fontWeight: "600", fontSize: "0.9rem" },
               }),
               tray.text(s.min === 0 ? "any width" : `≥ ${s.min}px`, {
-                style: { fontSize: "0.68rem", opacity: "0.5" },
+                style: CAPTION_STYLE,
               }),
             ],
             { gap: 1 },
@@ -204,7 +206,7 @@ export const register = (ctx: $ui.Context) => {
           style: {
             justifyContent: "space-between",
             alignItems: "center",
-            padding: "8px 10px",
+            padding: "8px 12px",
             borderRadius: "8px",
             background: isActive ? "rgba(124,58,237,0.18)" : "transparent",
             border: isActive
@@ -217,11 +219,10 @@ export const register = (ctx: $ui.Context) => {
 
     const items: unknown[] = [
       tray.css(`
-        .lgl-monitor { border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; padding: 12px 12px 8px; background: rgba(255,255,255,0.04); }
-        .lgl-screen { display: grid; gap: 6px; }
+        .lgl-monitor { display: flex; flex-direction: column; gap: 8px; border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; padding: 12px 12px 8px; background: rgba(255,255,255,0.04); }
+        .lgl-screen { display: grid; gap: 4px; }
         .lgl-card { aspect-ratio: 3 / 4; border-radius: 5px; background: linear-gradient(160deg, rgba(167,139,250,0.85), rgba(124,58,237,0.85)); box-shadow: 0 1px 2px rgba(0,0,0,0.25); }
-        .lgl-caption { margin-top: 8px; font-size: 0.7rem; opacity: 0.55; text-align: center; }
-        .lgl-heading { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.55; }
+        .lgl-caption { font-size: 0.7rem; opacity: 0.55; text-align: center; }
       `),
 
       tray.switch("Use seanime's default layout", {
@@ -268,7 +269,7 @@ export const register = (ctx: $ui.Context) => {
         // separates this group from the surrounding sections.
         tray.stack(
           [
-            tray.text("Adjust each size", { className: "lgl-heading" }),
+            tray.text("Adjust each size", { style: LABEL_STYLE }),
             tray.stack(SCOPES.map(scopeRow), { gap: 2 }),
           ],
           { gap: 2 },
@@ -307,9 +308,10 @@ export const register = (ctx: $ui.Context) => {
                 }),
           ],
         }),
+        divider(tray),
         ...items,
       ],
-      { gap: 4 },
+      { gap: 3 },
     );
   });
 };

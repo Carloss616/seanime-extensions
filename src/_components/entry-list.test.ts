@@ -92,8 +92,9 @@ describe("renderEntryListSection — header & search", () => {
     expect(argsOf(walk(out), "text")).toContain("LINKED (1 / 3)");
   });
 
-  test("prepends a leading divider by default", () => {
-    // Returns a self-contained stack; its first child is the divider div.
+  test("never emits its own divider — header flex is the first child", () => {
+    // Dividers are now page-stack siblings emitted by the caller (joinDividers),
+    // so the section itself contains no leading rule.
     const out = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
       ...baseCfg,
       rows: [{ title: "A" }],
@@ -101,22 +102,6 @@ describe("renderEntryListSection — header & search", () => {
       searchActive: false,
     }) as FakeNode;
     expect(out.kind).toBe("stack");
-    const first = (out.children as FakeNode[])[0];
-    expect(first.kind).toBe("div");
-    expect(
-      (first.opts?.style as Record<string, string> | undefined)?.borderTop,
-    ).toBeDefined();
-  });
-
-  test("omits the leading divider when leadingDivider is false", () => {
-    const out = renderEntryListSection(fakeTray() as unknown as $ui.Tray, {
-      ...baseCfg,
-      rows: [{ title: "A" }],
-      totalCount: 1,
-      searchActive: false,
-      leadingDivider: false,
-    }) as FakeNode;
-    // First child is now the header flex, not the divider div.
     expect((out.children as FakeNode[])[0].kind).toBe("flex");
     expect(
       walk(out).some(

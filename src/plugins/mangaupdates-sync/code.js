@@ -176,6 +176,22 @@ var register = (...args) => {
       style: { borderTop: "1px solid rgba(255,255,255,0.1)" },
     });
   }
+  function joinDividers(tray, blocks) {
+    const out = [];
+    for (const b of blocks) {
+      if (b == null) continue;
+      if (out.length > 0) out.push(divider(tray));
+      out.push(b);
+    }
+    return out;
+  }
+  var LABEL_STYLE = {
+    fontSize: "0.7rem",
+    fontWeight: "700",
+    opacity: "0.55",
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+  };
   function renderEntryListSection(tray, cfg) {
     const coverBox = (src) =>
       src
@@ -311,12 +327,7 @@ var register = (...args) => {
         tray.div(
           [
             tray.text(`${cfg.headerLabel} (${headerCount})`, {
-              style: {
-                fontSize: "0.7rem",
-                fontWeight: "700",
-                opacity: "0.55",
-                letterSpacing: "0.1em",
-              },
+              style: LABEL_STYLE,
             }),
           ],
           { style: { flex: "1", alignSelf: "center" } },
@@ -329,7 +340,6 @@ var register = (...args) => {
       },
     );
     const out = [];
-    if (cfg.leadingDivider !== false) out.push(divider(tray));
     out.push(header);
     if (cfg.showSearchRow !== false && cfg.totalCount > 0) {
       const searchRowChildren = [
@@ -437,15 +447,7 @@ var register = (...args) => {
         }),
       );
     }
-    return tray.div(
-      [tray.flex(row, { gap: 3, style: { alignItems: "center" } })],
-      {
-        style: {
-          paddingBottom: "8px",
-          borderBottom: "1px solid rgba(255,255,255,0.1)",
-        },
-      },
-    );
+    return tray.flex(row, { gap: 3, style: { alignItems: "center" } });
   }
   var STATUS_INTENT = {
     RELEASING: "success",
@@ -753,7 +755,7 @@ var register = (...args) => {
         ],
       };
     };
-    const renderLinkedList = (inlineActions = [], leadingDivider = true) => {
+    const renderLinkedList = (inlineActions = []) => {
       const filter = linkedFilter.get().toLowerCase();
       const allLinked = listMULinkIds()
         .map((mediaId) => ({ mediaId, link: getMULink(mediaId) }))
@@ -776,7 +778,6 @@ var register = (...args) => {
         onSearch: "mu-linked-search",
         onClearSearch: "mu-linked-search-clear",
         inlineActions,
-        leadingDivider,
         emptyText:
           "No linked manga yet. Open a manga entry page and use the “Link to MangaUpdates” button.",
         noMatchText: `No linked manga match "${linkedFilter.get()}".`,
@@ -785,7 +786,6 @@ var register = (...args) => {
     const renderSearchUI = (media, id, link) => {
       const out = [];
       const currentInput = (searchInputRef.current || "").trim();
-      out.push(divider(tray));
       const searchRow = [
         tray.div(
           [tray.input("Search MangaUpdates", { fieldRef: searchInputRef })],
@@ -920,7 +920,7 @@ var register = (...args) => {
     tray.render(() => {
       linkedRefresh.get();
       const expanded = showAllLinked.get();
-      const items = [];
+      const blocks = [];
       const id = currentMediaId.get();
       let media;
       if (id) {
@@ -950,7 +950,7 @@ var register = (...args) => {
           intent: "gray-subtle",
         });
         if (link) {
-          items.push(
+          blocks.push(
             renderEntryListSection(tray, {
               headerLabel: "LINKED",
               rows: [buildLinkedRow(id, link)],
@@ -964,25 +964,27 @@ var register = (...args) => {
               emptyText: "",
               noMatchText: "",
               showSearchRow: false,
-              leadingDivider: false,
             }),
           );
         } else {
-          items.push(tray.text("Not linked yet."));
-          if (totalLinked > 0) items.push(showAllBtn);
+          const notLinked = [tray.text("Not linked yet.")];
+          if (totalLinked > 0) notLinked.push(showAllBtn);
+          blocks.push(tray.stack(notLinked, { gap: 2 }));
         }
-        items.push(renderSearchUI(media, id, link));
+        blocks.push(renderSearchUI(media, id, link));
       } else {
+        const notes = [];
         if (id && media && isCustomSource) {
-          items.push(
+          notes.push(
             tray.text(
               "This entry already comes from the MangaUpdates custom-source.",
             ),
             tray.text("Sync uses the embedded series_id — no linking needed."),
           );
         } else if (id && !media) {
-          items.push(tray.text(`Could not load entry #${id}.`));
+          notes.push(tray.text(`Could not load entry #${id}.`));
         }
+        if (notes.length > 0) blocks.push(tray.stack(notes, { gap: 2 }));
         const collapseBtn =
           onEntry && expanded
             ? [
@@ -993,10 +995,10 @@ var register = (...args) => {
                 }),
               ]
             : [];
-        items.push(renderLinkedList(collapseBtn, items.length > 0));
+        blocks.push(renderLinkedList(collapseBtn));
       }
       return tray.stack(
-        [
+        joinDividers(tray, [
           trayHeader(tray, {
             subtitle: entryTitle,
             right: onEntry
@@ -1007,9 +1009,9 @@ var register = (...args) => {
                 ]
               : undefined,
           }),
-          ...items,
-        ],
-        { gap: 4 },
+          ...blocks,
+        ]),
+        { gap: 3 },
       );
     });
   };

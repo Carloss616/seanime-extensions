@@ -1,4 +1,4 @@
-import { divider } from "../../../_components/divider";
+import { joinDividers } from "../../../_components/divider";
 import {
   type EntryListRow,
   renderEntryListSection,
@@ -381,12 +381,9 @@ export const register = (ctx: $ui.Context) => {
   };
 
   // The full, locally-filterable "LINKED (N)" list. inlineActions lets the
-  // caller drop a header button (e.g. the "Show current" collapse toggle);
-  // leadingDivider is suppressed when the list is rendered first.
-  const renderLinkedList = (
-    inlineActions: unknown[] = [],
-    leadingDivider = true,
-  ): unknown => {
+  // caller drop a header button (e.g. the "Show current" collapse toggle).
+  // The caller separates it from siblings via joinDividers — no leading rule here.
+  const renderLinkedList = (inlineActions: unknown[] = []): unknown => {
     const filter = linkedFilter.get().toLowerCase();
     // listMULinkIds() enumerates only top-level `mu_link_<id>` keys — it skips
     // the dotted sub-keys $storage produces for object values
@@ -415,7 +412,6 @@ export const register = (ctx: $ui.Context) => {
       onSearch: "mu-linked-search",
       onClearSearch: "mu-linked-search-clear",
       inlineActions,
-      leadingDivider,
       emptyText:
         "No linked manga yet. Open a manga entry page and use the “Link to MangaUpdates” button.",
       noMatchText: `No linked manga match "${linkedFilter.get()}".`,
@@ -431,8 +427,6 @@ export const register = (ctx: $ui.Context) => {
   ): unknown => {
     const out: unknown[] = [];
     const currentInput = (searchInputRef.current || "").trim();
-
-    out.push(divider(tray));
 
     const searchRow: unknown[] = [
       tray.div(
@@ -587,7 +581,7 @@ export const register = (ctx: $ui.Context) => {
     // re-render.
     linkedRefresh.get();
     const expanded = showAllLinked.get();
-    const items: unknown[] = [];
+    const blocks: unknown[] = [];
 
     const id = currentMediaId.get();
     let media: $app.AL_BaseManga | undefined;
@@ -626,7 +620,7 @@ export const register = (ctx: $ui.Context) => {
       if (link) {
         // Single-row section for this entry's link, with the "Show all (N)"
         // toggle in its header.
-        items.push(
+        blocks.push(
           renderEntryListSection(tray, {
             headerLabel: "LINKED",
             rows: [buildLinkedRow(id, link)],
@@ -640,28 +634,31 @@ export const register = (ctx: $ui.Context) => {
             emptyText: "",
             noMatchText: "",
             showSearchRow: false,
-            // First content under the header — its bottom border already separates.
-            leadingDivider: false,
           }),
         );
       } else {
-        items.push(tray.text("Not linked yet."));
-        if (totalLinked > 0) items.push(showAllBtn);
+        // Group the note + optional "Show all" button into one block so the
+        // page divider lands above the pair, not between them.
+        const notLinked: unknown[] = [tray.text("Not linked yet.")];
+        if (totalLinked > 0) notLinked.push(showAllBtn);
+        blocks.push(tray.stack(notLinked, { gap: 2 }));
       }
 
-      items.push(renderSearchUI(media, id, link));
+      blocks.push(renderSearchUI(media, id, link));
     } else {
       // ---- Full-list mode: not a linkable entry, or expanded via toggle ----
+      const notes: unknown[] = [];
       if (id && media && isCustomSource) {
-        items.push(
+        notes.push(
           tray.text(
             "This entry already comes from the MangaUpdates custom-source.",
           ),
           tray.text("Sync uses the embedded series_id — no linking needed."),
         );
       } else if (id && !media) {
-        items.push(tray.text(`Could not load entry #${id}.`));
+        notes.push(tray.text(`Could not load entry #${id}.`));
       }
+      if (notes.length > 0) blocks.push(tray.stack(notes, { gap: 2 }));
       const collapseBtn =
         onEntry && expanded
           ? [
@@ -672,14 +669,11 @@ export const register = (ctx: $ui.Context) => {
               }),
             ]
           : [];
-      // Suppress the leading divider when the list is the first thing in the
-      // tray (no custom-source/load note above it) — else it shows as an
-      // empty top line.
-      items.push(renderLinkedList(collapseBtn, items.length > 0));
+      blocks.push(renderLinkedList(collapseBtn));
     }
 
     return tray.stack(
-      [
+      joinDividers(tray, [
         trayHeader(tray, {
           subtitle: entryTitle,
           right: onEntry
@@ -690,9 +684,9 @@ export const register = (ctx: $ui.Context) => {
               ]
             : undefined,
         }),
-        ...items,
-      ],
-      { gap: 4 },
+        ...blocks,
+      ]),
+      { gap: 3 },
     );
   });
 };

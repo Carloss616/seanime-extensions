@@ -14,7 +14,7 @@
 // Trailing `actions` (edit / delete / unlink / apply buttons) are still passed
 // pre-built, because their onClick handlers close over per-plugin state.
 
-import { divider } from "./divider";
+import { LABEL_STYLE } from "./text";
 
 // Subset of the native tray.badge intents this list uses (the caller maps its
 // domain status → intent; e.g. AniList RELEASING → "success").
@@ -54,10 +54,6 @@ export interface EntryListSectionConfig {
   noMatchText: string;
   showSearchRow?: boolean; // default true
   searchButtonLabel?: string; // default "🔍 Search"
-  // Leading separator line above the header. Default true (sections normally
-  // follow other content). Set false when this section is the FIRST thing in
-  // its container, otherwise the divider renders as an empty top line.
-  leadingDivider?: boolean;
 }
 
 export function renderEntryListSection(
@@ -211,12 +207,7 @@ export function renderEntryListSection(
       tray.div(
         [
           tray.text(`${cfg.headerLabel} (${headerCount})`, {
-            style: {
-              fontSize: "0.7rem",
-              fontWeight: "700",
-              opacity: "0.55",
-              letterSpacing: "0.1em",
-            },
+            style: LABEL_STYLE,
           }),
         ],
         { style: { flex: "1", alignSelf: "center" } },
@@ -230,7 +221,6 @@ export function renderEntryListSection(
   );
 
   const out: unknown[] = [];
-  if (cfg.leadingDivider !== false) out.push(divider(tray));
   out.push(header);
 
   if (cfg.showSearchRow !== false && cfg.totalCount > 0) {
@@ -291,7 +281,7 @@ export function renderEntryListSection(
   }
 
   // A self-contained section: 8px internal rhythm regardless of how the caller
-  // composes it (so the page-level gap can't leak into the rows). The leading
-  // divider, when present, is the first child and the gap spaces it.
+  // composes it (so the page-level gap can't leak into the rows). Any divider
+  // above it is emitted by the caller as a page-stack sibling (see joinDividers).
   return tray.stack(out, { gap: 2 });
 }

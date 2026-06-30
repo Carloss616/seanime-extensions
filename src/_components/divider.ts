@@ -12,3 +12,19 @@ export function divider(tray: $ui.Tray): unknown {
     style: { borderTop: "1px solid rgba(255,255,255,0.1)" },
   });
 }
+
+// Interleave dividers between page-level blocks: a bare rule between each pair
+// of present blocks, none before the first and none around absent (null/
+// undefined) blocks. Returns the flat child list for a page `tray.stack` so the
+// stack's own `gap` spaces every divider equally on both sides — the uniform
+// 12px rhythm (see CLAUDE.md). Replaces the old per-section `leadingDivider`
+// flag: callers list their sections and the rules fall where blocks meet.
+export function joinDividers(tray: $ui.Tray, blocks: unknown[]): unknown[] {
+  const out: unknown[] = [];
+  for (const b of blocks) {
+    if (b == null) continue;
+    if (out.length > 0) out.push(divider(tray));
+    out.push(b);
+  }
+  return out;
+}

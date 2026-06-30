@@ -371,6 +371,22 @@ var register = (...args) => {
       style: { borderTop: "1px solid rgba(255,255,255,0.1)" },
     });
   }
+  function joinDividers(tray, blocks) {
+    const out = [];
+    for (const b of blocks) {
+      if (b == null) continue;
+      if (out.length > 0) out.push(divider(tray));
+      out.push(b);
+    }
+    return out;
+  }
+  var LABEL_STYLE = {
+    fontSize: "0.7rem",
+    fontWeight: "700",
+    opacity: "0.55",
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+  };
   function renderEntryListSection(tray, cfg) {
     const coverBox = (src) =>
       src
@@ -506,12 +522,7 @@ var register = (...args) => {
         tray.div(
           [
             tray.text(`${cfg.headerLabel} (${headerCount})`, {
-              style: {
-                fontSize: "0.7rem",
-                fontWeight: "700",
-                opacity: "0.55",
-                letterSpacing: "0.1em",
-              },
+              style: LABEL_STYLE,
             }),
           ],
           { style: { flex: "1", alignSelf: "center" } },
@@ -524,7 +535,6 @@ var register = (...args) => {
       },
     );
     const out = [];
-    if (cfg.leadingDivider !== false) out.push(divider(tray));
     out.push(header);
     if (cfg.showSearchRow !== false && cfg.totalCount > 0) {
       const searchRowChildren = [
@@ -632,15 +642,7 @@ var register = (...args) => {
         }),
       );
     }
-    return tray.div(
-      [tray.flex(row, { gap: 3, style: { alignItems: "center" } })],
-      {
-        style: {
-          paddingBottom: "8px",
-          borderBottom: "1px solid rgba(255,255,255,0.1)",
-        },
-      },
-    );
+    return tray.flex(row, { gap: 3, style: { alignItems: "center" } });
   }
   var STATUS_INTENT = {
     RELEASING: "success",
@@ -1980,16 +1982,7 @@ var register = (...args) => {
         "December",
       ].map((label, i) => ({ label, value: String(i + 1) })),
     ];
-    const sectionHeader = (label) =>
-      tray.text(label, {
-        style: {
-          fontSize: "0.7rem",
-          fontWeight: "700",
-          opacity: "0.55",
-          letterSpacing: "0.1em",
-        },
-      });
-    const sectionDivider = () => divider(tray);
+    const sectionHeader = (label) => tray.text(label, { style: LABEL_STYLE });
     const statCard = (value, label) =>
       tray.stack(
         [
@@ -2000,14 +1993,7 @@ var register = (...args) => {
               lineHeight: "1.3",
             },
           }),
-          tray.text(label, {
-            style: {
-              fontSize: "0.65rem",
-              opacity: "0.6",
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-            },
-          }),
+          tray.text(label, { style: LABEL_STYLE }),
         ],
         {
           gap: 1,
@@ -2021,7 +2007,7 @@ var register = (...args) => {
           },
         },
       );
-    function renderProgressSection(opts = {}) {
+    function renderProgressSection() {
       const linked = hasToken() && !!effectiveGistId();
       const oCount = orphanCount();
       const oExpanded = orphansExpanded.get();
@@ -2053,7 +2039,6 @@ var register = (...args) => {
         );
       }
       const sub = [
-        ...(opts.leadingDivider === false ? [] : [sectionDivider()]),
         tray.flex(
           [
             tray.div([sectionHeader("\uD83D\uDCD6 READING PROGRESS")], {
@@ -2734,21 +2719,19 @@ var register = (...args) => {
         const sync = renderSync();
         if (sync) layers.push(sync);
         if (!drift && !progressDrift) {
-          layers.push(
-            renderProgressSection({ leadingDivider: layers.length > 0 }),
-          );
+          layers.push(renderProgressSection());
         }
         layers.push(entriesSection);
-        return tray.stack(layers, { gap: 4 });
+        return tray.stack(joinDividers(tray, layers), { gap: 3 });
       }
       const localSync = renderSync();
       return tray.stack(
-        [
-          ...(localSync ? [localSync] : []),
-          renderProgressSection({ leadingDivider: !!localSync }),
+        joinDividers(tray, [
+          localSync,
+          renderProgressSection(),
           entriesSection,
-        ],
-        { gap: 4 },
+        ]),
+        { gap: 3 },
       );
     }
     function renderForm() {
@@ -2769,14 +2752,7 @@ var register = (...args) => {
                 }),
               ]
             : []),
-          tray.text("TITLE *", {
-            style: {
-              fontSize: "0.7rem",
-              fontWeight: "700",
-              opacity: "0.55",
-              letterSpacing: "0.1em",
-            },
-          }),
+          tray.text("TITLE *", { style: LABEL_STYLE }),
           tray.input("English", {
             placeholder: "Solo Leveling",
             fieldRef: fEnglish,
@@ -2794,14 +2770,7 @@ var register = (...args) => {
             fieldRef: fPreferred,
           }),
           divider(tray),
-          tray.text("OPTIONAL", {
-            style: {
-              fontSize: "0.7rem",
-              fontWeight: "700",
-              opacity: "0.55",
-              letterSpacing: "0.1em",
-            },
-          }),
+          tray.text("OPTIONAL", { style: LABEL_STYLE }),
           tray.input("Synonyms (comma-separated)", {
             placeholder: "e.g. Alias 1, Alias 2",
             fieldRef: fSynonyms,
@@ -3080,7 +3049,12 @@ var register = (...args) => {
     });
     tray.render(() => {
       if (view.get() === "form") {
-        return tray.stack([trayHeader(tray), renderForm()], { gap: 4 });
+        return tray.stack(
+          joinDividers(tray, [trayHeader(tray), renderForm()]),
+          {
+            gap: 3,
+          },
+        );
       }
       const gid = effectiveGistId();
       const expanded = bindingExpanded.get();
@@ -3121,7 +3095,7 @@ var register = (...args) => {
         subtitle: hasToken() ? "Gist mode" : "Local mode",
         right,
       });
-      return tray.stack([header, renderList()], { gap: 4 });
+      return tray.stack(joinDividers(tray, [header, renderList()]), { gap: 3 });
     });
   };
   return register2(...args);
