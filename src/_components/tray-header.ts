@@ -51,7 +51,12 @@ export function trayHeader(
         : "";
 
   // Title + subtitle stacked; the flex-1 makes this column push the right nodes
-  // to the far edge.
+  // to the far edge. overflowWrap + wordBreak keep long titles on word boundaries
+  // (without them flex minWidth:0 can break mid-word, e.g. "…En" / "d").
+  const wrapStyle = {
+    overflowWrap: "break-word",
+    wordBreak: "normal",
+  } as const;
   const textCol: unknown[] = [
     tray.text(title, {
       style: {
@@ -59,6 +64,7 @@ export function trayHeader(
         fontSize: "1.15rem",
         lineHeight: "1.2",
         letterSpacing: "0.01em",
+        ...wrapStyle,
       },
     }),
   ];
@@ -69,6 +75,7 @@ export function trayHeader(
           fontSize: "0.8rem",
           lineHeight: "1.3",
           opacity: "0.55",
+          ...wrapStyle,
         },
       }),
     );

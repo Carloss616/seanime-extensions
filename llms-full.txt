@@ -17,8 +17,9 @@ Extension types: `custom-source` (a metadata provider for the collection) and `p
    - Entries use seanime's native AL_BaseManga shape. `id` + non-empty `title` required; the rest optional. v2 replaced the old flat shape (cover/banner/year/country).
    - Configurable in-memory cache TTL (Cache minutes).
 
-2. Local Catalog Manager (plugin, v2.1.0)
-   - Companion to Local Catalog: add/edit/delete entries from the tray, a manga-page button, or the command palette.
+2. Local Catalog Manager (plugin, v2.2.0)
+   - Companion to Local Catalog: add/edit/delete entries from the tray, the **Catalog ⚙️** manga-page button, or the command palette.
+   - Tray UI: **list view** (sync controls, reading-progress section, searchable entry list) and **form view** (contextual cover+title header, reading-progress cards with seanime drift compare + Apply, full AL_BaseManga fields). Opening the tray on a local-catalog manga page auto-jumps into that entry's form.
    - Gist mode (GitHub PAT with `gist` scope): pushes catalog.json to a secret Gist the source reads; supports manual Pull and scheduled Auto-sync (interval configurable, default 30 min, uses the `cron` scope).
    - Local mode (no token): entries persist in plugin storage; user copies serialized JSON into the source's Inline catalog JSON field.
    - Reading-progress sync (Gist mode): captures chapter/status/score via onPre/PostUpdateEntry + onPre/PostUpdateEntryProgress hooks, pushes to progress.json in the same Gist, and restores on other devices via $anilist.updateEntry. Per-entry last-write-wins by updatedAt; orphan-progress cleanup button.
@@ -30,16 +31,17 @@ Extension types: `custom-source` (a metadata provider for the collection) and `p
    - Not a reader — MangaUpdates tracks scanlation releases, not pages.
    - Maps the MU `record` onto AL_BaseManga (series_id→id, url→siteUrl, title, image→coverImage, genres, associated→synonyms, bayesian_rating×10→meanScore, year→startDate.year, type→format).
 
-4. MangaUpdates Sync (plugin, v1.1.0)
+4. MangaUpdates Sync (plugin, v1.2.0)
    - Pushes reading state (progress, status, score) to MangaUpdates whenever seanime updates an entry — chapter "+1" bumps and manual edits.
    - Two hook pairs in init(): Pre hook stashes payload in $store, the matching Post hook pushes to MU only after AniList accepts the update (lock-step). Each callback is a self-contained module (goja serializes callbacks via .toString() into a fresh runtime, so helpers must be inlined).
    - Requests: POST /v1/lists/series/update (status + chapter; integer list_id), POST /v1/lists/series (add fallback), PUT /v1/series/{id}/rating (score; the list-update payload drops rating).
-   - Resolves MU series_id by: (1) custom-source fast path — decoded from the synthetic mediaId of `mangaupdates` custom-source entries, no network; (2) explicit user link in $storage via the manga-page button; (3) opt-in title-search fallback (off by default, can mismatch).
+   - Resolves MU series_id by: (1) custom-source fast path — decoded from the synthetic mediaId of `mangaupdates` custom-source entries, no network; (2) explicit user link in $storage via the manga-page **MU 🔍** button (relabeled **MU ✅** when linked); (3) opt-in title-search fallback (off by default, can mismatch).
+   - Tray UI: **list view** (filterable LINKED entries, ⚙️ per row) and **detail view** per manga (AniList header with link badge, LINKED WITH MU row + Unlink, LINK TO / RELINK TO MU search). Page button + pinned tray auto-open detail for the current entry; auto-search only when unlinked.
    - Status map: CURRENT→0, PLANNING→1, COMPLETED→2, DROPPED→3, PAUSED→4, REPEATING→0. Score: AniList scoreRaw/10 clamped [0,10].
    - Config: username, password, autoSyncOnProgress, syncScore, autoMatchFallback, injectEntryIcon. Permissions: storage, anilist; networkAccess to api.mangaupdates.com.
-   - Known limits: push-only; 412 five-second update delay not retried; credentials stored plaintext in $storage; no repeat-count sync; score-clearing not pushed.
+   - Known limits: push-only; tray must be pinned for tray.open(); 412 five-second update delay not retried; credentials stored plaintext in $storage; no repeat-count sync; score-clearing not pushed.
 
-5. Library Grid Layout (plugin, v1.1.0)
+5. Library Grid Layout (plugin, v1.1.1)
    - UI-only: sets cards-per-row of the manga & anime library grids, with a separate column count per screen size (Mobile/Tablet/Laptop/Desktop), edited live from a tray panel.
    - Reads the live viewport width and sets an inline grid-template-columns on the grid containers ([data-media-card-grid] and the virtualized [data-media-card-lazy-grid]); inline styles outrank Tailwind grid-cols-* classes. Re-applies on grid mount, new main tab, and resize across a tier.
    - Monotonic constraint (smaller screen ≤ bigger screen columns), values clamped 1–12, seanime-default toggle to restore the native grid. Permission: storage only; no network.
@@ -83,5 +85,5 @@ marketplace.json  — generated index (never edit by hand)
 
 ## Roadmap
 
-- Done: MangaUpdates source + sync; Local Catalog source + manager; cross-device catalog & progress sync via Gist; library grid control; cross-provider new-chapter detection (Manga Source Updates).
+- Done: MangaUpdates source + sync; Local Catalog source + manager; cross-device catalog & progress sync via Gist; library grid control; cross-provider new-chapter detection (Manga Source Updates); list/detail tray UX for MangaUpdates Sync and Local Catalog Manager.
 - Planned: anime support in Local Catalog (anime namespace reserved, not served yet); pull-diff UI for MangaUpdates Sync (currently push-only).

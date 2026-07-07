@@ -387,6 +387,10 @@ var register = (...args) => {
     letterSpacing: "0.08em",
     textTransform: "uppercase",
   };
+  var CAPTION_STYLE = {
+    fontSize: "0.7rem",
+    opacity: "0.55",
+  };
   function initialsCover(tray, name) {
     const label = String(name);
     const clean = label.replace(/[^a-zA-Z0-9]/g, "");
@@ -548,11 +552,15 @@ var register = (...args) => {
     const headerCount = cfg.searchActive
       ? `${cfg.rows.length} / ${cfg.totalCount}`
       : `${cfg.totalCount}`;
+    const headerText =
+      cfg.showHeaderCount === false
+        ? cfg.headerLabel
+        : `${cfg.headerLabel} (${headerCount})`;
     const header = tray.flex(
       [
         tray.div(
           [
-            tray.text(`${cfg.headerLabel} (${headerCount})`, {
+            tray.text(headerText, {
               style: LABEL_STYLE,
             }),
           ],
@@ -637,6 +645,10 @@ var register = (...args) => {
         : opts.title != null
           ? String("Local Catalog Manager")
           : "";
+    const wrapStyle = {
+      overflowWrap: "break-word",
+      wordBreak: "normal",
+    };
     const textCol = [
       tray.text(title, {
         style: {
@@ -644,6 +656,7 @@ var register = (...args) => {
           fontSize: "1.15rem",
           lineHeight: "1.2",
           letterSpacing: "0.01em",
+          ...wrapStyle,
         },
       }),
     ];
@@ -654,6 +667,7 @@ var register = (...args) => {
             fontSize: "0.8rem",
             lineHeight: "1.3",
             opacity: "0.55",
+            ...wrapStyle,
           },
         }),
       );
@@ -2044,6 +2058,31 @@ var register = (...args) => {
           },
         },
       );
+    const stringFieldDiff = (local, remote) => {
+      if (local === undefined) return false;
+      return String(local) !== String(remote ?? "");
+    };
+    const numericFieldDiff = (local, remote) => {
+      if (local === undefined) return false;
+      return Number(local) !== Number(remote ?? 0);
+    };
+    function hasEntryProgressDrift(localId) {
+      const rowProgress = progress.get().manga[String(localId)];
+      if (!rowProgress) return false;
+      const seanimeData = seanimeListDataLookup.get()?.get(localId);
+      const lookupReady = seanimeListDataLookup.get() != null;
+      return (
+        !lookupReady ||
+        !seanimeData ||
+        stringFieldDiff(rowProgress.status, seanimeData.status) ||
+        numericFieldDiff(rowProgress.progress, seanimeData.progress) ||
+        numericFieldDiff(rowProgress.score, seanimeData.score)
+      );
+    }
+    const formatListStatus = (status2) => {
+      if (!status2) return "—";
+      return status2.replace(/_/g, " ").toLowerCase();
+    };
     function renderProgressSection() {
       const linked = hasToken() && !!effectiveGistId();
       const oCount = orphanCount();
@@ -2509,22 +2548,8 @@ var register = (...args) => {
           if (rowProgress) {
             const seanimeData = seanimeListDataLookup.get()?.get(e.id);
             const inListForApply = seanimeData != null;
-            const lookupReady = seanimeListDataLookup.get() != null;
             const applyRowBusy = busyAction.get() === `apply-progress-${e.id}`;
-            const stringDiff = (local, remote) => {
-              if (local === undefined) return false;
-              return String(local) !== String(remote ?? "");
-            };
-            const numericDiff = (local, remote) => {
-              if (local === undefined) return false;
-              return Number(local) !== Number(remote ?? 0);
-            };
-            const hasDriftRow =
-              !lookupReady ||
-              !seanimeData ||
-              stringDiff(rowProgress.status, seanimeData.status) ||
-              numericDiff(rowProgress.progress, seanimeData.progress) ||
-              numericDiff(rowProgress.score, seanimeData.score);
+            const hasDriftRow = hasEntryProgressDrift(e.id);
             if (hasDriftRow || applyRowBusy) {
               const progSummary = [
                 rowProgress.status?.toLowerCase(),
@@ -2771,14 +2796,157 @@ var register = (...args) => {
         { gap: 3 },
       );
     }
+    function renderFormHeader() {
+      const isNew = editingId.get() === 0;
+      const back = tray.button("← Back", {
+        onClick: "lcm-cancel",
+        size: "sm",
+        intent: "gray-subtle",
+      });
+      if (isNew) {
+        return trayHeader(tray, {
+          title: "New entry",
+          iconUrl: "",
+          right: [back],
+        });
+      }
+      const id = editingId.get();
+      const entry = entries.get().find((x) => x.id === id);
+      const title = resolveUserPreferred(entry?.title) ?? `#${id}`;
+      const cover = String(
+        entry?.coverImage?.extraLarge ?? entry?.coverImage?.large ?? "",
+      );
+      return trayHeader(tray, {
+        title,
+        subtitle: "Edit catalog entry",
+        iconUrl: cover || undefined,
+        right: [back],
+      });
+    }
+    function renderFormProgressSection() {
+      const isNew = editingId.get() === 0;
+      const id = editingId.get();
+      const rowProgress = isNew ? undefined : progress.get().manga[String(id)];
+      const applyBusy = busyAction.get() === `apply-progress-${id}`;
+      const showApply =
+        !isNew && !!rowProgress && (hasEntryProgressDrift(id) || applyBusy);
+      const drifting = hasDrift();
+      const headerActions = [];
+      if (!isNew && !drifting) {
+        const openBusy = busyAction.get() === `open-manga-${id}`;
+        const inListMediaId = mediaIdLookup.get()?.get(id);
+        const computedMediaId = mediaIdFor(id);
+        const resolvedMediaId = inListMediaId ?? computedMediaId;
+        const openTooltip = openBusy
+          ? "Opening …"
+          : resolvedMediaId
+            ? `Open in seanime · media #${resolvedMediaId}${inListMediaId == null ? " · not in your list" : ""}`
+            : "Open in seanime · resolves on click";
+        headerActions.push(
+          tray.tooltip(
+            tray.button(openBusy ? "⏳" : "Open →", {
+              onClick: ctx.eventHandler(`lcm-form-open-manga-${id}`, () => {
+                navigateToMangaEntry(id);
+              }),
+              size: "sm",
+              intent: "gray-subtle",
+            }),
+            { text: openTooltip },
+          ),
+        );
+      }
+      if (showApply) {
+        headerActions.push(
+          tray.tooltip(
+            tray.button(applyBusy ? "⏳" : "\uD83D\uDCE4 Apply", {
+              onClick: ctx.eventHandler(`lcm-form-apply-progress-${id}`, () => {
+                applyProgress(id);
+              }),
+              size: "sm",
+              intent: "primary-subtle",
+            }),
+            { text: "Push local progress to seanime" },
+          ),
+        );
+      }
+      const headerRow = tray.flex(
+        [
+          tray.div([sectionHeader("READING PROGRESS")], {
+            style: { flex: "1", alignSelf: "center" },
+          }),
+          ...headerActions,
+        ],
+        { gap: 2, style: { alignItems: "center" } },
+      );
+      if (isNew) {
+        return tray.stack(
+          [
+            headerRow,
+            tray.text("Tracked after the entry is saved.", {
+              style: CAPTION_STYLE,
+            }),
+          ],
+          { gap: 2 },
+        );
+      }
+      if (!rowProgress) {
+        return tray.stack(
+          [
+            headerRow,
+            tray.text("No local reading progress yet.", {
+              style: CAPTION_STYLE,
+            }),
+          ],
+          { gap: 2 },
+        );
+      }
+      const seanimeData = seanimeListDataLookup.get()?.get(id);
+      const sub = [
+        headerRow,
+        tray.flex(
+          [
+            statCard(
+              rowProgress.progress != null ? String(rowProgress.progress) : "—",
+              "chapter",
+            ),
+            statCard(formatListStatus(rowProgress.status), "status"),
+            statCard(
+              rowProgress.score != null && rowProgress.score > 0
+                ? String(rowProgress.score)
+                : "—",
+              "score",
+            ),
+          ],
+          { gap: 2 },
+        ),
+      ];
+      if (seanimeData) {
+        const seanimeSummary = [
+          formatListStatus(seanimeData.status),
+          seanimeData.progress != null ? `c.${seanimeData.progress}` : "",
+          seanimeData.score != null && Number(seanimeData.score) > 0
+            ? `score ${seanimeData.score}`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        sub.push(
+          tray.text(`In seanime: ${seanimeSummary || "(no data)"}`, {
+            style: CAPTION_STYLE,
+          }),
+        );
+      } else if (seanimeListDataLookup.get() != null) {
+        sub.push(
+          tray.text("Not in your seanime list yet.", { style: CAPTION_STYLE }),
+        );
+      }
+      return tray.stack(sub, { gap: 2 });
+    }
     function renderForm() {
       const isNew = editingId.get() === 0;
       const gistMode = hasToken() && !!effectiveGistId();
       return tray.stack(
         [
-          tray.text(isNew ? "New entry" : `Edit #${editingId.get()}`, {
-            style: { fontWeight: "600", fontSize: "1rem" },
-          }),
           ...(isNew && gistMode
             ? [
                 tray.alert({
@@ -2978,8 +3146,9 @@ var register = (...args) => {
       return decodeLocalId(mediaId);
     };
     const pageBtn = ctx.action.newMangaPageButton({
-      label: "Edit local entry",
+      label: "Catalog ⚙️",
       intent: "primary-subtle",
+      tooltipText: "Edit catalog entry",
     });
     pageBtn.onClick((e) => {
       const local = localIdFromMediaId(e.media.id);
@@ -3075,6 +3244,14 @@ var register = (...args) => {
           }
         }
         await pullProgressSilent("tray opened");
+        const local = currentLocalId.get();
+        if (
+          view.get() === "list" &&
+          local > 0 &&
+          entries.get().some((x) => x.id === local)
+        ) {
+          openForm(local);
+        }
       })();
     });
     tray.onClose(() => {
@@ -3087,10 +3264,12 @@ var register = (...args) => {
     tray.render(() => {
       if (view.get() === "form") {
         return tray.stack(
-          joinDividers(tray, [trayHeader(tray), renderForm()]),
-          {
-            gap: 3,
-          },
+          joinDividers(tray, [
+            renderFormHeader(),
+            renderFormProgressSection(),
+            renderForm(),
+          ]),
+          { gap: 3 },
         );
       }
       const gid = effectiveGistId();

@@ -1,6 +1,6 @@
 import { divider, joinDividers } from "../../../_components/divider";
 import { type EntryListRow, entryList } from "../../../_components/entry-list";
-import { LABEL_STYLE } from "../../../_components/text";
+import { CAPTION_STYLE, LABEL_STYLE } from "../../../_components/text";
 import { trayHeader } from "../../../_components/tray-header";
 import { statusToPill } from "../../../_utils/anilist-status";
 import {
@@ -1747,6 +1747,42 @@ export const register = (ctx: $ui.Context) => {
       },
     );
 
+  // Coerce before comparing local progress fields to seanime listData — see
+  // renderList drift comment (goja-wrapped Go strings fail ===).
+  const stringFieldDiff = (
+    local: string | undefined,
+    remote: string | undefined,
+  ): boolean => {
+    if (local === undefined) return false;
+    return String(local) !== String(remote ?? "");
+  };
+  const numericFieldDiff = (
+    local: number | undefined,
+    remote: number | undefined,
+  ): boolean => {
+    if (local === undefined) return false;
+    return Number(local) !== Number(remote ?? 0);
+  };
+
+  function hasEntryProgressDrift(localId: number): boolean {
+    const rowProgress = progress.get().manga[String(localId)];
+    if (!rowProgress) return false;
+    const seanimeData = seanimeListDataLookup.get()?.get(localId);
+    const lookupReady = seanimeListDataLookup.get() != null;
+    return (
+      !lookupReady ||
+      !seanimeData ||
+      stringFieldDiff(rowProgress.status, seanimeData.status) ||
+      numericFieldDiff(rowProgress.progress, seanimeData.progress) ||
+      numericFieldDiff(rowProgress.score, seanimeData.score)
+    );
+  }
+
+  const formatListStatus = (status: string | undefined): string => {
+    if (!status) return "—";
+    return status.replace(/_/g, " ").toLowerCase();
+  };
+
   function renderProgressSection() {
     // Header row: section title on left, reload (gist only) + orphan toggle
     // on right. In local mode the stat cards still work (progress is cached
@@ -2249,43 +2285,12 @@ export const register = (ctx: $ui.Context) => {
         if (rowProgress) {
           const seanimeData = seanimeListDataLookup.get()?.get(e.id);
           const inListForApply = seanimeData != null;
-          const lookupReady = seanimeListDataLookup.get() != null;
           const applyRowBusy = busyAction.get() === `apply-progress-${e.id}`;
           // A field counts as drifted only when LOCAL has a defined value
           // that differs from seanime's. Skipping local-undefined avoids
           // false positives when the pre-hook doesn't capture a field.
           //
-          // Explicit String() / Number() coercion is REQUIRED: seanimeData
-          // fields come from a Go-bound object (ctx.manga.getCollection
-          // returns e.listData) and goja-wrapped Go strings are NOT === to
-          // JS string primitives, even when both serialize to the same
-          // value ("CURRENT" !== <goja-wrapped>"CURRENT" → true). Without
-          // coercion, every row showed perpetual status drift.
-          //
-          // For numeric fields we additionally treat 0 and undefined as
-          // equivalent: AniList's listData OMITS score when un-rated
-          // but our pre-hook may capture event.scoreRaw=0 and persist it.
-          // Without this, every un-rated row would show drift forever.
-          const stringDiff = (
-            local: string | undefined,
-            remote: string | undefined,
-          ): boolean => {
-            if (local === undefined) return false;
-            return String(local) !== String(remote ?? "");
-          };
-          const numericDiff = (
-            local: number | undefined,
-            remote: number | undefined,
-          ): boolean => {
-            if (local === undefined) return false;
-            return Number(local) !== Number(remote ?? 0);
-          };
-          const hasDriftRow =
-            !lookupReady ||
-            !seanimeData ||
-            stringDiff(rowProgress.status, seanimeData.status) ||
-            numericDiff(rowProgress.progress, seanimeData.progress) ||
-            numericDiff(rowProgress.score, seanimeData.score);
+          const hasDriftRow = hasEntryProgressDrift(e.id);
           // Keep the button visible during the busy window even when drift
           // resolves to false mid-flight (applyProgress refreshes the lookup
           // synchronously after updateEntry — without this guard the loading
@@ -2541,14 +2546,167 @@ export const register = (ctx: $ui.Context) => {
     );
   }
 
+  function renderFormHeader(): unknown {
+    const isNew = editingId.get() === 0;
+    const back = tray.button("← Back", {
+      onClick: "lcm-cancel",
+      size: "sm",
+      intent: "gray-subtle",
+    });
+    if (isNew) {
+      return trayHeader(tray, {
+        title: "New entry",
+        iconUrl: "",
+        right: [back],
+      });
+    }
+    const id = editingId.get();
+    const entry = entries.get().find((x) => x.id === id);
+    const title = resolveUserPreferred(entry?.title) ?? `#${id}`;
+    const cover = String(
+      entry?.coverImage?.extraLarge ?? entry?.coverImage?.large ?? "",
+    );
+    return trayHeader(tray, {
+      title,
+      subtitle: "Edit catalog entry",
+      iconUrl: cover || undefined,
+      right: [back],
+    });
+  }
+
+  // Per-entry reading progress for the form/detail view (local doc + seanime).
+  function renderFormProgressSection(): unknown {
+    const isNew = editingId.get() === 0;
+    const id = editingId.get();
+    const rowProgress = isNew ? undefined : progress.get().manga[String(id)];
+    const applyBusy = busyAction.get() === `apply-progress-${id}`;
+    const showApply =
+      !isNew && !!rowProgress && (hasEntryProgressDrift(id) || applyBusy);
+    const drifting = hasDrift();
+
+    const headerActions: unknown[] = [];
+    if (!isNew && !drifting) {
+      const openBusy = busyAction.get() === `open-manga-${id}`;
+      const inListMediaId = mediaIdLookup.get()?.get(id);
+      const computedMediaId = mediaIdFor(id);
+      const resolvedMediaId = inListMediaId ?? computedMediaId;
+      const openTooltip = openBusy
+        ? "Opening …"
+        : resolvedMediaId
+          ? `Open in seanime · media #${resolvedMediaId}${inListMediaId == null ? " · not in your list" : ""}`
+          : "Open in seanime · resolves on click";
+      headerActions.push(
+        tray.tooltip(
+          tray.button(openBusy ? "⏳" : "Open →", {
+            onClick: ctx.eventHandler(`lcm-form-open-manga-${id}`, () => {
+              void navigateToMangaEntry(id);
+            }),
+            size: "sm",
+            intent: "gray-subtle",
+          }),
+          { text: openTooltip },
+        ),
+      );
+    }
+    if (showApply) {
+      headerActions.push(
+        tray.tooltip(
+          tray.button(applyBusy ? "⏳" : "📤 Apply", {
+            onClick: ctx.eventHandler(`lcm-form-apply-progress-${id}`, () => {
+              void applyProgress(id);
+            }),
+            size: "sm",
+            intent: "primary-subtle",
+          }),
+          { text: "Push local progress to seanime" },
+        ),
+      );
+    }
+
+    const headerRow = tray.flex(
+      [
+        tray.div([sectionHeader("READING PROGRESS")], {
+          style: { flex: "1", alignSelf: "center" },
+        }),
+        ...headerActions,
+      ],
+      { gap: 2, style: { alignItems: "center" } },
+    );
+
+    if (isNew) {
+      return tray.stack(
+        [
+          headerRow,
+          tray.text("Tracked after the entry is saved.", {
+            style: CAPTION_STYLE,
+          }),
+        ],
+        { gap: 2 },
+      );
+    }
+
+    if (!rowProgress) {
+      return tray.stack(
+        [
+          headerRow,
+          tray.text("No local reading progress yet.", {
+            style: CAPTION_STYLE,
+          }),
+        ],
+        { gap: 2 },
+      );
+    }
+
+    const seanimeData = seanimeListDataLookup.get()?.get(id);
+    const sub: unknown[] = [
+      headerRow,
+      tray.flex(
+        [
+          statCard(
+            rowProgress.progress != null ? String(rowProgress.progress) : "—",
+            "chapter",
+          ),
+          statCard(formatListStatus(rowProgress.status), "status"),
+          statCard(
+            rowProgress.score != null && rowProgress.score > 0
+              ? String(rowProgress.score)
+              : "—",
+            "score",
+          ),
+        ],
+        { gap: 2 },
+      ),
+    ];
+
+    if (seanimeData) {
+      const seanimeSummary = [
+        formatListStatus(seanimeData.status),
+        seanimeData.progress != null ? `c.${seanimeData.progress}` : "",
+        seanimeData.score != null && Number(seanimeData.score) > 0
+          ? `score ${seanimeData.score}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      sub.push(
+        tray.text(`In seanime: ${seanimeSummary || "(no data)"}`, {
+          style: CAPTION_STYLE,
+        }),
+      );
+    } else if (seanimeListDataLookup.get() != null) {
+      sub.push(
+        tray.text("Not in your seanime list yet.", { style: CAPTION_STYLE }),
+      );
+    }
+
+    return tray.stack(sub, { gap: 2 });
+  }
+
   function renderForm() {
     const isNew = editingId.get() === 0;
     const gistMode = hasToken() && !!effectiveGistId();
     return tray.stack(
       [
-        tray.text(isNew ? "New entry" : `Edit #${editingId.get()}`, {
-          style: { fontWeight: "600", fontSize: "1rem" },
-        }),
         // Gist mode only: a new entry won't surface in the source if its Catalog
         // URL is pinned to a revision (…/raw/<sha>/…) — that snapshot never sees
         // later edits. Remind the user to use the unversioned raw URL.
@@ -2748,8 +2906,9 @@ export const register = (ctx: $ui.Context) => {
   };
 
   const pageBtn = ctx.action.newMangaPageButton({
-    label: "Edit local entry",
+    label: "Catalog ⚙️",
     intent: "primary-subtle",
+    tooltipText: "Edit catalog entry",
   });
   pageBtn.onClick((e) => {
     const local = localIdFromMediaId(e.media.id);
@@ -2882,6 +3041,14 @@ export const register = (ctx: $ui.Context) => {
       // back-to-back with screen.onNavigate (e.g., user clicks Open → in the
       // tray, which closes+opens the tray AND triggers navigation).
       await pullProgressSilent("tray opened");
+      const local = currentLocalId.get();
+      if (
+        view.get() === "list" &&
+        local > 0 &&
+        entries.get().some((x) => x.id === local)
+      ) {
+        openForm(local);
+      }
     })();
   });
 
@@ -2896,11 +3063,15 @@ export const register = (ctx: $ui.Context) => {
   });
 
   tray.render(() => {
-    // Form view keeps a bare identity header (the form has its own title).
     if (view.get() === "form") {
-      return tray.stack(joinDividers(tray, [trayHeader(tray), renderForm()]), {
-        gap: 3,
-      });
+      return tray.stack(
+        joinDividers(tray, [
+          renderFormHeader(),
+          renderFormProgressSection(),
+          renderForm(),
+        ]),
+        { gap: 3 },
+      );
     }
     // List view folds the mode + linked status + binding toggle (was a
     // separate modeHeader row inside renderSync) into the identity header.

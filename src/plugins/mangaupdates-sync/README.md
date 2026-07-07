@@ -5,7 +5,7 @@
 # 🔁 MangaUpdates Sync
 
 ![Type](https://img.shields.io/badge/type-plugin-3b82f6?style=for-the-badge)
-![Version](https://img.shields.io/badge/version-1.1.2-22c55e?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-1.2.0-22c55e?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 
 **Pushes your manga reading state to [MangaUpdates](https://www.mangaupdates.com/) whenever seanime updates an entry.**
@@ -28,7 +28,9 @@
 | ------- | ----------- |
 | Progress + status + score | Mirrored to MangaUpdates on every seanime update. |
 | Zero-config for custom-source | Resolves the MU series automatically for [`mangaupdates`](../../custom-source/mangaupdates/) entries — **no network call**. |
-| Manual linking | A **Link to MangaUpdates** button on every other manga page to map AniList entries by hand. |
+| Manual linking | A **MU 🔍** button on every other manga page opens the linker tray for that entry. |
+| Linker tray | **List** view (all linked entries, local filter, ⚙️ per row) and **detail** view per manga (AniList header, MU link row, search to link or relink). |
+| MU entry icon | Optional MangaUpdates icon injected next to AniList on linked entry pages (`injectEntryIcon`). |
 | Optional auto-match | Title-search fallback for users who'd rather not link manually. |
 
 ---
@@ -99,17 +101,30 @@ If none resolve, the plugin logs a warning and skips the push.
 <details>
 <summary>Linking AniList entries explicitly</summary>
 
-A **Link to MangaUpdates** button renders on every manga entry page that isn't from the `mangaupdates` custom-source. It:
+A **MU 🔍** button renders on every manga entry page that isn't from the `mangaupdates` custom-source. Once linked it relabels to **MU ✅**.
 
-- Pre-populates the search input with the entry's title and triggers an initial MU search.
-- Opens the plugin's tray-popover with the search results as pickable buttons.
-- On pick, records the mapping in `$storage` under `mu_link_<mediaId>` and relabels itself to `MU: <title>`.
-- Click again to re-link; inside the popover, **Clear link** removes the mapping.
+**Opening the linker**
+
+- Click **MU 🔍** on the manga page (seeds the search input; auto-runs MU search only when the entry isn't linked yet).
+- Pin the plugin tray icon (top-right of the seanime navbar) and open it — on a manga entry page the tray jumps straight to that entry's **detail** view.
 
 > [!IMPORTANT]
-> **The tray icon must be pinned** (top-right of the seanime navbar) for the popover to open — a documented limitation of `tray.open()`. If it isn't pinned, the button shows a toast asking you to pin it.
+> **`tray.open()` requires the tray to be pinned** — a documented seanime limitation. If it isn't pinned, the page button shows a toast asking you to pin it.
 
-If the button shows **MU: ? (verify)**, the link was set by the auto-match fallback — it took the first MU search result for the title. Click to confirm or re-link.
+**List view** (tray opened elsewhere, or after **← Back** from detail):
+
+- Filterable **LINKED** list of every `mu_link_<mediaId>` mapping.
+- **⚙️** on a row opens that entry's detail view.
+
+**Detail view** (one manga at a time):
+
+1. **AniList header** — cover, title, link badge (`🔗 Linked` / `🔓 Not linked`), **← Back**.
+2. **LINKED WITH** — when linked, the MU series row (cover/title/year, **MangaUpdates** status pill, external link, **Unlink**); **Open →** opens the seanime entry page. When not linked yet, the section shows a short note with the same **Open →** shortcut.
+3. **LINK TO** / **RELINK TO** — MU title search (`Search on MangaUpdates` input, **Search as** shortcuts for alternate titles, **RESULTS** picker). Picking a result stores `mu_link_<mediaId>` and mirrors current list data to MU immediately.
+
+To remove a link, use **Unlink** (⛔) on the MU row in detail view or on a list row.
+
+If a link was set by the opt-in **auto-match fallback** (not the picker), verify it in detail view and relink if the title search picked the wrong series.
 
 </details>
 

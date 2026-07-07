@@ -89,6 +89,20 @@ describe("entryList — header & search", () => {
     expect(argsOf(walk(out), "text")).toContain("LINKED (1 / 3)");
   });
 
+  test("header omits count when showHeaderCount is false", () => {
+    const out = entryList(fakeTray() as unknown as $ui.Tray, {
+      ...baseCfg,
+      headerLabel: "LINKED WITH",
+      rows: [{ title: "A" }],
+      totalCount: 1,
+      searchActive: false,
+      showHeaderCount: false,
+    });
+    const texts = argsOf(walk(out), "text");
+    expect(texts).toContain("LINKED WITH");
+    expect(texts.some((t) => String(t).includes("(1)"))).toBe(false);
+  });
+
   test("never emits its own divider — header flex is the first child", () => {
     // Dividers are now page-stack siblings emitted by the caller (joinDividers),
     // so the section itself contains no leading rule.

@@ -182,11 +182,15 @@ var register = (...args) => {
     const headerCount = cfg.searchActive
       ? `${cfg.rows.length} / ${cfg.totalCount}`
       : `${cfg.totalCount}`;
+    const headerText =
+      cfg.showHeaderCount === false
+        ? cfg.headerLabel
+        : `${cfg.headerLabel} (${headerCount})`;
     const header = tray.flex(
       [
         tray.div(
           [
-            tray.text(`${cfg.headerLabel} (${headerCount})`, {
+            tray.text(headerText, {
               style: LABEL_STYLE,
             }),
           ],
@@ -271,6 +275,10 @@ var register = (...args) => {
         : opts.title != null
           ? String("Manga Source Updates")
           : "";
+    const wrapStyle = {
+      overflowWrap: "break-word",
+      wordBreak: "normal",
+    };
     const textCol = [
       tray.text(title, {
         style: {
@@ -278,6 +286,7 @@ var register = (...args) => {
           fontSize: "1.15rem",
           lineHeight: "1.2",
           letterSpacing: "0.01em",
+          ...wrapStyle,
         },
       }),
     ];
@@ -288,6 +297,7 @@ var register = (...args) => {
             fontSize: "0.8rem",
             lineHeight: "1.3",
             opacity: "0.55",
+            ...wrapStyle,
           },
         }),
       );

@@ -353,11 +353,15 @@ var register = (...args) => {
     const headerCount = cfg.searchActive
       ? `${cfg.rows.length} / ${cfg.totalCount}`
       : `${cfg.totalCount}`;
+    const headerText =
+      cfg.showHeaderCount === false
+        ? cfg.headerLabel
+        : `${cfg.headerLabel} (${headerCount})`;
     const header = tray.flex(
       [
         tray.div(
           [
-            tray.text(`${cfg.headerLabel} (${headerCount})`, {
+            tray.text(headerText, {
               style: LABEL_STYLE,
             }),
           ],
@@ -442,6 +446,10 @@ var register = (...args) => {
         : opts.title != null
           ? String("MangaUpdates Sync")
           : "";
+    const wrapStyle = {
+      overflowWrap: "break-word",
+      wordBreak: "normal",
+    };
     const textCol = [
       tray.text(title, {
         style: {
@@ -449,6 +457,7 @@ var register = (...args) => {
           fontSize: "1.15rem",
           lineHeight: "1.2",
           letterSpacing: "0.01em",
+          ...wrapStyle,
         },
       }),
     ];
@@ -459,6 +468,7 @@ var register = (...args) => {
             fontSize: "0.8rem",
             lineHeight: "1.3",
             opacity: "0.55",
+            ...wrapStyle,
           },
         }),
       );
@@ -543,9 +553,27 @@ var register = (...args) => {
     const fLinkedFilter = ctx.fieldRef("");
     const linkedRefresh = ctx.state(0);
     const bumpLinked = () => linkedRefresh.set(linkedRefresh.get() + 1);
-    const showAllLinked = ctx.state(false);
+    const detailId = ctx.state(null);
+    const getMedia = (id) => {
+      try {
+        return $anilist.getManga(id);
+      } catch (_) {
+        return;
+      }
+    };
+    const isLinkableEntry = (id) => {
+      if (id <= 0) return false;
+      const media = getMedia(id);
+      if (!media) return false;
+      return !(media.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0);
+    };
+    const resolveEntryTitle = (media, id) =>
+      (media.title &&
+        (media.title.english ||
+          media.title.userPreferred ||
+          media.title.romaji)) ||
+      `#${id}`;
     ctx.screen.onNavigate((e) => {
-      showAllLinked.set(false);
       const id = e.searchParams?.id;
       if (id) {
         const parsed = parseInt(id, 10);
@@ -729,13 +757,13 @@ var register = (...args) => {
       searchInputRef.setValue("");
       searchResults.set([]);
     });
-    ctx.registerEventHandler("mu-show-all", () => showAllLinked.set(true));
-    ctx.registerEventHandler("mu-show-current", () => showAllLinked.set(false));
-    btn.onClick(async (event) => {
-      const media = event.media;
+    ctx.registerEventHandler("mu-back", () => {
+      detailId.set(null);
+    });
+    async function openEntryDetail(id) {
+      detailId.set(id);
+      const media = getMedia(id);
       if (!media) return;
-      showAllLinked.set(false);
-      if (media.id) currentMediaId.set(media.id);
       const title =
         (media.title &&
           (media.title.english ||
@@ -743,12 +771,18 @@ var register = (...args) => {
             media.title.userPreferred)) ||
         "";
       searchInputRef.setValue(title);
-      const existingLink = media.id ? getMULink(media.id) : undefined;
+      const existingLink = getMULink(id);
       if (!existingLink) {
         await runSearch(title);
       } else {
         searchResults.set([]);
       }
+    }
+    btn.onClick(async (event) => {
+      const media = event.media;
+      if (!media?.id) return;
+      currentMediaId.set(media.id);
+      await openEntryDetail(media.id);
       try {
         tray.open();
       } catch (_) {
@@ -780,6 +814,17 @@ var register = (...args) => {
         },
         actions: [
           tray.tooltip(
+            tray.button("⚙️", {
+              onClick: ctx.eventHandler(`mu-detail-${mediaId}`, () => {
+                currentMediaId.set(mediaId);
+                openEntryDetail(mediaId);
+              }),
+              size: "sm",
+              intent: "gray-subtle",
+            }),
+            { text: "Link & details" },
+          ),
+          tray.tooltip(
             tray.button("⛔", {
               onClick: ctx.eventHandler(`mu-unlink-${mediaId}`, () =>
                 unlinkMedia(mediaId),
@@ -792,7 +837,26 @@ var register = (...args) => {
         ],
       };
     };
-    const renderLinkedList = (inlineActions = []) => {
+    const buildMULinkRow = (mediaId, link) => ({
+      cover: link.cover,
+      title: link.title || `#${link.id}`,
+      year: link.year,
+      status: { label: "MangaUpdates", intent: "warning" },
+      openExternal: { href: link.url, tooltip: "View on MangaUpdates" },
+      actions: [
+        tray.tooltip(
+          tray.button("⛔", {
+            onClick: ctx.eventHandler(`mu-unlink-${mediaId}`, () =>
+              unlinkMedia(mediaId),
+            ),
+            size: "sm",
+            intent: "alert-subtle",
+          }),
+          { text: "Unlink" },
+        ),
+      ],
+    });
+    const renderLinkedListSection = () => {
       const filter = linkedFilter.get().toLowerCase();
       const allLinked = listMULinkIds()
         .map((mediaId) => ({ mediaId, link: getMULink(mediaId) }))
@@ -814,18 +878,32 @@ var register = (...args) => {
         searchPlaceholder: "Filter linked manga…",
         onSearch: "mu-linked-search",
         onClearSearch: "mu-linked-search-clear",
-        inlineActions,
         emptyText:
           "No linked manga yet. Open a manga entry page and use the “Link to MangaUpdates” button.",
         noMatchText: `No linked manga match "${linkedFilter.get()}".`,
       });
     };
-    const renderSearchUI = (media, id, link) => {
+    const sectionLabelRow = (label, right = []) =>
+      tray.flex(
+        [
+          tray.div([tray.text(label, { style: LABEL_STYLE })], {
+            style: { flex: "1", alignSelf: "center" },
+          }),
+          ...right,
+        ],
+        { gap: 2, style: { alignItems: "center" } },
+      );
+    const renderSearchUI = (media, id, link, sectioned = false) => {
       const out = [];
       const currentInput = (searchInputRef.current || "").trim();
       const searchRow = [
         tray.div(
-          [tray.input("Search MangaUpdates", { fieldRef: searchInputRef })],
+          [
+            tray.input(
+              sectioned ? "Search on MangaUpdates" : "Search MangaUpdates",
+              { fieldRef: searchInputRef },
+            ),
+          ],
           { style: { flex: "1", minWidth: "0" } },
         ),
         tray.button(isSearching.get() ? "Searching..." : "Search", {
@@ -952,104 +1030,126 @@ var register = (...args) => {
           }),
         );
       }
-      return tray.stack(out, { gap: 2 });
+      const body = tray.stack(out, { gap: 2 });
+      if (!sectioned) return body;
+      const sectionTitle = link ? "RELINK TO" : "LINK TO";
+      return tray.stack([sectionLabelRow(sectionTitle), body], { gap: 2 });
     };
-    tray.render(() => {
-      linkedRefresh.get();
-      const expanded = showAllLinked.get();
-      const blocks = [];
-      const id = currentMediaId.get();
-      let media;
-      if (id) {
-        try {
-          media = $anilist.getManga(id);
-        } catch (_) {
-          media = undefined;
-        }
-      }
-      const isCustomSource =
-        !!media?.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0;
-      const onEntry = !!id && !!media && !isCustomSource;
-      const link = onEntry ? getMULink(id) : undefined;
-      const entryTitle =
-        onEntry && media
-          ? (media.title &&
-              (media.title.english ||
-                media.title.userPreferred ||
-                media.title.romaji)) ||
-            `#${id}`
-          : undefined;
-      if (onEntry && media && !expanded) {
-        const totalLinked = listMULinkIds().length;
-        const showAllBtn = tray.button(`Show all (${totalLinked})`, {
-          onClick: "mu-show-all",
+    const openInSeanimeButton = (id) =>
+      tray.tooltip(
+        tray.button("Open →", {
+          onClick: ctx.eventHandler(`mu-detail-open-${id}`, () => {
+            ctx.screen.navigateTo("/manga/entry", { id: String(id) });
+            tray.close();
+          }),
           size: "sm",
           intent: "gray-subtle",
+        }),
+        { text: "Open in seanime" },
+      );
+    function renderAniListDetailHeader(media, id, link) {
+      const entryTitle = resolveEntryTitle(media, id);
+      const cover = String(
+        media.coverImage?.large ?? media.coverImage?.extraLarge ?? "",
+      );
+      return trayHeader(tray, {
+        title: entryTitle,
+        subtitle: link ? undefined : "Not linked to MangaUpdates",
+        iconUrl: cover || undefined,
+        right: [
+          link
+            ? tray.badge("\uD83D\uDD17 Linked", { intent: "success" })
+            : tray.badge("\uD83D\uDD13 Not linked", { intent: "gray" }),
+          tray.button("← Back", {
+            onClick: "mu-back",
+            size: "sm",
+            intent: "gray-subtle",
+          }),
+        ],
+      });
+    }
+    function renderLinkedWithDetailSection(id, link) {
+      const openBtn = openInSeanimeButton(id);
+      if (link) {
+        return entryList(tray, {
+          headerLabel: "LINKED WITH",
+          inlineActions: [openBtn],
+          rows: [buildMULinkRow(id, link)],
+          totalCount: 1,
+          showHeaderCount: false,
+          searchActive: false,
+          searchFieldRef: fLinkedFilter,
+          searchPlaceholder: "",
+          onSearch: "",
+          onClearSearch: "",
+          emptyText: "",
+          noMatchText: "",
+          showSearchRow: false,
         });
-        if (link) {
-          blocks.push(
-            entryList(tray, {
-              headerLabel: "LINKED",
-              rows: [buildLinkedRow(id, link)],
-              totalCount: 1,
-              searchActive: false,
-              searchFieldRef: fLinkedFilter,
-              searchPlaceholder: "",
-              onSearch: "",
-              onClearSearch: "",
-              inlineActions: totalLinked > 1 ? [showAllBtn] : [],
-              emptyText: "",
-              noMatchText: "",
-              showSearchRow: false,
-            }),
-          );
-        } else {
-          const notLinked = [tray.text("Not linked yet.")];
-          if (totalLinked > 0) notLinked.push(showAllBtn);
-          blocks.push(tray.stack(notLinked, { gap: 2 }));
-        }
-        blocks.push(renderSearchUI(media, id, link));
-      } else {
-        const notes = [];
-        if (id && media && isCustomSource) {
-          notes.push(
-            tray.text(
-              "This entry already comes from the MangaUpdates custom-source.",
-            ),
-            tray.text("Sync uses the embedded series_id — no linking needed."),
-          );
-        } else if (id && !media) {
-          notes.push(tray.text(`Could not load entry #${id}.`));
-        }
-        if (notes.length > 0) blocks.push(tray.stack(notes, { gap: 2 }));
-        const collapseBtn =
-          onEntry && expanded
-            ? [
-                tray.button("Show current", {
-                  onClick: "mu-show-current",
-                  size: "sm",
-                  intent: "gray-subtle",
-                }),
-              ]
-            : [];
-        blocks.push(renderLinkedList(collapseBtn));
       }
       return tray.stack(
-        joinDividers(tray, [
-          trayHeader(tray, {
-            subtitle: entryTitle,
-            right: onEntry
-              ? [
-                  link
-                    ? tray.badge("\uD83D\uDD17 Linked", { intent: "success" })
-                    : tray.badge("\uD83D\uDD13 Not linked", { intent: "gray" }),
-                ]
-              : undefined,
+        [
+          sectionLabelRow("LINKED WITH", [openBtn]),
+          tray.text("Not linked to a MangaUpdates series yet.", {
+            style: { fontSize: "0.8rem", opacity: "0.5", textAlign: "center" },
           }),
-          ...blocks,
-        ]),
-        { gap: 3 },
+        ],
+        { gap: 2 },
       );
+    }
+    function renderLinkedList() {
+      const id = currentMediaId.get();
+      const media = id ? getMedia(id) : undefined;
+      const isCustomSource =
+        !!media?.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0;
+      const blocks = [
+        trayHeader(tray, {
+          subtitle: "Link AniList entries to MangaUpdates",
+        }),
+      ];
+      const notes = [];
+      if (id && media && isCustomSource) {
+        notes.push(
+          tray.text(
+            "This entry already comes from the MangaUpdates custom-source.",
+          ),
+          tray.text("Sync uses the embedded series_id — no linking needed."),
+        );
+      } else if (id && !media) {
+        notes.push(tray.text(`Could not load entry #${id}.`));
+      }
+      if (notes.length > 0) blocks.push(tray.stack(notes, { gap: 2 }));
+      blocks.push(renderLinkedListSection());
+      return tray.stack(joinDividers(tray, blocks), { gap: 3 });
+    }
+    function renderEntryDetail() {
+      const id = detailId.get();
+      if (id == null) return null;
+      const media = getMedia(id);
+      if (!media) return null;
+      const link = getMULink(id);
+      const blocks = [
+        renderAniListDetailHeader(media, id, link),
+        renderLinkedWithDetailSection(id, link),
+      ];
+      blocks.push(renderSearchUI(media, id, link, true));
+      return tray.stack(joinDividers(tray, blocks), { gap: 3 });
+    }
+    tray.onOpen(() => {
+      (async () => {
+        const id = currentMediaId.get();
+        if (id > 0 && isLinkableEntry(id)) {
+          await openEntryDetail(id);
+        } else {
+          detailId.set(null);
+        }
+      })();
+    });
+    tray.render(() => {
+      linkedRefresh.get();
+      isSearching.get();
+      if (detailId.get() != null) return renderEntryDetail();
+      return renderLinkedList();
     });
   };
   return register2(...args);

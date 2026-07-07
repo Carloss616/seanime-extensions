@@ -5,7 +5,7 @@
 # 🗂️ Local Catalog Manager
 
 ![Type](https://img.shields.io/badge/type-plugin-3b82f6?style=for-the-badge)
-![Version](https://img.shields.io/badge/version-2.1.2-22c55e?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-2.2.0-22c55e?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 
 **Manage your [Local Catalog](../../custom-source/local-catalog/) from inside seanime — add, edit, delete entries — and sync it to a GitHub Gist.**
@@ -31,7 +31,8 @@ Two operating modes:
 
 | Feature | Description |
 | ------- | ----------- |
-| In-app CRUD | Add/edit/delete catalog entries from the tray, a manga-page button, or the command palette. |
+| In-app CRUD | Add/edit/delete catalog entries from the tray, the **Catalog ⚙️** manga-page button, or the command palette. |
+| Detail form | Contextual header (cover + title when editing), reading-progress section, and **Open →** to the seanime entry page. |
 | Gist sync | Auto-push the catalog to a secret Gist the source reads, with optional scheduled pull. |
 | Reading-progress sync | Mirror chapter / status / score across devices via a second `progress.json` file. |
 | Orphan cleanup | Detect and clear progress left behind by deleted entries. |
@@ -45,7 +46,7 @@ Two operating modes:
 1. Install from the [marketplace](../../../README.md#-quick-start), or paste this extension's `manifest.json` raw URL into seanime → *Add Extension*.
 2. Create a GitHub **Personal Access Token** with the `gist` scope and paste it into this plugin's **GitHub token** config field; save.
 3. Open the plugin tray. On first save it creates a secret Gist and shows its **raw URL** — copy it into the `local-catalog` source's **Catalog URL**.
-4. Manage entries from the tray (or the *Edit local entry* button on a manga page, or the command palette). Changes push to the Gist automatically.
+4. Manage entries from the tray (or the **Catalog ⚙️** button on a local-catalog manga page, or the command palette). Changes push to the Gist automatically.
 
 <details>
 <summary>Managing the gist binding (from the tray)</summary>
@@ -83,7 +84,15 @@ Legacy installs with the old `gistUrl` config field set: the plugin migrates the
 
 ## 🔧 How it works
 
-You add/edit/delete entries from the tray, the *Edit local entry* button on a manga page, or the command palette. In **Gist mode** every change is pushed to `catalog.json` in a secret Gist that the `local-catalog` source reads; in **Local mode** you copy the serialized JSON into the source's *Inline catalog JSON* field by hand.
+You add/edit/delete entries from the tray, the **Catalog ⚙️** button on a local-catalog manga page, or the command palette. In **Gist mode** every change is pushed to `catalog.json` in a secret Gist that the `local-catalog` source reads; in **Local mode** you copy the serialized JSON into the source's *Inline catalog JSON* field by hand.
+
+### Tray UI
+
+- **List view** — gist/local mode header, catalog sync controls, reading-progress section, searchable entry list.
+- **Form view** — opened via **+ New entry**, **⚙️** on a list row, **Catalog ⚙️** on the manga page, or the command palette. Opening the tray while viewing a local-catalog manga page jumps straight into the form for that entry.
+  - **Header** — cover + resolved title when editing (or **New entry**); **← Back** returns to the list.
+  - **Reading progress** — local chapter / status / score, seanime comparison line, **Apply** when drift is detected, **Open →** to the seanime entry page.
+  - **Fields** — full `AL_BaseManga` metadata form; **Save** / **Cancel** at the bottom.
 
 For reading-progress sync (Gist mode only), seanime's `onPre/PostUpdateEntry` and `onPre/PostUpdateEntryProgress` hooks capture every change and push it to `progress.json` in the same Gist. **Pull progress** (or Auto-sync) reads it back and restores your position via `$anilist.updateEntry`.
 

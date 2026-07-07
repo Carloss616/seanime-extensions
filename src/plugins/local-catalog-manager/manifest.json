@@ -1,7 +1,7 @@
 {
   "id": "local-catalog-manager",
   "name": "Local Catalog Manager",
-  "version": "2.1.2",
+  "version": "2.2.0",
   "manifestURI": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/local-catalog-manager/manifest.json",
   "language": "typescript",
   "type": "plugin",

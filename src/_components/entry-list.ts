@@ -57,6 +57,8 @@ export interface EntryListConfig {
   noMatchText: string;
   showSearchRow?: boolean; // default true
   searchButtonLabel?: string; // default "🔍 Search"
+  /** When false, header shows only `headerLabel` (no "(N)" count). Default true. */
+  showHeaderCount?: boolean;
 }
 
 // Stable HSL tint + up to two initials when a row has no cover URL (e.g. a
@@ -243,11 +245,15 @@ export function entryList(tray: $ui.Tray, cfg: EntryListConfig): unknown {
   const headerCount = cfg.searchActive
     ? `${cfg.rows.length} / ${cfg.totalCount}`
     : `${cfg.totalCount}`;
+  const headerText =
+    cfg.showHeaderCount === false
+      ? cfg.headerLabel
+      : `${cfg.headerLabel} (${headerCount})`;
   const header = tray.flex(
     [
       tray.div(
         [
-          tray.text(`${cfg.headerLabel} (${headerCount})`, {
+          tray.text(headerText, {
             style: LABEL_STYLE,
           }),
         ],

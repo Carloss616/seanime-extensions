@@ -1,5 +1,6 @@
 import { joinDividers } from "../../../_components/divider";
 import { type EntryListRow, entryList } from "../../../_components/entry-list";
+import { LABEL_STYLE } from "../../../_components/text";
 import { trayHeader } from "../../../_components/tray-header";
 import { statusToPill } from "../../../_utils/anilist-status";
 import muLetterSvg from "../assets/mu-letter.svg";
@@ -38,16 +39,36 @@ export const register = (ctx: $ui.Context) => {
   // re-reads the mu_link_* keys.
   const linkedRefresh = ctx.state(0);
   const bumpLinked = () => linkedRefresh.set(linkedRefresh.get() + 1);
-  // When on a manga entry the tray shows just that entry's link + search; this
-  // toggles to the full "LINKED (N)" list (and hides the search). Reset to
-  // collapsed on every navigation so each entry opens in entry-mode.
-  const showAllLinked = ctx.state(false);
+  // Per-entry detail view: when set, the tray renders link + search for that
+  // manga instead of the full LINKED list.
+  const detailId = ctx.state<number | null>(null);
+
+  const getMedia = (id: number): $app.AL_BaseManga | undefined => {
+    try {
+      return $anilist.getManga(id);
+    } catch (_) {
+      return undefined;
+    }
+  };
+
+  const isLinkableEntry = (id: number): boolean => {
+    if (id <= 0) return false;
+    const media = getMedia(id);
+    if (!media) return false;
+    return !(media.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0);
+  };
+
+  const resolveEntryTitle = (media: $app.AL_BaseManga, id: number): string =>
+    (media.title &&
+      (media.title.english ||
+        media.title.userPreferred ||
+        media.title.romaji)) ||
+    `#${id}`;
 
   // Any navigation carrying an `id` searchParam is treated as a media entry
   // (no pathname filter). The button click handler also seeds currentMediaId
   // from event.media.id, in case onNavigate didn't catch the route.
   ctx.screen.onNavigate((e) => {
-    showAllLinked.set(false);
     const id = e.searchParams?.id;
     if (id) {
       const parsed = parseInt(id, 10);
@@ -298,22 +319,16 @@ export const register = (ctx: $ui.Context) => {
     searchResults.set([]);
   });
 
-  // Toggle between entry-mode (this entry's link + search) and the full
-  // "LINKED (N)" list. See `showAllLinked`.
-  ctx.registerEventHandler("mu-show-all", () => showAllLinked.set(true));
-  ctx.registerEventHandler("mu-show-current", () => showAllLinked.set(false));
+  ctx.registerEventHandler("mu-back", () => {
+    detailId.set(null);
+  });
 
-  // Seeds currentMediaId from event.media (onNavigate may not have fired for
-  // the route, e.g. opening the page directly), seeds the input, runs an
-  // initial search, and tries to open the tray — which only works if the user
-  // has pinned it (a seanime limitation).
-  btn.onClick(async (event) => {
-    const media = event.media;
+  // Open the per-entry detail view. Seeds the search input and auto-runs MU
+  // search when the entry isn't linked yet (same rules as the page button).
+  async function openEntryDetail(id: number) {
+    detailId.set(id);
+    const media = getMedia(id);
     if (!media) return;
-    showAllLinked.set(false);
-    if (media.id) currentMediaId.set(media.id);
-    // English title first — MangaUpdates is an English-language DB, so matches
-    // are most reliable against English titles.
     const title =
       (media.title &&
         (media.title.english ||
@@ -321,15 +336,22 @@ export const register = (ctx: $ui.Context) => {
           media.title.userPreferred)) ||
       "";
     searchInputRef.setValue(title);
-    // Auto-search only when the entry isn't linked yet. For already-linked
-    // entries the user is usually checking the link, not relinking, so
-    // hold the results until they explicitly press Search.
-    const existingLink = media.id ? getMULink(media.id) : undefined;
+    const existingLink = getMULink(id);
     if (!existingLink) {
       await runSearch(title);
     } else {
       searchResults.set([]);
     }
+  }
+
+  // Seeds currentMediaId from event.media (onNavigate may not have fired for
+  // the route, e.g. opening the page directly), opens the detail view, and
+  // tries to open the tray — which only works if the user has pinned it.
+  btn.onClick(async (event) => {
+    const media = event.media;
+    if (!media?.id) return;
+    currentMediaId.set(media.id);
+    await openEntryDetail(media.id);
     try {
       tray.open();
     } catch (_) {
@@ -338,8 +360,7 @@ export const register = (ctx: $ui.Context) => {
   });
   btn.mount();
 
-  // One linked-manga row, used in both tray modes. Publication status + year
-  // come from AniList (the $storage key IS the AniList mediaId), not from MU.
+  // One linked-manga row for the full list (MU identity + AL list metadata).
   const buildLinkedRow = (mediaId: number, link: MULink): EntryListRow => {
     let alMedia: $app.AL_BaseManga | undefined;
     try {
@@ -364,6 +385,17 @@ export const register = (ctx: $ui.Context) => {
       },
       actions: [
         tray.tooltip(
+          tray.button("⚙️", {
+            onClick: ctx.eventHandler(`mu-detail-${mediaId}`, () => {
+              currentMediaId.set(mediaId);
+              void openEntryDetail(mediaId);
+            }),
+            size: "sm",
+            intent: "gray-subtle",
+          }),
+          { text: "Link & details" },
+        ),
+        tray.tooltip(
           tray.button("⛔", {
             onClick: ctx.eventHandler(`mu-unlink-${mediaId}`, () =>
               unlinkMedia(mediaId),
@@ -377,10 +409,29 @@ export const register = (ctx: $ui.Context) => {
     };
   };
 
-  // The full, locally-filterable "LINKED (N)" list. inlineActions lets the
-  // caller drop a header button (e.g. the "Show current" collapse toggle).
-  // The caller separates it from siblings via joinDividers — no leading rule here.
-  const renderLinkedList = (inlineActions: unknown[] = []): unknown => {
+  // Detail-view row: MangaUpdates series only (header above is the AniList entry).
+  const buildMULinkRow = (mediaId: number, link: MULink): EntryListRow => ({
+    cover: link.cover,
+    title: link.title || `#${link.id}`,
+    year: link.year,
+    status: { label: "MangaUpdates", intent: "warning" },
+    openExternal: { href: link.url, tooltip: "View on MangaUpdates" },
+    actions: [
+      tray.tooltip(
+        tray.button("⛔", {
+          onClick: ctx.eventHandler(`mu-unlink-${mediaId}`, () =>
+            unlinkMedia(mediaId),
+          ),
+          size: "sm",
+          intent: "alert-subtle",
+        }),
+        { text: "Unlink" },
+      ),
+    ],
+  });
+
+  // The full, locally-filterable "LINKED (N)" list section.
+  const renderLinkedListSection = (): unknown => {
     const filter = linkedFilter.get().toLowerCase();
     // listMULinkIds() enumerates only top-level `mu_link_<id>` keys — it skips
     // the dotted sub-keys $storage produces for object values
@@ -408,26 +459,43 @@ export const register = (ctx: $ui.Context) => {
       searchPlaceholder: "Filter linked manga…",
       onSearch: "mu-linked-search",
       onClearSearch: "mu-linked-search-clear",
-      inlineActions,
       emptyText:
         "No linked manga yet. Open a manga entry page and use the “Link to MangaUpdates” button.",
       noMatchText: `No linked manga match "${linkedFilter.get()}".`,
     });
   };
 
+  const sectionLabelRow = (label: string, right: unknown[] = []) =>
+    tray.flex(
+      [
+        tray.div([tray.text(label, { style: LABEL_STYLE })], {
+          style: { flex: "1", alignSelf: "center" },
+        }),
+        ...right,
+      ],
+      { gap: 2, style: { alignItems: "center" } },
+    );
+
   // Search-MangaUpdates UI for the current entry: search row + "Search as"
-  // title shortcuts + the results picker.
+  // title shortcuts + the results picker. Pass `sectioned` to wrap with a
+  // MANGAUPDATES section label (detail view).
   const renderSearchUI = (
     media: $app.AL_BaseManga,
     id: number,
     link: MULink | undefined,
+    sectioned = false,
   ): unknown => {
     const out: unknown[] = [];
     const currentInput = (searchInputRef.current || "").trim();
 
     const searchRow: unknown[] = [
       tray.div(
-        [tray.input("Search MangaUpdates", { fieldRef: searchInputRef })],
+        [
+          tray.input(
+            sectioned ? "Search on MangaUpdates" : "Search MangaUpdates",
+            { fieldRef: searchInputRef },
+          ),
+        ],
         { style: { flex: "1", minWidth: "0" } },
       ),
       tray.button(isSearching.get() ? "Searching..." : "Search", {
@@ -564,126 +632,146 @@ export const register = (ctx: $ui.Context) => {
         }),
       );
     }
-    return tray.stack(out, { gap: 2 });
+    const body = tray.stack(out, { gap: 2 });
+    if (!sectioned) return body;
+    const sectionTitle = link ? "RELINK TO" : "LINK TO";
+    return tray.stack([sectionLabelRow(sectionTitle), body], { gap: 2 });
   };
 
-  // Tray content. Two modes:
-  //   - On a linkable manga entry: that entry's link + Search MangaUpdates,
-  //     with a "Show all (N)" toggle that expands into the full LINKED (N)
-  //     list (and hides the search).
-  //   - Otherwise (no entry / custom-source / load failure): just the full
-  //     LINKED (N) list.
-  tray.render(() => {
-    // $storage isn't reactive; read linkedRefresh so pick/unlink/toggle
-    // re-render.
-    linkedRefresh.get();
-    const expanded = showAllLinked.get();
-    const blocks: unknown[] = [];
-
-    const id = currentMediaId.get();
-    let media: $app.AL_BaseManga | undefined;
-    if (id) {
-      try {
-        media = $anilist.getManga(id);
-      } catch (_) {
-        media = undefined;
-      }
-    }
-    const isCustomSource =
-      !!media?.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0;
-    const onEntry = !!id && !!media && !isCustomSource;
-
-    // Current entry's link + title feed the trayHeader (subtitle + linked
-    // badge); the "Manga: <title>" row that used to head entry-mode is gone.
-    const link = onEntry ? getMULink(id) : undefined;
-    const entryTitle =
-      onEntry && media
-        ? (media.title &&
-            (media.title.english ||
-              media.title.userPreferred ||
-              media.title.romaji)) ||
-          `#${id}`
-        : undefined;
-
-    if (onEntry && media && !expanded) {
-      // ---- Entry mode (collapsed): this entry's link + search ----
-      const totalLinked = listMULinkIds().length;
-      const showAllBtn = tray.button(`Show all (${totalLinked})`, {
-        onClick: "mu-show-all",
+  const openInSeanimeButton = (id: number) =>
+    tray.tooltip(
+      tray.button("Open →", {
+        onClick: ctx.eventHandler(`mu-detail-open-${id}`, () => {
+          ctx.screen.navigateTo("/manga/entry", { id: String(id) });
+          tray.close();
+        }),
         size: "sm",
         intent: "gray-subtle",
-      });
-
-      if (link) {
-        // Single-row section for this entry's link, with the "Show all (N)"
-        // toggle in its header.
-        blocks.push(
-          entryList(tray, {
-            headerLabel: "LINKED",
-            rows: [buildLinkedRow(id, link)],
-            totalCount: 1,
-            searchActive: false,
-            searchFieldRef: fLinkedFilter,
-            searchPlaceholder: "",
-            onSearch: "",
-            onClearSearch: "",
-            inlineActions: totalLinked > 1 ? [showAllBtn] : [],
-            emptyText: "",
-            noMatchText: "",
-            showSearchRow: false,
-          }),
-        );
-      } else {
-        // Group the note + optional "Show all" button into one block so the
-        // page divider lands above the pair, not between them.
-        const notLinked: unknown[] = [tray.text("Not linked yet.")];
-        if (totalLinked > 0) notLinked.push(showAllBtn);
-        blocks.push(tray.stack(notLinked, { gap: 2 }));
-      }
-
-      blocks.push(renderSearchUI(media, id, link));
-    } else {
-      // ---- Full-list mode: not a linkable entry, or expanded via toggle ----
-      const notes: unknown[] = [];
-      if (id && media && isCustomSource) {
-        notes.push(
-          tray.text(
-            "This entry already comes from the MangaUpdates custom-source.",
-          ),
-          tray.text("Sync uses the embedded series_id — no linking needed."),
-        );
-      } else if (id && !media) {
-        notes.push(tray.text(`Could not load entry #${id}.`));
-      }
-      if (notes.length > 0) blocks.push(tray.stack(notes, { gap: 2 }));
-      const collapseBtn =
-        onEntry && expanded
-          ? [
-              tray.button("Show current", {
-                onClick: "mu-show-current",
-                size: "sm",
-                intent: "gray-subtle",
-              }),
-            ]
-          : [];
-      blocks.push(renderLinkedList(collapseBtn));
-    }
-
-    return tray.stack(
-      joinDividers(tray, [
-        trayHeader(tray, {
-          subtitle: entryTitle,
-          right: onEntry
-            ? [
-                link
-                  ? tray.badge("🔗 Linked", { intent: "success" })
-                  : tray.badge("🔓 Not linked", { intent: "gray" }),
-              ]
-            : undefined,
-        }),
-        ...blocks,
-      ]),
-      { gap: 3 },
+      }),
+      { text: "Open in seanime" },
     );
+
+  // AniList entry header for the detail view (link badge + back only).
+  function renderAniListDetailHeader(
+    media: $app.AL_BaseManga,
+    id: number,
+    link: MULink | undefined,
+  ): unknown {
+    const entryTitle = resolveEntryTitle(media, id);
+    const cover = String(
+      media.coverImage?.large ?? media.coverImage?.extraLarge ?? "",
+    );
+    return trayHeader(tray, {
+      title: entryTitle,
+      subtitle: link ? undefined : "Not linked to MangaUpdates",
+      iconUrl: cover || undefined,
+      right: [
+        link
+          ? tray.badge("🔗 Linked", { intent: "success" })
+          : tray.badge("🔓 Not linked", { intent: "gray" }),
+        tray.button("← Back", {
+          onClick: "mu-back",
+          size: "sm",
+          intent: "gray-subtle",
+        }),
+      ],
+    });
+  }
+
+  // LINKED WITH block: MU row when linked, or a short not-linked note.
+  function renderLinkedWithDetailSection(
+    id: number,
+    link: MULink | undefined,
+  ): unknown {
+    const openBtn = openInSeanimeButton(id);
+    if (link) {
+      return entryList(tray, {
+        headerLabel: "LINKED WITH",
+        inlineActions: [openBtn],
+        rows: [buildMULinkRow(id, link)],
+        totalCount: 1,
+        showHeaderCount: false,
+        searchActive: false,
+        searchFieldRef: fLinkedFilter,
+        searchPlaceholder: "",
+        onSearch: "",
+        onClearSearch: "",
+        emptyText: "",
+        noMatchText: "",
+        showSearchRow: false,
+      });
+    }
+    return tray.stack(
+      [
+        sectionLabelRow("LINKED WITH", [openBtn]),
+        tray.text("Not linked to a MangaUpdates series yet.", {
+          style: { fontSize: "0.8rem", opacity: "0.5", textAlign: "center" },
+        }),
+      ],
+      { gap: 2 },
+    );
+  }
+
+  // Root list view: plugin identity header + optional notes + full LINKED list.
+  function renderLinkedList(): unknown {
+    const id = currentMediaId.get();
+    const media = id ? getMedia(id) : undefined;
+    const isCustomSource =
+      !!media?.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0;
+    const blocks: unknown[] = [
+      trayHeader(tray, {
+        subtitle: "Link AniList entries to MangaUpdates",
+      }),
+    ];
+    const notes: unknown[] = [];
+    if (id && media && isCustomSource) {
+      notes.push(
+        tray.text(
+          "This entry already comes from the MangaUpdates custom-source.",
+        ),
+        tray.text("Sync uses the embedded series_id — no linking needed."),
+      );
+    } else if (id && !media) {
+      notes.push(tray.text(`Could not load entry #${id}.`));
+    }
+    if (notes.length > 0) blocks.push(tray.stack(notes, { gap: 2 }));
+    blocks.push(renderLinkedListSection());
+    return tray.stack(joinDividers(tray, blocks), { gap: 3 });
+  }
+
+  // Per-entry detail: AniList section + MU link + search.
+  function renderEntryDetail(): unknown {
+    const id = detailId.get();
+    if (id == null) return null;
+    const media = getMedia(id);
+    if (!media) return null;
+    const link = getMULink(id);
+
+    const blocks: unknown[] = [
+      renderAniListDetailHeader(media, id, link),
+      renderLinkedWithDetailSection(id, link),
+    ];
+    blocks.push(renderSearchUI(media, id, link, true));
+    return tray.stack(joinDividers(tray, blocks), { gap: 3 });
+  }
+
+  // Opening the tray while on a linkable manga entry page jumps to that
+  // entry's detail; opening it anywhere else shows the full linked list.
+  tray.onOpen(() => {
+    void (async () => {
+      const id = currentMediaId.get();
+      if (id > 0 && isLinkableEntry(id)) {
+        await openEntryDetail(id);
+      } else {
+        detailId.set(null);
+      }
+    })();
+  });
+
+  tray.render(() => {
+    linkedRefresh.get();
+    isSearching.get();
+    if (detailId.get() != null) return renderEntryDetail();
+    return renderLinkedList();
   });
 };

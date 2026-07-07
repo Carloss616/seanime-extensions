@@ -29,6 +29,10 @@ var register = (...args) => {
         : opts.title != null
           ? String("Library Grid Layout")
           : "";
+    const wrapStyle = {
+      overflowWrap: "break-word",
+      wordBreak: "normal",
+    };
     const textCol = [
       tray.text(title, {
         style: {
@@ -36,6 +40,7 @@ var register = (...args) => {
           fontSize: "1.15rem",
           lineHeight: "1.2",
           letterSpacing: "0.01em",
+          ...wrapStyle,
         },
       }),
     ];
@@ -46,6 +51,7 @@ var register = (...args) => {
             fontSize: "0.8rem",
             lineHeight: "1.3",
             opacity: "0.55",
+            ...wrapStyle,
           },
         }),
       );
