@@ -1,6 +1,6 @@
 # seanime-extensions
 
-A personal collection of extensions for seanime (https://github.com/5rahim/seanime), a media server and client for anime & manga. All five are manga-focused. Author: Carlos Espinoza (https://github.com/Carloss616). Licensed under MIT. Repository: https://github.com/Carloss616/seanime-extensions.
+A personal collection of extensions for seanime (https://github.com/5rahim/seanime), a media server and client for anime & manga. All six are manga-focused. Author: Carlos Espinoza (https://github.com/Carloss616). Licensed under MIT. Repository: https://github.com/Carloss616/seanime-extensions.
 
 ## Overview
 
@@ -44,6 +44,14 @@ Extension types: `custom-source` (a metadata provider for the collection) and `p
    - Reads the live viewport width and sets an inline grid-template-columns on the grid containers ([data-media-card-grid] and the virtualized [data-media-card-lazy-grid]); inline styles outrank Tailwind grid-cols-* classes. Re-applies on grid mount, new main tab, and resize across a tier.
    - Monotonic constraint (smaller screen ≤ bigger screen columns), values clamped 1–12, seanime-default toggle to restore the native grid. Permission: storage only; no network.
 
+6. Manga Source Updates (plugin, v1.0.0)
+   - UI-only: scans every CURRENT reading-list entry against all installed manga providers to find which sources have new chapters. Makes NO external HTTP calls — reads chapters through seanime's own providers (ctx.manga.*).
+   - Per manga probes each non-excluded provider fresh (emptyCache then getChapterContainer with AniList titles), in parallel batches (parallelBatch, default 10), classifies each source vs. reading progress (new / up-to-date / outdated / no-match / error), and summarizes the manga from its furthest-ahead source as "+N · M" (N unread, M sources that have it).
+   - Auto-excludes bad sources (no match / fetch error / farBehindGap+ chapters behind, default 10); exclusions/pins/results/probes persisted in $storage and rehydrated after reload. Manual exclude/include pins the source so auto-exclude can't override it. TTL (ttlMinutes, default 60) skips a recently-scanned manga.
+   - Per-manga ⚙️ detail view: Available / Excluded source groups, per-source rescan, exclude-with-reason dropdown, include. Floating draggable webview panel shows live X/Y + title scan progress on every screen. Tray-icon badge counts manga with new chapters.
+   - Config: ttlMinutes, farBehindGap, parallelBatch. Permissions: storage, anilist; no networkAccess.
+   - Known limits: tray must be pinned; scans CURRENT list only (other statuses probed on demand from a manga page); local-manga skipped; one scan at a time; float chapter numbers floor the unread gap.
+
 ## Architecture
 
 - Build: scripts/build.ts (Bun). For each src/*/*/code.ts it validates the sibling manifest (type whitelist; payloadURI must be the sibling code.js), bundles modules/*.ts standalone, re-emits each as a self-contained function, writes code.js, then regenerates marketplace.json. Never hand-edit marketplace.json.
@@ -75,5 +83,5 @@ marketplace.json  — generated index (never edit by hand)
 
 ## Roadmap
 
-- Done: MangaUpdates source + sync; Local Catalog source + manager; cross-device catalog & progress sync via Gist; library grid control.
+- Done: MangaUpdates source + sync; Local Catalog source + manager; cross-device catalog & progress sync via Gist; library grid control; cross-provider new-chapter detection (Manga Source Updates).
 - Planned: anime support in Local Catalog (anime namespace reserved, not served yet); pull-diff UI for MangaUpdates Sync (currently push-only).

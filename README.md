@@ -5,7 +5,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)
 ![Built with Bun](https://img.shields.io/badge/built%20with-Bun-14151a?style=for-the-badge&logo=bun&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
-![Extensions](https://img.shields.io/badge/extensions-5-blue?style=for-the-badge)
+![Extensions](https://img.shields.io/badge/extensions-6-blue?style=for-the-badge)
 
 **A personal collection of [seanime](https://github.com/5rahim/seanime) custom-sources and plugins â€” track manga that isn't on AniList, mirror your reads to MangaUpdates, and tune the library grid.**
 
@@ -34,8 +34,9 @@ This repo is a small, manga-focused set of them. Each extension is a `code.ts` e
 | [MangaUpdates](src/custom-source/mangaupdates/) | custom-source | Add MangaUpdates as a search & details metadata source. |
 | [MangaUpdates Sync](src/plugins/mangaupdates-sync/) | plugin | Push your reading progress, status and score to MangaUpdates. |
 | [Library Grid Layout](src/plugins/library-grid-layout/) | plugin | Set cards-per-row of the library grids, per screen size. |
+| [Manga Source Updates](src/plugins/manga-source-updates/) | plugin | Scan your reading list across all providers to find which sources have new chapters. |
 
-Two are pairs: **Local Catalog** + **Local Catalog Manager** (the plugin curates the catalog the source serves), and **MangaUpdates** + **MangaUpdates Sync** (the source finds titles, the plugin tracks them). **Library Grid Layout** is standalone.
+Two are pairs: **Local Catalog** + **Local Catalog Manager** (the plugin curates the catalog the source serves), and **MangaUpdates** + **MangaUpdates Sync** (the source finds titles, the plugin tracks them). **Library Grid Layout** and **Manga Source Updates** are standalone.
 
 ---
 
@@ -126,6 +127,7 @@ A custom-source isn't serialized per-callback, so it can be a single `code.ts` â
 - [x] Local Catalog custom-source + in-app manager
 - [x] Cross-device catalog & reading-progress sync via GitHub Gist
 - [x] Library grid column control
+- [x] Cross-provider new-chapter scanning (Manga Source Updates)
 - [ ] Anime support in Local Catalog (`anime` namespace is reserved, not served yet)
 - [ ] Pull-diff UI for MangaUpdates Sync (currently push-only)
 

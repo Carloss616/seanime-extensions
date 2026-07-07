@@ -108,7 +108,7 @@ const buildEntry = async (
         // Inline `.svg` imports as raw text (a string literal) rather than
         // emitting an asset + returning its path. Keeps icon markup in a
         // file while still surviving goja's per-callback `.toString()`.
-        loader: { ".svg": "text" },
+        loader: { ".svg": "text", ".html": "text" },
       });
       const output = await result.outputs[0]?.text();
       if (!output) throw new Error(`No output found for ${file}`);

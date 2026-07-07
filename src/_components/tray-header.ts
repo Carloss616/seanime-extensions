@@ -33,15 +33,22 @@ export function trayHeader(
   opts: TrayHeaderOptions = {},
 ): unknown {
   const title = String(opts.title ?? __MANIFEST_NAME__);
-  const iconUrl = opts.iconUrl ?? __MANIFEST_ICON__;
-  // Coerce at the trust boundary: subtitle (and title) often come from an
-  // $anilist.getManga() title field, which crosses the goja↔Go boundary as a
-  // wrapped string. A wrapped empty string is TRUTHY, so a bare `|| fallback`
-  // in the caller doesn't catch it and `if (opts.subtitle)` lets it through —
-  // then tray.text panics with "text is required". String() unwraps it to a
-  // real primitive so the empty-check below works. See CLAUDE.md "Goja value
-  // comparison".
-  const subtitle = opts.subtitle == null ? "" : String(opts.subtitle);
+  // Coerce like subtitle below: iconUrl may be a goja-wrapped empty string (a
+  // Go-bound media.coverImage), which is TRUTHY — a bare `?? fallback` keeps it
+  // and `if (iconUrl)` lets it through to tray.img(""), which panics with
+  // "src is required". String() unwraps it so empty correctly means "no icon".
+  const iconUrl =
+    opts.iconUrl == null ? __MANIFEST_ICON__ : String(opts.iconUrl);
+  // Coerce like iconUrl above: a wrapped empty subtitle is truthy and would
+  // panic tray.text with "text is required". When the caller sets a custom title
+  // but no subtitle, the manifest name drops here so the plugin identity stays
+  // visible under the custom title.
+  const subtitle =
+    opts.subtitle != null
+      ? String(opts.subtitle)
+      : opts.title != null
+        ? String(__MANIFEST_NAME__)
+        : "";
 
   // Title + subtitle stacked; the flex-1 makes this column push the right nodes
   // to the far edge.

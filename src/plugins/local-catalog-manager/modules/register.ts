@@ -1,8 +1,5 @@
 import { divider, joinDividers } from "../../../_components/divider";
-import {
-  type EntryListRow,
-  renderEntryListSection,
-} from "../../../_components/entry-list";
+import { type EntryListRow, entryList } from "../../../_components/entry-list";
 import { LABEL_STYLE } from "../../../_components/text";
 import { trayHeader } from "../../../_components/tray-header";
 import { statusToPill } from "../../../_utils/anilist-status";
@@ -1762,9 +1759,7 @@ export const register = (ctx: $ui.Context) => {
     if (linked) {
       headerActions.push(
         tray.button(
-          busyAction.get() === "reload-progress"
-            ? "⏳ Reloading…"
-            : "🔄 Reload",
+          busyAction.get() === "reload-progress" ? "⏳ Reloading…" : "↻ Reload",
           { onClick: "lcm-reload-progress", size: "sm" },
         ),
       );
@@ -2326,7 +2321,7 @@ export const register = (ctx: $ui.Context) => {
         }
         actions.push(
           tray.tooltip(
-            tray.button("✏️", {
+            tray.button("⚙️", {
               onClick: ctx.eventHandler(`lcm-edit-${e.id}`, () =>
                 openForm(e.id),
               ),
@@ -2378,12 +2373,12 @@ export const register = (ctx: $ui.Context) => {
     if (!drifting && hasToken() && effectiveGistId()) {
       inlineActions.push(
         tray.button(
-          busyAction.get() === "reload-catalog" ? "⏳ Reloading…" : "🔄 Reload",
+          busyAction.get() === "reload-catalog" ? "⏳ Reloading…" : "↻ Reload",
           { onClick: "lcm-reload-catalog", size: "sm" },
         ),
       );
     }
-    const entriesSection = renderEntryListSection(tray, {
+    const entriesSection = entryList(tray, {
       headerLabel: "ENTRIES",
       rows,
       totalCount: allEntries.length,
@@ -2794,18 +2789,18 @@ export const register = (ctx: $ui.Context) => {
     const base = [
       { label: "+ New entry", value: "new", onSelect: () => openForm(0) },
       {
-        label: "🔄 Reload catalog",
+        label: "↻ Reload catalog",
         value: "lcm-reload-catalog",
         onSelect: () => void reloadCatalog(),
       },
       {
-        label: "🔄 Reload progress",
+        label: "↻ Reload progress",
         value: "lcm-reload-progress",
         onSelect: () => void reloadProgress(),
       },
     ];
     const items = entries.get().map((en) => ({
-      label: `✏️ #${en.id} ${resolveUserPreferred(en.title) ?? ""}`,
+      label: `⚙️ #${en.id} ${resolveUserPreferred(en.title) ?? ""}`,
       value: `edit-${en.id}`,
       filterType: "includes" as const,
       onSelect: () => openForm(en.id),
@@ -2918,7 +2913,7 @@ export const register = (ctx: $ui.Context) => {
             ? tray.badge("🔗 Linked", { intent: "success" })
             : tray.badge("🔓 Not linked", { intent: "gray" }),
           tray.tooltip(
-            tray.button(expanded ? "↑" : "✏️", {
+            tray.button(expanded ? "△" : "⚙️", {
               onClick: "lcm-toggle-binding",
               size: "sm",
               disabled: drifting,
@@ -2931,7 +2926,7 @@ export const register = (ctx: $ui.Context) => {
       : [
           tray.badge("💻 this device only", { intent: "gray" }),
           tray.tooltip(
-            tray.button(expanded ? "↑" : "⚠️", {
+            tray.button(expanded ? "△" : "⚠️", {
               onClick: "lcm-toggle-binding",
               size: "sm",
             }),

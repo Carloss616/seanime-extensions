@@ -192,28 +192,56 @@ var register = (...args) => {
     letterSpacing: "0.08em",
     textTransform: "uppercase",
   };
-  function renderEntryListSection(tray, cfg) {
-    const coverBox = (src) =>
-      src
-        ? tray.img({
-            src,
-            style: {
-              width: "44px",
-              height: "62px",
-              objectFit: "cover",
-              borderRadius: "4px",
-              flexShrink: "0",
-            },
-          })
-        : tray.div([], {
-            style: {
-              width: "44px",
-              height: "62px",
-              background: "rgba(255,255,255,0.05)",
-              borderRadius: "4px",
-              flexShrink: "0",
-            },
-          });
+  function initialsCover(tray, name) {
+    const label = String(name);
+    const clean = label.replace(/[^a-zA-Z0-9]/g, "");
+    const initials = (clean.slice(0, 2) || "?").toUpperCase();
+    let h = 0;
+    for (let i = 0; i < label.length; i++) {
+      h = (h * 31 + label.charCodeAt(i)) % 360;
+    }
+    return tray.flex(
+      [
+        tray.text(initials, {
+          style: {
+            fontSize: "0.85rem",
+            fontWeight: "700",
+            lineHeight: "1",
+            textAlign: "center",
+            color: "rgba(255,255,255,0.9)",
+          },
+        }),
+      ],
+      {
+        style: {
+          width: "44px",
+          height: "62px",
+          borderRadius: "4px",
+          background: `hsl(${h}, 45%, 38%)`,
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: "0",
+        },
+      },
+    );
+  }
+  function entryList(tray, cfg) {
+    const coverBox = (src, title) => {
+      const url = src != null ? String(src).trim() : "";
+      if (url) {
+        return tray.img({
+          src: url,
+          style: {
+            width: "44px",
+            height: "62px",
+            objectFit: "cover",
+            borderRadius: "4px",
+            flexShrink: "0",
+          },
+        });
+      }
+      return initialsCover(tray, title);
+    };
     const dotSep = () =>
       tray.span("·", {
         style: { opacity: "0.35", fontSize: "0.75rem", margin: "0 2px" },
@@ -306,7 +334,10 @@ var register = (...args) => {
         ],
         { gap: 1, style: { flex: "1", minWidth: "0" } },
       );
-      const rowChildren = [coverBox(row.cover), middle];
+      const rowChildren = [
+        coverBox(row.cover, String(row.title || "Untitled")),
+        middle,
+      ];
       for (const a of row.actions ?? []) rowChildren.push(a);
       return tray.flex(rowChildren, {
         gap: 2,
@@ -402,9 +433,15 @@ var register = (...args) => {
   function trayHeader(tray, opts = {}) {
     const title = String(opts.title ?? "MangaUpdates Sync");
     const iconUrl =
-      opts.iconUrl ??
-      "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/mangaupdates-sync/assets/icon.png";
-    const subtitle = opts.subtitle == null ? "" : String(opts.subtitle);
+      opts.iconUrl == null
+        ? "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/mangaupdates-sync/assets/icon.png"
+        : String(opts.iconUrl);
+    const subtitle =
+      opts.subtitle != null
+        ? String(opts.subtitle)
+        : opts.title != null
+          ? String("MangaUpdates Sync")
+          : "";
     const textCol = [
       tray.text(title, {
         style: {
@@ -768,7 +805,7 @@ var register = (...args) => {
             (x.link.title || `#${x.link.id}`).toLowerCase().includes(filter),
           )
         : allLinked;
-      return renderEntryListSection(tray, {
+      return entryList(tray, {
         headerLabel: "LINKED",
         rows: filtered.map((x) => buildLinkedRow(x.mediaId, x.link)),
         totalCount: allLinked.length,
@@ -900,7 +937,7 @@ var register = (...args) => {
           };
         });
         out.push(
-          renderEntryListSection(tray, {
+          entryList(tray, {
             headerLabel: "RESULTS",
             rows: resultRows,
             totalCount: results.length,
@@ -951,7 +988,7 @@ var register = (...args) => {
         });
         if (link) {
           blocks.push(
-            renderEntryListSection(tray, {
+            entryList(tray, {
               headerLabel: "LINKED",
               rows: [buildLinkedRow(id, link)],
               totalCount: 1,

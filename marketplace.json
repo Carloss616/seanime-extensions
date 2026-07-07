@@ -36,6 +36,18 @@
     "website": "https://github.com/Carloss616/seanime-extensions"
   },
   {
+    "id": "manga-source-updates",
+    "name": "Manga Source Updates",
+    "description": "Refresh a manga's chapters across providers and list the sources that have new chapters.",
+    "author": "Carloss616",
+    "manifestURI": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/manga-source-updates/manifest.json",
+    "icon": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/manga-source-updates/assets/icon.png",
+    "type": "plugin",
+    "language": "typescript",
+    "lang": "en",
+    "website": "https://github.com/Carloss616/seanime-extensions"
+  },
+  {
     "id": "mangaupdates",
     "name": "MangaUpdates",
     "description": "Adds MangaUpdates as a metadata source (search and details). Read-only; does not provide chapter pages.",

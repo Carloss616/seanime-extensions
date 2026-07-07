@@ -4,7 +4,7 @@
 
 ## About
 
-Each extension is a TypeScript `code.ts` + `manifest.json`. The Bun build transpiles `code.ts` to a sibling `code.js` that seanime fetches from a raw GitHub URL and runs in a sandboxed goja runtime; a generated `marketplace.json` indexes them all. Five extensions: two custom-sources (Local Catalog, MangaUpdates) and three plugins (Local Catalog Manager, MangaUpdates Sync, Library Grid Layout).
+Each extension is a TypeScript `code.ts` + `manifest.json`. The Bun build transpiles `code.ts` to a sibling `code.js` that seanime fetches from a raw GitHub URL and runs in a sandboxed goja runtime; a generated `marketplace.json` indexes them all. Six extensions: two custom-sources (Local Catalog, MangaUpdates) and four plugins (Local Catalog Manager, MangaUpdates Sync, Library Grid Layout, Manga Source Updates).
 
 - Author: Carlos Espinoza (https://github.com/Carloss616)
 - Repository: https://github.com/Carloss616/seanime-extensions

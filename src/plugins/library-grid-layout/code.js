@@ -20,9 +20,15 @@ var register = (...args) => {
   function trayHeader(tray, opts = {}) {
     const title = String(opts.title ?? "Library Grid Layout");
     const iconUrl =
-      opts.iconUrl ??
-      "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/library-grid-layout/assets/icon.png";
-    const subtitle = opts.subtitle == null ? "" : String(opts.subtitle);
+      opts.iconUrl == null
+        ? "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/library-grid-layout/assets/icon.png"
+        : String(opts.iconUrl);
+    const subtitle =
+      opts.subtitle != null
+        ? String(opts.subtitle)
+        : opts.title != null
+          ? String("Library Grid Layout")
+          : "";
     const textCol = [
       tray.text(title, {
         style: {

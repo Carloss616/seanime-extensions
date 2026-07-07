@@ -1,8 +1,5 @@
 import { joinDividers } from "../../../_components/divider";
-import {
-  type EntryListRow,
-  renderEntryListSection,
-} from "../../../_components/entry-list";
+import { type EntryListRow, entryList } from "../../../_components/entry-list";
 import { trayHeader } from "../../../_components/tray-header";
 import { statusToPill } from "../../../_utils/anilist-status";
 import muLetterSvg from "../assets/mu-letter.svg";
@@ -402,7 +399,7 @@ export const register = (ctx: $ui.Context) => {
           (x.link.title || `#${x.link.id}`).toLowerCase().includes(filter),
         )
       : allLinked;
-    return renderEntryListSection(tray, {
+    return entryList(tray, {
       headerLabel: "LINKED",
       rows: filtered.map((x) => buildLinkedRow(x.mediaId, x.link)),
       totalCount: allLinked.length,
@@ -552,7 +549,7 @@ export const register = (ctx: $ui.Context) => {
         };
       });
       out.push(
-        renderEntryListSection(tray, {
+        entryList(tray, {
           headerLabel: "RESULTS",
           rows: resultRows,
           totalCount: results.length,
@@ -621,7 +618,7 @@ export const register = (ctx: $ui.Context) => {
         // Single-row section for this entry's link, with the "Show all (N)"
         // toggle in its header.
         blocks.push(
-          renderEntryListSection(tray, {
+          entryList(tray, {
             headerLabel: "LINKED",
             rows: [buildLinkedRow(id, link)],
             totalCount: 1,

@@ -13,6 +13,9 @@
 //
 // Trailing `actions` (edit / delete / unlink / apply buttons) are still passed
 // pre-built, because their onClick handlers close over per-plugin state.
+//
+// Cover slot: `cover` URL → tray.img; absent/empty → initials avatar tinted
+// from the row title (stable HSL hash, up to two alphanumeric chars).
 
 import { LABEL_STYLE } from "./text";
 
@@ -40,7 +43,7 @@ export interface EntryListRow {
   opacity?: number;
 }
 
-export interface EntryListSectionConfig {
+export interface EntryListConfig {
   headerLabel: string;
   rows: EntryListRow[];
   totalCount: number;
@@ -56,31 +59,66 @@ export interface EntryListSectionConfig {
   searchButtonLabel?: string; // default "🔍 Search"
 }
 
-export function renderEntryListSection(
-  tray: $ui.Tray,
-  cfg: EntryListSectionConfig,
-): unknown {
-  const coverBox = (src?: string) =>
-    src
-      ? tray.img({
-          src,
-          style: {
-            width: "44px",
-            height: "62px",
-            objectFit: "cover",
-            borderRadius: "4px",
-            flexShrink: "0",
-          },
-        })
-      : tray.div([], {
-          style: {
-            width: "44px",
-            height: "62px",
-            background: "rgba(255,255,255,0.05)",
-            borderRadius: "4px",
-            flexShrink: "0",
-          },
-        });
+// Stable HSL tint + up to two initials when a row has no cover URL (e.g. a
+// manga provider with no icon API). Pure so the build inlines it into serialized
+// callbacks alongside entryList.
+function initialsCover(tray: $ui.Tray, name: string): unknown {
+  const label = String(name);
+  const clean = label.replace(/[^a-zA-Z0-9]/g, "");
+  const initials = (clean.slice(0, 2) || "?").toUpperCase();
+  let h = 0;
+  for (let i = 0; i < label.length; i++) {
+    h = (h * 31 + label.charCodeAt(i)) % 360;
+  }
+  // tray.flex is already display:flex, so alignItems/justifyContent reliably
+  // center the initials (a plain div's flex didn't always apply in the tray).
+  return tray.flex(
+    [
+      tray.text(initials, {
+        style: {
+          fontSize: "0.85rem",
+          fontWeight: "700",
+          lineHeight: "1",
+          textAlign: "center",
+          color: "rgba(255,255,255,0.9)",
+        },
+      }),
+    ],
+    {
+      style: {
+        width: "44px",
+        height: "62px",
+        borderRadius: "4px",
+        background: `hsl(${h}, 45%, 38%)`,
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: "0",
+      },
+    },
+  );
+}
+
+export function entryList(tray: $ui.Tray, cfg: EntryListConfig): unknown {
+  const coverBox = (src: string | undefined, title: string) => {
+    const url = src != null ? String(src).trim() : "";
+    if (url) {
+      return tray.img({
+        // Coerce: `src` may be a Go-wrapped string (e.g. a Go-bound
+        // media.coverImage.large), and tray.img's Go handler type-asserts a
+        // plain string — passing the wrapped value throws "expected string,
+        // got *...". See CLAUDE.md goja boundary.
+        src: url,
+        style: {
+          width: "44px",
+          height: "62px",
+          objectFit: "cover",
+          borderRadius: "4px",
+          flexShrink: "0",
+        },
+      });
+    }
+    return initialsCover(tray, title);
+  };
 
   const dotSep = () =>
     tray.span("·", {
@@ -185,7 +223,10 @@ export function renderEntryListSection(
       // gap: 1 (4px) between title and its metadata sub-line.
       { gap: 1, style: { flex: "1", minWidth: "0" } },
     );
-    const rowChildren: unknown[] = [coverBox(row.cover), middle];
+    const rowChildren: unknown[] = [
+      coverBox(row.cover, String(row.title || "Untitled")),
+      middle,
+    ];
     for (const a of row.actions ?? []) rowChildren.push(a);
     return tray.flex(rowChildren, {
       gap: 2,
