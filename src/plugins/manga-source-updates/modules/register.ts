@@ -1,4 +1,5 @@
 import { joinDividers } from "../../../_components/divider";
+import { createDomDecorator } from "../../../_components/dom-decorator";
 import {
   type EntryListIntent,
   type EntryListRow,
@@ -687,6 +688,12 @@ export const register = (ctx: $ui.Context) => {
     for (const pid of Object.keys(existing)) {
       if (excluded[key]?.[pid] != null) continue;
       const chs = await readCachedContainer(mediaId, pid);
+      // Only UPGRADE from a cache read that actually returned chapters. A miss
+      // (null = thrown, [] = no cached container) must NOT downgrade a
+      // previously-good probe to error/no-match — that made opening the detail
+      // flip every source to "error" when seanime had no cache. Re-fetching a
+      // source stays strictly on-demand (the Scan buttons).
+      if (!chs || chs.length === 0) continue;
       const probe = makeProbe(pid, providers[pid] ?? pid, chs);
       const prev = existing[pid];
       if (
@@ -1327,6 +1334,11 @@ export const register = (ctx: $ui.Context) => {
     }
   }
 
+  // Shared DOM-injection harness (loop/duplicate guard, per-target lock,
+  // restartable observers, re-arm lifecycle). Decorations are registered further
+  // down; onNavigate re-arms it (SPA nav doesn't fire onMainTabReady).
+  const dm = createDomDecorator(ctx);
+
   // Opening the tray while on a manga entry page jumps to that manga's source
   // detail; opening it anywhere else shows the list.
   ctx.screen.onNavigate((e) => {
@@ -1336,6 +1348,7 @@ export const register = (ctx: $ui.Context) => {
     const mediaId = Number.isFinite(id) ? id : 0;
     currentMediaId.set(mediaId);
     if (mediaId > 0) void syncProbesFromCache(mediaId);
+    dm.arm();
   });
   ctx.screen.loadCurrent();
 
@@ -1352,6 +1365,329 @@ export const register = (ctx: $ui.Context) => {
       else detailId.set(null);
     })();
   });
+
+  // Native quick-access button on every manga entry page. Opens this manga's
+  // source detail in the tray (no DOM injection — seanime provides the button
+  // slot via ctx.action). Its label/tooltip reflect the last scan for the manga.
+  const entryButton = ctx.action.newMangaPageButton({
+    label: "MSU",
+    intent: "gray-subtle",
+    tooltipText: "Manga Source Updates",
+  });
+  entryButton.mount();
+  entryButton.onClick((e) => {
+    const id = Number(e.media?.id ?? 0);
+    if (id > 0) {
+      currentMediaId.set(id);
+      openDetail(id);
+    }
+    // tray.open() works whether or not the tray icon is pinned.
+    try {
+      tray.open();
+    } catch {
+      /* tray unavailable */
+    }
+  });
+
+  // Keep the button's label/tooltip in step with the current manga's scan row:
+  // "MSU +3 · 4" when scanned, plain "MSU" otherwise.
+  ctx.effect(() => {
+    const id = currentMediaId.get();
+    const row =
+      id > 0 ? results.get().find((r) => r.mediaId === id) : undefined;
+    if (row) {
+      const s = statusFor(row);
+      entryButton.setLabel(`MSU ${s.label}`);
+      entryButton.setIntent(
+        s.intent === "success" ? "success-subtle" : "gray-subtle",
+      );
+      entryButton.setTooltipText(`Manga Source Updates · ${s.tip}`);
+    } else {
+      entryButton.setLabel("MSU");
+      entryButton.setIntent("gray-subtle");
+      entryButton.setTooltipText(
+        "Manga Source Updates — scan to check sources",
+      );
+    }
+  }, [results, currentMediaId]);
+
+  // §3: overlay a "+N · M" badge on scanned manga cards in the library grid.
+  // Pure DOM (seanime has no card-badge API). The badge lives in the top-left
+  // corner of the cover; each carries a data-msu-sig signature encoding its
+  // desired content, so a re-fire whose signature already matches does nothing
+  // (no mutation → no observer loop), while a scan/read that changes the numbers
+  // produces a new signature and re-decorates. Unread is computed from the
+  // card's own data-list-data progress, so reading a chapter updates the badge
+  // with no gap (seanime re-renders the card → observer re-fires → fresh number).
+  const cardBadgeColors = (
+    intent: EntryListIntent,
+  ): { bg: string; fg: string } => {
+    switch (intent) {
+      case "success":
+        return { bg: "#16a34a", fg: "#ffffff" };
+      case "warning":
+        return { bg: "#d97706", fg: "#ffffff" };
+      case "alert":
+        return { bg: "#dc2626", fg: "#ffffff" };
+      default:
+        return { bg: "rgba(0,0,0,0.65)", fg: "#e5e7eb" };
+    }
+  };
+
+  // §3: a "+N · M" badge on scanned manga cards in the library grid. Compute the
+  // desired content, then hand off to the shared harness (loop/duplicate guard,
+  // per-mediaId lock, denshi-safe query/append). Unread is derived from the
+  // card's OWN live progress so a read updates it with no gap.
+  const decorateCard = async (el: $ui.DOMElement) => {
+    let mediaId = 0;
+    try {
+      mediaId = Number((await el.getAttribute("data-media-id")) ?? 0);
+    } catch {
+      return;
+    }
+    if (!mediaId) return;
+
+    // Progress from the card's own list-data (String() guards the goja
+    // wrapped-empty-string trap; inner catch keeps a bad attr from aborting).
+    let progress = 0;
+    try {
+      const ld = String((await el.getAttribute("data-list-data")) ?? "");
+      if (ld) progress = Number(JSON.parse(ld).progress ?? 0);
+    } catch {
+      /* progress stays 0 */
+    }
+
+    const row = results.get().find((r) => r.mediaId === mediaId);
+    let sig: string;
+    let label = "";
+    let intent: EntryListIntent = "gray";
+    let tip = "";
+    if (row) {
+      const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
+      // Reclassify against the card's live progress so +N is never stale; keep
+      // terminal kinds (no-match / all-excluded / error) as-is.
+      let kind = row.kind;
+      if (kind === "new" || kind === "up-to-date" || kind === "outdated") {
+        kind = classify(progress, row.latest, row.sources, false, gap);
+      }
+      const s = statusFor({ ...row, read: progress, kind });
+      label = s.label;
+      intent = s.intent;
+      tip = s.tip;
+      sig = `${mediaId}:${label}:${intent}`;
+    } else {
+      sig = `${mediaId}:none`;
+    }
+
+    await dm.decorate(el, {
+      marker: "msu-card-badge",
+      lockKey: String(mediaId),
+      sig,
+      render: (node) => {
+        // Unscanned manga: hidden signed marker (no visible badge, not re-run).
+        if (!row) {
+          node.setStyle("display", "none");
+          el.append(node);
+          return;
+        }
+        // Inject into the card CONTAINER (el), NOT the card body: the body has
+        // `isolate` (own stacking context) that traps a child below the hover
+        // popup (z-15) at any z-index. As a sibling of the popup with z-16 the
+        // badge stays visible; pointer-events:none so it doesn't eat hover/click.
+        const { bg, fg } = cardBadgeColors(intent);
+        node.setStyle("position", "absolute");
+        node.setStyle("z-index", "16");
+        node.setStyle("left", "0");
+        node.setStyle("top", "0");
+        node.setStyle("pointer-events", "none");
+        node.setInnerHTML(
+          `<span title="${tip}" style="display:inline-flex;align-items:center;height:1.15rem;padding:0 6px;font-size:0.7rem;font-weight:700;letter-spacing:0.02em;border-radius:4px 0 6px 0;background:${bg};color:${fg};box-shadow:0 1px 2px rgba(0,0,0,0.4);">${label}</span>`,
+        );
+        el.append(node);
+      },
+    });
+  };
+
+  // §2: a "New on: {source} +N" bar in the chapter-list header of the entry page
+  // — ports the fork's data-chapter-list-unread-by-source to vanilla. Lists every
+  // non-excluded, matched source with unread chapters; informational only (a
+  // plugin can't flip the reader's Source dropdown). Progress is read live from
+  // the entry header, so reading a chapter updates the counts with no gap.
+  const escHtml = (s: string) =>
+    String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/"/g, "&quot;");
+
+  const decorateBar = async (container: $ui.DOMElement) => {
+    const mediaId = currentMediaId.get();
+    if (!mediaId) return; // not on a manga entry page
+
+    // Fresh reader progress from the entry header (no gap on read); fall back to
+    // the stored row's read if the badge isn't present.
+    let read = results.get().find((r) => r.mediaId === mediaId)?.read ?? 0;
+    try {
+      const pEl = await ctx.dom.queryOne(
+        "[data-media-page-header-progress-badge-progress]",
+      );
+      if (pEl) {
+        const t = String((await pEl.getText()) ?? "").trim();
+        if (t && !Number.isNaN(Number(t))) read = Number(t);
+      }
+    } catch {
+      /* keep row read */
+    }
+
+    const key = String(mediaId);
+    const probes = probeCache.get()[mediaId] ?? {};
+    const excluded =
+      $storage.get<Record<string, Record<string, string>>>(K_EXCLUDED)?.[key] ??
+      {};
+    const providers = ctx.manga.getProviders();
+    const items = Object.keys(probes)
+      .filter((pid) => pid !== "local-manga" && excluded[pid] == null)
+      .map((pid) => ({ pid, p: probes[pid] }))
+      .filter((x) => x.p?.matched && unreadChapters(read, x.p.latest) > 0)
+      .map((x) => ({
+        pid: x.pid,
+        name: String(providers[x.pid] ?? x.p.providerName ?? x.pid),
+        unread: unreadChapters(read, x.p.latest),
+        latest: x.p.latest,
+      }))
+      .sort((a, b) => b.latest - a.latest || a.name.localeCompare(b.name));
+
+    const sig = items.length
+      ? items.map((i) => `${i.pid}+${i.unread}`).join(",")
+      : "none";
+
+    await dm.decorate(container, {
+      marker: "msu-bar",
+      lockKey: "bar", // singleton per entry page
+      sig,
+      scope: container,
+      render: async (node) => {
+        // Anchor after the first header row (source selector) — always present.
+        const headers = await container.query(
+          "[data-chapter-list-header-container]",
+        );
+        const anchor = headers?.[0];
+        if (!anchor) return; // chapter list not ready yet; a later pass retries
+        if (!items.length) {
+          node.setStyle("display", "none");
+          anchor.after(node);
+          return;
+        }
+        node.setStyle("display", "flex");
+        node.setStyle("flex-wrap", "wrap");
+        node.setStyle("gap", "8px");
+        node.setStyle("align-items", "center");
+        node.setInnerHTML(
+          `<span style="opacity:.55;font-size:.8rem">New on:</span>` +
+            items
+              .map(
+                (i) =>
+                  `<span title="${escHtml(i.name)}: ${i.unread} unread chapter${i.unread === 1 ? "" : "s"}" style="display:inline-flex;align-items:center;height:1.5rem;padding:0 8px;font-size:.75rem;font-weight:600;letter-spacing:.02em;border-radius:9999px;background:#16a34a;color:#fff">${escHtml(i.name)} +${i.unread}</span>`,
+              )
+              .join(""),
+        );
+        anchor.after(node);
+      },
+    });
+  };
+
+  // Explicit query→decorate passes (run on arm + refresh) — cover elements
+  // already mounted before the observers ran; the sig guard keeps them idempotent.
+  const redecorateCards = async () => {
+    try {
+      const cards = await ctx.dom.query(
+        '[data-media-entry-card-container][data-media-type="manga"]',
+      );
+      for (const el of cards ?? []) void decorateCard(el);
+    } catch {
+      /* no cards on this screen */
+    }
+  };
+  const redecorateBar = async () => {
+    try {
+      const cont = await ctx.dom.queryOne("[data-chapter-list-container]");
+      if (cont) void decorateBar(cont);
+    } catch {
+      /* not on an entry page */
+    }
+  };
+
+  // In-place read reactivity: reading a chapter changes the entry header's
+  // progress number with no navigation / scan / state change. Push that fresh
+  // progress into `results` so EVERYTHING that reads from state reacts — the
+  // native [MSU] button, the tray detail, the list, and (via the effect) the
+  // card badges + bar — not just the observed DOM.
+  const applyProgressFromDom = async () => {
+    const id = currentMediaId.get();
+    if (!id) return;
+    let read: number | null = null;
+    try {
+      const pEl = await ctx.dom.queryOne(
+        "[data-media-page-header-progress-badge-progress]",
+      );
+      if (pEl) {
+        const t = String((await pEl.getText()) ?? "").trim();
+        if (t && !Number.isNaN(Number(t))) read = Number(t);
+      }
+    } catch {
+      /* keep null */
+    }
+    if (read == null) return;
+    const cur = results.get().find((r) => r.mediaId === id);
+    if (!cur || Number(cur.read) === read) return; // nothing new
+    const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
+    const probes = probeCache.get()[id];
+    if (probes && Object.keys(probes).length) {
+      syncRow(id, buildResult(id, cur, read, gap, probes));
+    } else {
+      // No probes cached — just move progress + reclassify from stored latest.
+      const kind = classify(read, cur.latest, cur.sources, false, gap);
+      syncRow(id, { ...cur, read, kind });
+    }
+  };
+
+  // Wire the decorations into the harness. Cards: observe the stable grid (bulk
+  // add/remove) AND individual cards (in-place virtualization windowing). Bar:
+  // observe the chapter-list container; the progress badge drives in-place read
+  // reactivity. Explicit passes cover already-mounted nodes.
+  dm.observe(
+    "[data-media-card-grid], [data-media-card-lazy-grid]",
+    () => void redecorateCards(),
+  );
+  dm.observe(
+    '[data-media-entry-card-container][data-media-type="manga"]',
+    (els) => {
+      for (const el of els ?? []) void decorateCard(el);
+    },
+    { withInnerHTML: true },
+  );
+  dm.observe(
+    "[data-chapter-list-container]",
+    (els) => {
+      const c = els[0];
+      if (c) void decorateBar(c);
+    },
+    { withInnerHTML: true },
+  );
+  dm.observe("[data-media-page-header-progress-badge-progress]", () => {
+    void applyProgressFromDom();
+    void redecorateBar();
+  });
+  dm.pass(redecorateCards);
+  dm.pass(redecorateBar);
+  dm.start();
+
+  // A scan changes plugin state but NOT seanime's DOM, so nudge a repaint.
+  ctx.effect(() => {
+    results.get();
+    probeCache.get();
+    currentMediaId.get();
+    dm.refresh();
+  }, [results, probeCache, currentMediaId]);
 
   tray.render(() => {
     if (detailId.get() != null) return renderDetail();

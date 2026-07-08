@@ -5,12 +5,12 @@
 # 🔎 Manga Source Updates
 
 ![Type](https://img.shields.io/badge/type-plugin-3b82f6?style=for-the-badge)
-![Version](https://img.shields.io/badge/version-1.0.0-22c55e?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-1.1.0-22c55e?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 
 **Scans your reading list against every installed manga provider and tells you which sources have new chapters.**
 
-[Features](#-features) · [Quick Start](#-quick-start) · [How it works](#-how-it-works) · [Source detail view](#-source-detail-view) · [Permissions](#-permissions)
+[Features](#-features) · [Quick Start](#-quick-start) · [On seanime's pages](#-on-seanimes-pages) · [How it works](#-how-it-works) · [Source detail view](#-source-detail-view) · [Permissions](#-permissions)
 
 </div>
 
@@ -18,7 +18,7 @@
 
 ## 💡 Concept
 
-> seanime lets one manga come from many providers, but only shows the one you're reading. This plugin refreshes each manga on your **CURRENT** list across *all* your installed providers and surfaces the source that's furthest ahead — so you never miss a release just because your usual source is behind. UI-only: no hooks, no external network.
+> seanime lets one manga come from many providers, but only shows the one you're reading. This plugin refreshes each manga on your **CURRENT** list across *all* your installed providers and surfaces the source that's furthest ahead — so you never miss a release just because your usual source is behind. It shows the results both in its own tray and **directly on seanime's manga pages** (a button, a per-source bar, and card badges). UI-only: no hooks, no external network.
 
 ---
 
@@ -30,6 +30,8 @@
 | Best-source summary | Per manga: `+N · M` — **N** unread chapters on the furthest-ahead source, **M** sources that have it. |
 | New-chapters section | Manga with unread chapters float to the top; the tray-icon badge counts them on every screen. |
 | Per-source detail | A `⚙️` view per manga: every source split into **Available** / **Excluded**, each with rescan + exclude controls. |
+| On-page UI | A native **MSU** button on the manga entry, a **"New on: {source} +N"** bar in the chapter list, and a **`+N · M`** badge on library cards — see [On seanime's pages](#-on-seanimes-pages). |
+| Live, no-gap updates | Read a chapter and the counts update instantly everywhere (button, bar, card badge, list) — no reopening needed. |
 | Smart auto-exclude | Sources that don't match, error, or sit far behind your progress are remembered and skipped next scan. |
 | Live progress panel | A draggable floating panel shows `X/Y + current title` while a scan runs, on any screen. |
 | Cheap rescans | TTL skips manga checked within *N* minutes; parallel batches keep a full-list scan fast. |
@@ -39,8 +41,8 @@
 ## 🚀 Quick Start
 
 1. Install from the [marketplace](../../../README.md#-quick-start), or paste this extension's `manifest.json` raw URL into seanime → *Add Extension*.
-2. **Pin the tray icon** (top-right of the seanime navbar) so the tray can open.
-3. Open the tray and hit **↻ Scan**. Manga with new chapters land in the **New chapters** section.
+2. Open the tray (from the navbar, or the **MSU** button on any manga entry page) and hit **↻ Scan**.
+3. Manga with new chapters land in the **New chapters** section — and the results now show on seanime's own pages too (see below).
 
 > [!NOTE]
 > Uses only your **already-installed manga providers** through documented APIs (`$ui.register`, `ctx.newTray`, `ctx.newWebview`, `ctx.manga.*`, `ctx.state`, `$storage`, `$anilist`). It makes **no external HTTP calls of its own** — hence an empty `networkAccess` allow-list.
@@ -52,6 +54,21 @@
 | `ttlMinutes` | `60` | Skip re-checking a manga scanned within this many minutes. **Force rescan** ignores it. |
 | `farBehindGap` | `10` | Auto-exclude a source this many chapters *behind* your progress (likely a wrong match). |
 | `parallelBatch` | `10` | How many providers to probe at once per manga. |
+
+---
+
+## 🖼 On seanime's pages
+
+Beyond its own tray, the plugin surfaces scan results in place, updating live as you read:
+
+| Where | What |
+| ----- | ---- |
+| **Manga entry page** | A native **MSU** button (next to seanime's own actions) whose label reflects the manga's status (`MSU +3 · 4`); click it to open the source detail. |
+| **Chapter list header** | A **"New on: {source} +N"** bar listing every non-excluded source that has unread chapters (informational — you still pick the source in seanime's own dropdown). |
+| **Library cards** | A **`+N · M`** badge in the top-left corner of each scanned manga's cover. |
+
+> [!NOTE]
+> These are added with seanime's native action API (the button) and `ctx.dom` injection (the bar + badges) — no extra permissions. The shared harness lives in [`src/_components/dom-decorator.ts`](../../_components/dom-decorator.ts). Reading a chapter updates every surface instantly (progress is read straight from the page), so counts never lag.
 
 ---
 
@@ -116,8 +133,8 @@ Manually excluding **or** including a source **pins** it for that manga, so a la
 
 ## ⚠️ Known limitations
 
-- **Tray must be pinned** to open — a documented limitation of the tray API.
 - **Reading list only.** Scans `CURRENT` entries; manga in Planning/Completed/etc. aren't swept (open one's entry page to probe it on demand).
+- **On-page UI targets seanime's DOM.** The `ctx.dom` bar/badges rely on seanime's own markup; a major frontend refactor could move the anchors (they fail silently, never breaking the page). The chapter-list "New on:" bar is informational — a plugin can't switch the reader's Source dropdown.
 - **`local-manga` is skipped** — it's your local library, not a release source.
 - **One scan at a time.** A per-manga or per-source scan blocks the global scan (and vice-versa) — they'd fight over the shared chapter cache.
 - **Chapter numbers are floats.** Unread counts floor the gap (`+0` on a `.5` release), so a source can read "up to date" until a whole chapter lands.

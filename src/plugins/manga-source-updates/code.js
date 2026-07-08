@@ -14,6 +14,77 @@ var register = (...args) => {
     }
     return out;
   }
+  function decideDecoration(existingSigs, desiredSig) {
+    return existingSigs.length === 1 && existingSigs[0] === desiredSig
+      ? "skip"
+      : "rebuild";
+  }
+  function createDomDecorator(ctx) {
+    const locks = new Set();
+    const observers = [];
+    const passes = [];
+    let stops = [];
+    function observe(selector, cb, opts) {
+      observers.push({ selector, cb, opts });
+    }
+    function pass(fn) {
+      passes.push(fn);
+    }
+    function refresh() {
+      for (const p of passes) p();
+    }
+    function arm() {
+      for (const s of stops) {
+        try {
+          s();
+        } catch {}
+      }
+      stops = [];
+      for (const { selector, cb, opts } of observers) {
+        const [stop] = ctx.dom.observe(selector, cb, opts);
+        stops.push(stop);
+      }
+      refresh();
+    }
+    async function decorate(el, o) {
+      const lk = `${o.marker}:${o.lockKey}`;
+      if (locks.has(lk)) return;
+      locks.add(lk);
+      try {
+        const scope = o.scope ?? el;
+        const sigAttr = `data-${o.marker}-sig`;
+        let existing = [];
+        try {
+          existing = (await scope.query(`[data-${o.marker}]`)) ?? [];
+        } catch {
+          existing = [];
+        }
+        const sigs = [];
+        for (const x of existing) {
+          sigs.push(String((await x.getAttribute(sigAttr)) ?? ""));
+        }
+        if (decideDecoration(sigs, o.sig) === "skip") return;
+        for (const x of existing) {
+          try {
+            x.remove();
+          } catch {}
+        }
+        const node = await ctx.dom.createElement("div");
+        node.setAttribute(`data-${o.marker}`, "1");
+        node.setAttribute(sigAttr, o.sig);
+        await o.render(node);
+      } catch {
+      } finally {
+        locks.delete(lk);
+      }
+    }
+    function start() {
+      arm();
+      ctx.dom.onMainTabReady(arm);
+      ctx.dom.onReady(arm);
+    }
+    return { observe, pass, refresh, arm, decorate, start };
+  }
   var LABEL_STYLE = {
     fontSize: "0.7rem",
     fontWeight: "700",
@@ -805,6 +876,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       for (const pid of Object.keys(existing)) {
         if (excluded[key]?.[pid] != null) continue;
         const chs = await readCachedContainer(mediaId, pid);
+        if (!chs || chs.length === 0) continue;
         const probe = makeProbe(pid, providers[pid] ?? pid, chs);
         const prev = existing[pid];
         if (
@@ -1318,6 +1390,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         results.set(next);
       }
     }
+    const dm = createDomDecorator(ctx);
     ctx.screen.onNavigate((e) => {
       const isManga = String(e.pathname ?? "").includes("/manga/");
       const raw = isManga ? e.searchParams?.id : "";
@@ -1325,6 +1398,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       const mediaId = Number.isFinite(id) ? id : 0;
       currentMediaId.set(mediaId);
       if (mediaId > 0) syncProbesFromCache(mediaId);
+      dm.arm();
     });
     ctx.screen.loadCurrent();
     tray.onOpen(() => {
@@ -1340,6 +1414,242 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         else detailId.set(null);
       })();
     });
+    const entryButton = ctx.action.newMangaPageButton({
+      label: "MSU",
+      intent: "gray-subtle",
+      tooltipText: "Manga Source Updates",
+    });
+    entryButton.mount();
+    entryButton.onClick((e) => {
+      const id = Number(e.media?.id ?? 0);
+      if (id > 0) {
+        currentMediaId.set(id);
+        openDetail(id);
+      }
+      try {
+        tray.open();
+      } catch {}
+    });
+    ctx.effect(() => {
+      const id = currentMediaId.get();
+      const row =
+        id > 0 ? results.get().find((r) => r.mediaId === id) : undefined;
+      if (row) {
+        const s = statusFor(row);
+        entryButton.setLabel(`MSU ${s.label}`);
+        entryButton.setIntent(
+          s.intent === "success" ? "success-subtle" : "gray-subtle",
+        );
+        entryButton.setTooltipText(`Manga Source Updates · ${s.tip}`);
+      } else {
+        entryButton.setLabel("MSU");
+        entryButton.setIntent("gray-subtle");
+        entryButton.setTooltipText(
+          "Manga Source Updates — scan to check sources",
+        );
+      }
+    }, [results, currentMediaId]);
+    const cardBadgeColors = (intent) => {
+      switch (intent) {
+        case "success":
+          return { bg: "#16a34a", fg: "#ffffff" };
+        case "warning":
+          return { bg: "#d97706", fg: "#ffffff" };
+        case "alert":
+          return { bg: "#dc2626", fg: "#ffffff" };
+        default:
+          return { bg: "rgba(0,0,0,0.65)", fg: "#e5e7eb" };
+      }
+    };
+    const decorateCard = async (el) => {
+      let mediaId = 0;
+      try {
+        mediaId = Number((await el.getAttribute("data-media-id")) ?? 0);
+      } catch {
+        return;
+      }
+      if (!mediaId) return;
+      let progress = 0;
+      try {
+        const ld = String((await el.getAttribute("data-list-data")) ?? "");
+        if (ld) progress = Number(JSON.parse(ld).progress ?? 0);
+      } catch {}
+      const row = results.get().find((r) => r.mediaId === mediaId);
+      let sig;
+      let label = "";
+      let intent = "gray";
+      let tip = "";
+      if (row) {
+        const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
+        let kind = row.kind;
+        if (kind === "new" || kind === "up-to-date" || kind === "outdated") {
+          kind = classify(progress, row.latest, row.sources, false, gap);
+        }
+        const s = statusFor({ ...row, read: progress, kind });
+        label = s.label;
+        intent = s.intent;
+        tip = s.tip;
+        sig = `${mediaId}:${label}:${intent}`;
+      } else {
+        sig = `${mediaId}:none`;
+      }
+      await dm.decorate(el, {
+        marker: "msu-card-badge",
+        lockKey: String(mediaId),
+        sig,
+        render: (node) => {
+          if (!row) {
+            node.setStyle("display", "none");
+            el.append(node);
+            return;
+          }
+          const { bg, fg } = cardBadgeColors(intent);
+          node.setStyle("position", "absolute");
+          node.setStyle("z-index", "16");
+          node.setStyle("left", "0");
+          node.setStyle("top", "0");
+          node.setStyle("pointer-events", "none");
+          node.setInnerHTML(
+            `<span title="${tip}" style="display:inline-flex;align-items:center;height:1.15rem;padding:0 6px;font-size:0.7rem;font-weight:700;letter-spacing:0.02em;border-radius:4px 0 6px 0;background:${bg};color:${fg};box-shadow:0 1px 2px rgba(0,0,0,0.4);">${label}</span>`,
+          );
+          el.append(node);
+        },
+      });
+    };
+    const escHtml = (s) =>
+      String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/"/g, "&quot;");
+    const decorateBar = async (container) => {
+      const mediaId = currentMediaId.get();
+      if (!mediaId) return;
+      let read = results.get().find((r) => r.mediaId === mediaId)?.read ?? 0;
+      try {
+        const pEl = await ctx.dom.queryOne(
+          "[data-media-page-header-progress-badge-progress]",
+        );
+        if (pEl) {
+          const t = String((await pEl.getText()) ?? "").trim();
+          if (t && !Number.isNaN(Number(t))) read = Number(t);
+        }
+      } catch {}
+      const key = String(mediaId);
+      const probes = probeCache.get()[mediaId] ?? {};
+      const excluded = $storage.get(K_EXCLUDED)?.[key] ?? {};
+      const providers = ctx.manga.getProviders();
+      const items = Object.keys(probes)
+        .filter((pid) => pid !== "local-manga" && excluded[pid] == null)
+        .map((pid) => ({ pid, p: probes[pid] }))
+        .filter((x) => x.p?.matched && unreadChapters(read, x.p.latest) > 0)
+        .map((x) => ({
+          pid: x.pid,
+          name: String(providers[x.pid] ?? x.p.providerName ?? x.pid),
+          unread: unreadChapters(read, x.p.latest),
+          latest: x.p.latest,
+        }))
+        .sort((a, b) => b.latest - a.latest || a.name.localeCompare(b.name));
+      const sig = items.length
+        ? items.map((i) => `${i.pid}+${i.unread}`).join(",")
+        : "none";
+      await dm.decorate(container, {
+        marker: "msu-bar",
+        lockKey: "bar",
+        sig,
+        scope: container,
+        render: async (node) => {
+          const headers = await container.query(
+            "[data-chapter-list-header-container]",
+          );
+          const anchor = headers?.[0];
+          if (!anchor) return;
+          if (!items.length) {
+            node.setStyle("display", "none");
+            anchor.after(node);
+            return;
+          }
+          node.setStyle("display", "flex");
+          node.setStyle("flex-wrap", "wrap");
+          node.setStyle("gap", "8px");
+          node.setStyle("align-items", "center");
+          node.setInnerHTML(
+            `<span style="opacity:.55;font-size:.8rem">New on:</span>${items.map((i) => `<span title="${escHtml(i.name)}: ${i.unread} unread chapter${i.unread === 1 ? "" : "s"}" style="display:inline-flex;align-items:center;height:1.5rem;padding:0 8px;font-size:.75rem;font-weight:600;letter-spacing:.02em;border-radius:9999px;background:#16a34a;color:#fff">${escHtml(i.name)} +${i.unread}</span>`).join("")}`,
+          );
+          anchor.after(node);
+        },
+      });
+    };
+    const redecorateCards = async () => {
+      try {
+        const cards = await ctx.dom.query(
+          '[data-media-entry-card-container][data-media-type="manga"]',
+        );
+        for (const el of cards ?? []) decorateCard(el);
+      } catch {}
+    };
+    const redecorateBar = async () => {
+      try {
+        const cont = await ctx.dom.queryOne("[data-chapter-list-container]");
+        if (cont) decorateBar(cont);
+      } catch {}
+    };
+    const applyProgressFromDom = async () => {
+      const id = currentMediaId.get();
+      if (!id) return;
+      let read = null;
+      try {
+        const pEl = await ctx.dom.queryOne(
+          "[data-media-page-header-progress-badge-progress]",
+        );
+        if (pEl) {
+          const t = String((await pEl.getText()) ?? "").trim();
+          if (t && !Number.isNaN(Number(t))) read = Number(t);
+        }
+      } catch {}
+      if (read == null) return;
+      const cur = results.get().find((r) => r.mediaId === id);
+      if (!cur || Number(cur.read) === read) return;
+      const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
+      const probes = probeCache.get()[id];
+      if (probes && Object.keys(probes).length) {
+        syncRow(id, buildResult(id, cur, read, gap, probes));
+      } else {
+        const kind = classify(read, cur.latest, cur.sources, false, gap);
+        syncRow(id, { ...cur, read, kind });
+      }
+    };
+    dm.observe(
+      "[data-media-card-grid], [data-media-card-lazy-grid]",
+      () => void redecorateCards(),
+    );
+    dm.observe(
+      '[data-media-entry-card-container][data-media-type="manga"]',
+      (els) => {
+        for (const el of els ?? []) decorateCard(el);
+      },
+      { withInnerHTML: true },
+    );
+    dm.observe(
+      "[data-chapter-list-container]",
+      (els) => {
+        const c = els[0];
+        if (c) decorateBar(c);
+      },
+      { withInnerHTML: true },
+    );
+    dm.observe("[data-media-page-header-progress-badge-progress]", () => {
+      applyProgressFromDom();
+      redecorateBar();
+    });
+    dm.pass(redecorateCards);
+    dm.pass(redecorateBar);
+    dm.start();
+    ctx.effect(() => {
+      results.get();
+      probeCache.get();
+      currentMediaId.get();
+      dm.refresh();
+    }, [results, probeCache, currentMediaId]);
     tray.render(() => {
       if (detailId.get() != null) return renderDetail();
       const header = trayHeader(tray, {
