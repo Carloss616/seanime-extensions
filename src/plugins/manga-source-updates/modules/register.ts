@@ -38,7 +38,8 @@ interface StoredResult {
   cover?: string;
   latest: number; // highest chapter across the matched sources
   read: number;
-  sources: number; // how many sources have this manga
+  sources: number; // how many sources have this manga (matched, non-excluded)
+  newSources?: number; // of those, how many have unread chapters (drives the M in "+N · M")
   kind: ResultKind;
   checkedAt: number; // ms epoch
 }
@@ -247,6 +248,10 @@ export const register = (ctx: $ui.Context) => {
   // mediaId of the manga entry the user is currently viewing (0 = not on one),
   // tracked via onNavigate so opening the tray on a manga page jumps to it.
   const currentMediaId = ctx.state<number>(0);
+  // Confirm-before-global-scan modal (opened from the library page's "Refresh
+  // sources" menu, which fires with no confirmation of its own). Lives in the
+  // tray render tree, so opening it also opens the tray.
+  const confirmGlobalOpen = ctx.state<boolean>(false);
 
   // Collect every CURRENT reading entry across the collection's lists.
   function readingEntries(
@@ -335,6 +340,11 @@ export const register = (ctx: $ui.Context) => {
       (p) => p.matched && excluded[key]?.[p.provider] == null,
     );
     const maxLatest = matched.reduce((m, p) => Math.max(m, p.latest), 0);
+    // M in "+N · M" = matched sources that actually have unread chapters, not the
+    // total matched count.
+    const newSources = matched.filter(
+      (p) => unreadChapters(read, p.latest) > 0,
+    ).length;
     let kind: ResultKind;
     if (matched.length) {
       kind = classify(read, maxLatest, matched.length, false, gap);
@@ -350,6 +360,7 @@ export const register = (ctx: $ui.Context) => {
       latest: maxLatest,
       read,
       sources: matched.length,
+      newSources,
       kind,
       checkedAt: Date.now(),
     };
@@ -392,14 +403,21 @@ export const register = (ctx: $ui.Context) => {
       Math.floor(Number($getUserPreference("parallelBatch") ?? "10")) || 10,
     );
     scanProgress.set({ mediaId, done: 0, total: toScan.length });
+    // Bump the counter the moment EACH source resolves, not after the whole
+    // batch — otherwise the panel jumps 0→10→20 (by BATCH) and sits idle in
+    // between. goja runs these continuations single-threaded, so `done++` needs
+    // no locking.
+    let done = 0;
     for (let i = 0; i < toScan.length; i += BATCH) {
       if (cancelRequested.get()) break;
       const batch = toScan.slice(i, i + BATCH);
       const fetched = await Promise.all(
-        batch.map(async (pid) => ({
-          pid,
-          chs: await readContainer(mediaId, pid, titles, year, true),
-        })),
+        batch.map(async (pid) => {
+          const chs = await readContainer(mediaId, pid, titles, year, true);
+          done++;
+          scanProgress.set({ mediaId, done, total: toScan.length });
+          return { pid, chs };
+        }),
       );
       for (const { pid, chs } of fetched) {
         const probe = makeProbe(pid, providers[pid], chs);
@@ -420,11 +438,6 @@ export const register = (ctx: $ui.Context) => {
           }
         }
       }
-      scanProgress.set({
-        mediaId,
-        done: Object.keys(probes).length,
-        total: toScan.length,
-      });
       onProgress?.(probes); // once per batch
     }
     $storage.set(K_EXCLUDED, excluded);
@@ -582,13 +595,55 @@ export const register = (ctx: $ui.Context) => {
   const individualScanRunning = () =>
     probingId.get() != null || scanningProvider.get() !== "";
 
-  ctx.registerEventHandler("msu-scan", () => {
-    if (scanning.get() || individualScanRunning()) return;
+  // Gate for wiring MSU scans onto seanime's OWN buttons ("Reload sources" on the
+  // entry page, "Refresh sources" on the library). Default on. MSU's own tray
+  // controls are unaffected — this only governs the native-button hooks.
+  const syncNativeButtons = (): boolean =>
+    ($getUserPreference("syncNativeButtons") ?? "true") !== "false";
+
+  // A scan (global OR per-manga) is already running — reject a new trigger with a
+  // toast instead of silently ignoring it (per the concurrency requirement). Any
+  // user-initiated scan entry point routes through this first.
+  const rejectIfBusy = (): boolean => {
+    if (scanning.get() || individualScanRunning()) {
+      ctx.toast.info(
+        "A scan is already running — wait for it to finish before starting another",
+      );
+      return true;
+    }
+    return false;
+  };
+
+  // Open the confirm-before-global-scan modal (from the library "Refresh sources"
+  // menu). Guarded so repeated clicks while a scan runs just toast.
+  const requestGlobalScan = () => {
+    if (rejectIfBusy()) return;
+    confirmGlobalOpen.set(true);
+    // The modal lives in the tray tree, so the tray must be open to show it.
+    try {
+      tray.open();
+    } catch {
+      /* tray unavailable (not pinned) — run without the modal as a fallback */
+      void runScan(false);
+    }
+  };
+
+  ctx.registerEventHandler("msu-gconfirm-close", () =>
+    confirmGlobalOpen.set(false),
+  );
+  ctx.registerEventHandler("msu-gconfirm-run", () => {
+    confirmGlobalOpen.set(false);
+    if (rejectIfBusy()) return; // a scan slipped in while the modal was open
     void runScan(false);
   });
 
+  // Tray "↻ Scan" — route through the same confirm view as the library menu.
+  ctx.registerEventHandler("msu-scan", () => {
+    requestGlobalScan();
+  });
+
   ctx.registerEventHandler("msu-force", () => {
-    if (scanning.get() || individualScanRunning()) return;
+    if (rejectIfBusy()) return;
     void runScan(true);
   });
 
@@ -886,17 +941,19 @@ export const register = (ctx: $ui.Context) => {
   }
 
   // Reading-list status pill: `+N · M` where N = unread chapters on the best
-  // source, M = how many sources have this manga. Non-matched states keep a word.
+  // source, M = how many sources actually have unread chapters. When N is 0
+  // there's nothing new, so drop the "+" and show a plain "0 · 0". Non-matched
+  // states keep a word.
   function statusFor(r: MangaResult): {
     label: string;
     intent: EntryListIntent;
     tip: string;
   } {
-    const m = r.sources ?? 0;
     const unread = unreadChapters(r.read, r.latest);
-    const nm = `+${unread} · ${m}`;
+    const m = unread > 0 ? (r.newSources ?? 0) : 0;
+    const nm = unread > 0 ? `+${unread} · ${m}` : "0 · 0";
     // `+N · M` tooltip decodes the compact badge; word states describe themselves.
-    const nmTip = `${unread} unread · ${m} source${m === 1 ? "" : "s"}`;
+    const nmTip = `${unread} unread by ${m} source${m === 1 ? "" : "s"}`;
     // The three "+N · M" kinds differ only by color; the rest are self-describing.
     const MAP: Record<
       ResultKind,
@@ -1226,15 +1283,18 @@ export const register = (ctx: $ui.Context) => {
   // otherwise a single per-manga scan ("Scan this manga") drives the same panel.
   // scanProgress carries {done,total} per source but no title, so pull it from
   // the detail title / the manga's row.
+  // `kind` disambiguates the panel's "x/y": a global scan counts MANGA across the
+  // reading list ("library"), a single per-manga scan counts SOURCES ("sources").
   const panelStatus = ctx.state<{
     done: number;
     total: number;
     title: string;
+    kind: "library" | "sources";
   } | null>(null);
   ctx.effect(() => {
     const g = scanStatus.get();
     if (g) {
-      panelStatus.set(g);
+      panelStatus.set({ ...g, kind: "library" });
       return;
     }
     const p = scanProgress.get();
@@ -1243,7 +1303,7 @@ export const register = (ctx: $ui.Context) => {
         detailTitle.get() ||
         results.get().find((r) => r.mediaId === p.mediaId)?.title ||
         "";
-      panelStatus.set({ done: p.done, total: p.total, title });
+      panelStatus.set({ done: p.done, total: p.total, title, kind: "sources" });
       return;
     }
     panelStatus.set(null);
@@ -1256,14 +1316,22 @@ export const register = (ctx: $ui.Context) => {
   const scanPanel = ctx.newWebview({
     slot: "fixed",
     width: "320px",
-    height: "88px",
+    height: "60px",
     hidden: true,
     window: { draggable: true, defaultPosition: "bottom-right" },
   });
   scanPanel.channel.sync("scan", panelStatus);
   scanPanel.setContent(() => scanPanelHtml);
+  // Toggle show/hide ONLY on the visibility transition, not on every counter
+  // tick — calling show() each tick re-mounts the iframe (resetting it to the
+  // 0% initial HTML before channel.sync re-pushes the value), which is the 0→N
+  // flicker. The count itself flows to the already-mounted iframe via the sync.
+  let panelVisible = false;
   ctx.effect(() => {
-    if (panelStatus.get()) scanPanel.show();
+    const visible = panelStatus.get() != null;
+    if (visible === panelVisible) return;
+    panelVisible = visible;
+    if (visible) scanPanel.show();
     else scanPanel.hide();
   }, [panelStatus]);
 
@@ -1296,11 +1364,13 @@ export const register = (ctx: $ui.Context) => {
       const probes = probesById[r.mediaId];
       let latest = r.latest;
       let sources = r.sources;
+      let newSources = r.newSources;
       let kind = r.kind;
       if (probes && Object.keys(probes).length > 0) {
         const summary = buildResult(r.mediaId, r, read, gap, probes);
         latest = summary.latest;
         sources = summary.sources;
+        newSources = summary.newSources;
         kind = summary.kind;
       } else if (r.sources > 0) {
         kind = classify(read, r.latest, r.sources, false, gap);
@@ -1310,19 +1380,21 @@ export const register = (ctx: $ui.Context) => {
         Number(read) === Number(r.read) &&
         latest === r.latest &&
         sources === r.sources &&
+        newSources === r.newSources &&
         kind === r.kind &&
         isNew === r.isNew
       ) {
         return r;
       }
       changed = true;
-      const row = { ...r, read, latest, sources, kind, isNew };
+      const row = { ...r, read, latest, sources, newSources, kind, isNew };
       stored[String(r.mediaId)] = {
         title: row.title,
         cover: row.cover,
         latest,
         read,
         sources,
+        newSources,
         kind,
         checkedAt: row.checkedAt,
       };
@@ -1616,6 +1688,83 @@ export const register = (ctx: $ui.Context) => {
     }
   };
 
+  // Mirror seanime's own "Reload sources" flow. The header button only OPENS a
+  // confirm modal (and only refetches the reader's SELECTED source on confirm),
+  // so hook the modal's "Reload" button — firing on the actual confirmation, not
+  // on opening or cancelling — to also kick off a full MSU scan of THIS manga
+  // (every non-excluded source); the bar / card badges / detail refresh in one go.
+  // The modal is a radix portal at the document root, so it's observed separately
+  // (§ dm.observe [role=dialog]). Nothing in it carries a data-* of its own, so:
+  //   • gate on the title (.UI-Modal__title === "Reload sources") to skip the
+  //     Manual-match dialog and every other confirm modal;
+  //   • the confirm button is the FIRST <button> that isn't the close (X) — DOM
+  //     order is Reload, Cancel, then UI-Modal__close, so [0] is Reload.
+  // Stamp data-msu-reload-hooked so repeated observer fires within one open don't
+  // double-attach; each re-open is a fresh element (no attr) → re-hooked. query()
+  // [0], never the denshi-broken queryOne. ponytail: attribute guard only, no
+  // handle bookkeeping — the modal element is discarded on close.
+  const hookReloadModal = async (dialog: $ui.DOMElement) => {
+    if (!currentMediaId.get()) return; // not on a manga entry page
+    try {
+      const titleEl = (await dialog.query(".UI-Modal__title"))[0];
+      const title = titleEl
+        ? String((await titleEl.getText()) ?? "")
+            .trim()
+            .toLowerCase()
+        : "";
+      if (title !== "reload sources") return; // some other dialog
+      const btn = (await dialog.query("button:not(.UI-Modal__close)"))[0];
+      if (!btn) return;
+      if (await btn.hasAttribute("data-msu-reload-hooked")) return;
+      btn.setAttribute("data-msu-reload-hooked", "1");
+      btn.addEventListener("click", () => {
+        if (!syncNativeButtons()) return; // native-button sync disabled in config
+        const id = currentMediaId.get();
+        if (id <= 0) return;
+        if (rejectIfBusy()) return; // toast + ignore while another scan runs
+        void probeMangaDetail(id);
+      });
+    } catch {
+      /* couldn't hook this render */
+    }
+  };
+
+  // Mirror the library page's "Refresh sources" dropdown item (a radix menu
+  // portaled to the document root). Unlike the entry page's "Reload sources" it
+  // fires with NO confirmation, so hooking it directly would launch the heavy
+  // whole-list scan on a single click — instead open our own confirm modal
+  // (requestGlobalScan → confirmGlobalOpen). The menu item carries no data-* of
+  // its own; match it by text (lowercased) among the menu's [role=menuitem]s, so
+  // the sibling "Unread chapters only" and every other menu are skipped. Stamp
+  // data-msu-refresh-hooked so repeated observer fires within one open don't
+  // double-attach; each re-open is a fresh element → re-hooked. query()[0], never
+  // the denshi-broken queryOne.
+  const hookRefreshMenu = async (menu: $ui.DOMElement) => {
+    let items: $ui.DOMElement[] = [];
+    try {
+      items = (await menu.query("[role='menuitem']")) ?? [];
+    } catch {
+      return;
+    }
+    for (const item of items) {
+      try {
+        const text = String((await item.getText()) ?? "")
+          .trim()
+          .toLowerCase();
+        if (text !== "refresh sources") continue;
+        if (await item.hasAttribute("data-msu-refresh-hooked")) return;
+        item.setAttribute("data-msu-refresh-hooked", "1");
+        item.addEventListener("click", () => {
+          if (!syncNativeButtons()) return; // native-button sync disabled
+          requestGlobalScan();
+        });
+      } catch {
+        /* couldn't hook this item */
+      }
+      return;
+    }
+  };
+
   // In-place read reactivity: reading a chapter changes the entry header's
   // progress number with no navigation / scan / state change. Push that fresh
   // progress into `results` so EVERYTHING that reads from state reacts — the
@@ -1673,6 +1822,16 @@ export const register = (ctx: $ui.Context) => {
     },
     { withInnerHTML: true },
   );
+  // The "Reload sources" confirm modal mounts as a document-root portal, so it's
+  // observed on its own (not under the chapter-list container).
+  dm.observe("[role='dialog']", (els) => {
+    for (const el of els ?? []) void hookReloadModal(el);
+  });
+  // The library page's "Refresh sources" dropdown is a radix menu portal — hook
+  // its item on every open (radix re-mounts the menu each time).
+  dm.observe("[role='menu']", (els) => {
+    for (const el of els ?? []) void hookRefreshMenu(el);
+  });
   dm.observe("[data-media-page-header-progress-badge-progress]", () => {
     void applyProgressFromDom();
     void redecorateBar();
@@ -1689,7 +1848,36 @@ export const register = (ctx: $ui.Context) => {
     dm.refresh();
   }, [results, probeCache, currentMediaId]);
 
+  // Confirm-before-global-scan view. A state-driven swap of the whole tray
+  // content (like the reference extension's overlay) instead of a native
+  // tray.modal — a controlled tray.modal didn't reliably close on Cancel/confirm,
+  // whereas a plain state toggle + re-render always does.
+  function renderGlobalConfirm(): unknown {
+    const head = trayHeader(tray, {
+      title: "Refresh all sources?",
+      subtitle:
+        "Scans every manga in your reading list across all installed sources — this can take a while.",
+    });
+    const actionRow = tray.flex(
+      [
+        tray.button("Cancel", {
+          onClick: "msu-gconfirm-close",
+          size: "sm",
+          intent: "gray-subtle",
+        }),
+        tray.button("↻ Scan all", {
+          onClick: "msu-gconfirm-run",
+          size: "sm",
+          intent: "primary",
+        }),
+      ],
+      { gap: 2, style: { alignItems: "center", justifyContent: "flex-end" } },
+    );
+    return tray.stack(joinDividers(tray, [head, actionRow]), { gap: 3 });
+  }
+
   tray.render(() => {
+    if (confirmGlobalOpen.get()) return renderGlobalConfirm();
     if (detailId.get() != null) return renderDetail();
 
     const header = trayHeader(tray, {
@@ -1705,12 +1893,13 @@ export const register = (ctx: $ui.Context) => {
             }),
           ]
         : [
+            // Opens the confirm view (msu-scan → requestGlobalScan). Kept
+            // ENABLED even while a per-manga scan runs so the click registers and
+            // rejectIfBusy can toast "a scan is already running" instead of the
+            // button silently doing nothing.
             tray.button("↻ Scan", {
               onClick: "msu-scan",
               size: "sm",
-              // Blocked while a per-manga scan (kicked off from a detail view)
-              // is still running in the background.
-              disabled: individualScanRunning(),
             }),
             tray.dropdownMenu({
               trigger: tray.button("…", {
@@ -1720,7 +1909,6 @@ export const register = (ctx: $ui.Context) => {
               items: [
                 tray.dropdownMenuItem(tray.span("↻ Force rescan"), {
                   onClick: "msu-force",
-                  disabled: individualScanRunning(),
                 }),
                 tray.dropdownMenuItem(tray.span("Clear exclusions"), {
                   onClick: "msu-clear-excl",

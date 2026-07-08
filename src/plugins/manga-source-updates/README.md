@@ -5,7 +5,7 @@
 # 🔎 Manga Source Updates
 
 ![Type](https://img.shields.io/badge/type-plugin-3b82f6?style=for-the-badge)
-![Version](https://img.shields.io/badge/version-1.1.0-22c55e?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-1.2.0-22c55e?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 
 **Scans your reading list against every installed manga provider and tells you which sources have new chapters.**
@@ -54,6 +54,7 @@
 | `ttlMinutes` | `60` | Skip re-checking a manga scanned within this many minutes. **Force rescan** ignores it. |
 | `farBehindGap` | `10` | Auto-exclude a source this many chapters *behind* your progress (likely a wrong match). |
 | `parallelBatch` | `10` | How many providers to probe at once per manga. |
+| `syncNativeButtons` | `true` | Also run a scan when you click seanime's own **Reload sources** (entry page → scans that manga) / **Refresh sources** (library → confirms, then scans the whole list). |
 
 ---
 

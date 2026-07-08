@@ -401,7 +401,7 @@ var register = (...args) => {
 *{box-sizing:border-box}
 html,body{margin:0;width:100%;height:100%;overflow:hidden;color-scheme:dark}
 body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
-.card{width:100%;height:100%;background:#10161f;color:#e2e8f0;border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:12px 14px;box-shadow:0 6px 18px rgba(0,0,0,.35)}
+.card{width:100%;height:100%;background:#10161f;color:#e2e8f0;border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:12px 14px;box-shadow:0 6px 18px rgba(0,0,0,.35);display:flex;flex-direction:column;justify-content:center}
 .row{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .count{font-size:.8rem;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
 .title{font-size:.75rem;opacity:.6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -415,7 +415,8 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
 <script>
   window.webview.on("scan", (s)=> {
     if(!s) return;
-    document.getElementById("count").textContent = \`Scanning \${s.done}/\${s.total}\`;
+    var word = s.kind === "sources" ? "Checking sources" : "Scanning manga";
+    document.getElementById("count").textContent = \`\${word} \${s.done}/\${s.total}\`;
     document.getElementById("title").textContent = s.title || "";
     var pct = s.total ? Math.round(s.done / s.total * 100) : 0;
     document.getElementById("fill").style.width = \`\${pct}%\`;
@@ -545,6 +546,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       $storage.set(K_PROBES, next);
     }
     const currentMediaId = ctx.state(0);
+    const confirmGlobalOpen = ctx.state(false);
     function readingEntries(col) {
       const out = [];
       for (const list of col.lists ?? []) {
@@ -603,6 +605,9 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         (p) => p.matched && excluded[key]?.[p.provider] == null,
       );
       const maxLatest = matched.reduce((m, p) => Math.max(m, p.latest), 0);
+      const newSources = matched.filter(
+        (p) => unreadChapters(read, p.latest) > 0,
+      ).length;
       let kind;
       if (matched.length) {
         kind = classify(read, maxLatest, matched.length, false, gap);
@@ -618,6 +623,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         latest: maxLatest,
         read,
         sources: matched.length,
+        newSources,
         kind,
         checkedAt: Date.now(),
       };
@@ -640,14 +646,17 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         Math.floor(Number($getUserPreference("parallelBatch") ?? "10")) || 10,
       );
       scanProgress.set({ mediaId, done: 0, total: toScan.length });
+      let done = 0;
       for (let i = 0; i < toScan.length; i += BATCH) {
         if (cancelRequested.get()) break;
         const batch = toScan.slice(i, i + BATCH);
         const fetched = await Promise.all(
-          batch.map(async (pid) => ({
-            pid,
-            chs: await readContainer(mediaId, pid, titles, year, true),
-          })),
+          batch.map(async (pid) => {
+            const chs = await readContainer(mediaId, pid, titles, year, true);
+            done++;
+            scanProgress.set({ mediaId, done, total: toScan.length });
+            return { pid, chs };
+          }),
         );
         for (const { pid, chs } of fetched) {
           const probe = makeProbe(pid, providers[pid], chs);
@@ -667,11 +676,6 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
             }
           }
         }
-        scanProgress.set({
-          mediaId,
-          done: Object.keys(probes).length,
-          total: toScan.length,
-        });
         onProgress?.(probes);
       }
       $storage.set(K_EXCLUDED, excluded);
@@ -796,12 +800,39 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     const individualScanRunning = () =>
       probingId.get() != null || scanningProvider.get() !== "";
-    ctx.registerEventHandler("msu-scan", () => {
-      if (scanning.get() || individualScanRunning()) return;
+    const syncNativeButtons = () =>
+      ($getUserPreference("syncNativeButtons") ?? "true") !== "false";
+    const rejectIfBusy = () => {
+      if (scanning.get() || individualScanRunning()) {
+        ctx.toast.info(
+          "A scan is already running — wait for it to finish before starting another",
+        );
+        return true;
+      }
+      return false;
+    };
+    const requestGlobalScan = () => {
+      if (rejectIfBusy()) return;
+      confirmGlobalOpen.set(true);
+      try {
+        tray.open();
+      } catch {
+        runScan(false);
+      }
+    };
+    ctx.registerEventHandler("msu-gconfirm-close", () =>
+      confirmGlobalOpen.set(false),
+    );
+    ctx.registerEventHandler("msu-gconfirm-run", () => {
+      confirmGlobalOpen.set(false);
+      if (rejectIfBusy()) return;
       runScan(false);
     });
+    ctx.registerEventHandler("msu-scan", () => {
+      requestGlobalScan();
+    });
     ctx.registerEventHandler("msu-force", () => {
-      if (scanning.get() || individualScanRunning()) return;
+      if (rejectIfBusy()) return;
       runScan(true);
     });
     ctx.registerEventHandler("msu-cancel", () => {
@@ -1022,10 +1053,10 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       }
     }
     function statusFor(r) {
-      const m = r.sources ?? 0;
       const unread = unreadChapters(r.read, r.latest);
-      const nm = `+${unread} · ${m}`;
-      const nmTip = `${unread} unread · ${m} source${m === 1 ? "" : "s"}`;
+      const m = unread > 0 ? (r.newSources ?? 0) : 0;
+      const nm = unread > 0 ? `+${unread} · ${m}` : "0 · 0";
+      const nmTip = `${unread} unread by ${m} source${m === 1 ? "" : "s"}`;
       const MAP = {
         new: { label: nm, intent: "success", tip: nmTip },
         "up-to-date": { label: nm, intent: "gray", tip: nmTip },
@@ -1300,7 +1331,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     ctx.effect(() => {
       const g = scanStatus.get();
       if (g) {
-        panelStatus.set(g);
+        panelStatus.set({ ...g, kind: "library" });
         return;
       }
       const p = scanProgress.get();
@@ -1309,7 +1340,12 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           detailTitle.get() ||
           results.get().find((r) => r.mediaId === p.mediaId)?.title ||
           "";
-        panelStatus.set({ done: p.done, total: p.total, title });
+        panelStatus.set({
+          done: p.done,
+          total: p.total,
+          title,
+          kind: "sources",
+        });
         return;
       }
       panelStatus.set(null);
@@ -1317,14 +1353,18 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     const scanPanel = ctx.newWebview({
       slot: "fixed",
       width: "320px",
-      height: "88px",
+      height: "60px",
       hidden: true,
       window: { draggable: true, defaultPosition: "bottom-right" },
     });
     scanPanel.channel.sync("scan", panelStatus);
     scanPanel.setContent(() => scan_panel_default);
+    let panelVisible = false;
     ctx.effect(() => {
-      if (panelStatus.get()) scanPanel.show();
+      const visible = panelStatus.get() != null;
+      if (visible === panelVisible) return;
+      panelVisible = visible;
+      if (visible) scanPanel.show();
       else scanPanel.hide();
     }, [panelStatus]);
     async function refreshProgress() {
@@ -1353,11 +1393,13 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         const probes = probesById[r.mediaId];
         let latest = r.latest;
         let sources = r.sources;
+        let newSources = r.newSources;
         let kind = r.kind;
         if (probes && Object.keys(probes).length > 0) {
           const summary = buildResult(r.mediaId, r, read, gap, probes);
           latest = summary.latest;
           sources = summary.sources;
+          newSources = summary.newSources;
           kind = summary.kind;
         } else if (r.sources > 0) {
           kind = classify(read, r.latest, r.sources, false, gap);
@@ -1367,19 +1409,21 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           Number(read) === Number(r.read) &&
           latest === r.latest &&
           sources === r.sources &&
+          newSources === r.newSources &&
           kind === r.kind &&
           isNew === r.isNew
         ) {
           return r;
         }
         changed = true;
-        const row = { ...r, read, latest, sources, kind, isNew };
+        const row = { ...r, read, latest, sources, newSources, kind, isNew };
         stored[String(r.mediaId)] = {
           title: row.title,
           cover: row.cover,
           latest,
           read,
           sources,
+          newSources,
           kind,
           checkedAt: row.checkedAt,
         };
@@ -1593,6 +1637,52 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         if (cont) decorateBar(cont);
       } catch {}
     };
+    const hookReloadModal = async (dialog) => {
+      if (!currentMediaId.get()) return;
+      try {
+        const titleEl = (await dialog.query(".UI-Modal__title"))[0];
+        const title = titleEl
+          ? String((await titleEl.getText()) ?? "")
+              .trim()
+              .toLowerCase()
+          : "";
+        if (title !== "reload sources") return;
+        const btn = (await dialog.query("button:not(.UI-Modal__close)"))[0];
+        if (!btn) return;
+        if (await btn.hasAttribute("data-msu-reload-hooked")) return;
+        btn.setAttribute("data-msu-reload-hooked", "1");
+        btn.addEventListener("click", () => {
+          if (!syncNativeButtons()) return;
+          const id = currentMediaId.get();
+          if (id <= 0) return;
+          if (rejectIfBusy()) return;
+          probeMangaDetail(id);
+        });
+      } catch {}
+    };
+    const hookRefreshMenu = async (menu) => {
+      let items = [];
+      try {
+        items = (await menu.query("[role='menuitem']")) ?? [];
+      } catch {
+        return;
+      }
+      for (const item of items) {
+        try {
+          const text = String((await item.getText()) ?? "")
+            .trim()
+            .toLowerCase();
+          if (text !== "refresh sources") continue;
+          if (await item.hasAttribute("data-msu-refresh-hooked")) return;
+          item.setAttribute("data-msu-refresh-hooked", "1");
+          item.addEventListener("click", () => {
+            if (!syncNativeButtons()) return;
+            requestGlobalScan();
+          });
+        } catch {}
+        return;
+      }
+    };
     const applyProgressFromDom = async () => {
       const id = currentMediaId.get();
       if (!id) return;
@@ -1637,6 +1727,12 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       },
       { withInnerHTML: true },
     );
+    dm.observe("[role='dialog']", (els) => {
+      for (const el of els ?? []) hookReloadModal(el);
+    });
+    dm.observe("[role='menu']", (els) => {
+      for (const el of els ?? []) hookRefreshMenu(el);
+    });
     dm.observe("[data-media-page-header-progress-badge-progress]", () => {
       applyProgressFromDom();
       redecorateBar();
@@ -1650,7 +1746,31 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       currentMediaId.get();
       dm.refresh();
     }, [results, probeCache, currentMediaId]);
+    function renderGlobalConfirm() {
+      const head = trayHeader(tray, {
+        title: "Refresh all sources?",
+        subtitle:
+          "Scans every manga in your reading list across all installed sources — this can take a while.",
+      });
+      const actionRow = tray.flex(
+        [
+          tray.button("Cancel", {
+            onClick: "msu-gconfirm-close",
+            size: "sm",
+            intent: "gray-subtle",
+          }),
+          tray.button("↻ Scan all", {
+            onClick: "msu-gconfirm-run",
+            size: "sm",
+            intent: "primary",
+          }),
+        ],
+        { gap: 2, style: { alignItems: "center", justifyContent: "flex-end" } },
+      );
+      return tray.stack(joinDividers(tray, [head, actionRow]), { gap: 3 });
+    }
     tray.render(() => {
+      if (confirmGlobalOpen.get()) return renderGlobalConfirm();
       if (detailId.get() != null) return renderDetail();
       const header = trayHeader(tray, {
         subtitle:
@@ -1668,7 +1788,6 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
               tray.button("↻ Scan", {
                 onClick: "msu-scan",
                 size: "sm",
-                disabled: individualScanRunning(),
               }),
               tray.dropdownMenu({
                 trigger: tray.button("…", {
@@ -1678,7 +1797,6 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
                 items: [
                   tray.dropdownMenuItem(tray.span("↻ Force rescan"), {
                     onClick: "msu-force",
-                    disabled: individualScanRunning(),
                   }),
                   tray.dropdownMenuItem(tray.span("Clear exclusions"), {
                     onClick: "msu-clear-excl",
