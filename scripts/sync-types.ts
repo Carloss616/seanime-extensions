@@ -5,9 +5,8 @@
  * pinned to a commit SHA recorded in types/goja/.sync-meta.json.
  *
  * Usage:
- *   bun run sync:types              # re-sync at the pinned SHA (main HEAD on first run)
+ *   bun run sync:types              # sync at main HEAD, repin (default)
  *   bun run sync:types --ref <x>    # sync at branch/tag/sha <x>, repin
- *   bun run sync:types --latest     # sync at main HEAD, repin
  *
  * Set GITHUB_TOKEN to raise the GitHub API rate limit (60/hr unauthenticated).
  */
@@ -18,13 +17,14 @@ const TYPES_GLOB = /^internal\/extension_repo\/.*\.d\.ts$/;
 /** Upstream paths to skip (basename collisions / known conflicts). Empty today. */
 const IGNORE: string[] = [];
 
-const GOJA_DIR = join(import.meta.dir, "..", "types", "goja");
+const GOJA_REL = "types/goja"; // repo-relative; stored in meta + used for output
+const GOJA_DIR = join(import.meta.dir, "..", GOJA_REL);
 const META_PATH = join(GOJA_DIR, ".sync-meta.json");
 
 interface SyncMeta {
   repo: string;
   ref: string;
-  syncedAt: string;
+  committedAt: string;
   files: { src: string; out: string }[];
 }
 
@@ -75,7 +75,9 @@ function ghHeaders(): Record<string, string> {
   return h;
 }
 
-async function resolveSha(ref: string): Promise<string> {
+async function resolveSha(
+  ref: string,
+): Promise<{ sha: string; committedAt: string }> {
   const res = await fetch(
     `https://api.github.com/repos/${REPO}/commits/${ref}`,
     {
@@ -87,8 +89,11 @@ async function resolveSha(ref: string): Promise<string> {
       `Failed to resolve ref "${ref}": ${res.status} ${res.statusText}`,
     );
   }
-  const body = (await res.json()) as { sha: string };
-  return body.sha;
+  const body = (await res.json()) as {
+    sha: string;
+    commit: { committer: { date: string } };
+  };
+  return { sha: body.sha, committedAt: body.commit.committer.date };
 }
 
 async function listTree(sha: string): Promise<string[]> {
@@ -114,45 +119,45 @@ async function listTree(sha: string): Promise<string[]> {
 }
 
 async function downloadRaw(sha: string, path: string): Promise<string> {
-  const res = await fetch(
-    `https://raw.githubusercontent.com/${REPO}/${sha}/${path}`,
-    {
-      headers: { "User-Agent": "seanime-extensions-sync" },
-    },
+  // Try the contents API first (5000/hr when GITHUB_TOKEN is valid). On an
+  // auth error (401/403 — no/invalid token), fall back to
+  // raw.githubusercontent.com, which needs no auth but is IP rate-limited.
+  const api = await fetch(
+    `https://api.github.com/repos/${REPO}/contents/${path}?ref=${sha}`,
+    { headers: { ...ghHeaders(), Accept: "application/vnd.github.raw" } },
   );
-  if (!res.ok) {
+  if (api.ok) return api.text();
+  if (api.status !== 401 && api.status !== 403) {
     throw new Error(
-      `Failed to download ${path} @${sha}: ${res.status} ${res.statusText}`,
+      `Failed to download ${path} @${sha}: ${api.status} ${api.statusText}`,
     );
   }
-  return res.text();
-}
 
-async function readPinnedRef(): Promise<string | null> {
-  try {
-    const meta = (await Bun.file(META_PATH).json()) as SyncMeta;
-    return meta.ref ?? null;
-  } catch {
-    return null;
+  const raw = await fetch(
+    `https://raw.githubusercontent.com/${REPO}/${sha}/${path}`,
+    { headers: { "User-Agent": "seanime-extensions-sync" } },
+  );
+  if (!raw.ok) {
+    throw new Error(
+      `Failed to download ${path} @${sha}: ${raw.status} ${raw.statusText}`,
+    );
   }
+  return raw.text();
 }
 
 // ---------- orchestration ----------
 
 async function main(argv: string[]): Promise<void> {
+  // Default: latest main. Pass --ref <x> to sync a specific branch/tag/SHA.
   const refFlagIdx = argv.indexOf("--ref");
-  let targetRef: string;
-  if (argv.includes("--latest")) {
-    targetRef = "main";
-  } else if (refFlagIdx !== -1) {
+  let targetRef = "main";
+  if (refFlagIdx !== -1) {
     const value = argv[refFlagIdx + 1];
     if (!value) throw new Error("--ref requires a value (branch, tag, or SHA)");
     targetRef = value;
-  } else {
-    targetRef = (await readPinnedRef()) ?? "main";
   }
 
-  const sha = await resolveSha(targetRef);
+  const { sha, committedAt } = await resolveSha(targetRef);
   const shortSha = sha.slice(0, 7);
   console.log(`Syncing ${REPO} types @ ${sha} (from ref "${targetRef}")`);
 
@@ -164,17 +169,18 @@ async function main(argv: string[]): Promise<void> {
   const targets = flattenTargets(typePaths);
 
   const files: { src: string; out: string }[] = [];
-  for (const [src, out] of targets) {
+  for (const [src, base] of targets) {
     const raw = await downloadRaw(sha, src);
-    await Bun.write(join(GOJA_DIR, out), transformSource(raw, shortSha));
+    await Bun.write(join(GOJA_DIR, base), transformSource(raw, shortSha));
+    const out = join(GOJA_REL, base);
     files.push({ src, out });
-    console.log(`  ${src} → types/goja/${out}`);
+    console.log(`  ${src} → ${out}`);
   }
 
   const meta: SyncMeta = {
     repo: REPO,
     ref: sha,
-    syncedAt: new Date().toISOString(),
+    committedAt,
     files,
   };
   await Bun.write(META_PATH, `${JSON.stringify(meta, null, 2)}\n`);
@@ -183,9 +189,9 @@ async function main(argv: string[]): Promise<void> {
   );
 
   const head = await resolveSha("main");
-  if (head !== sha) {
+  if (head.sha !== sha) {
     console.log(
-      `\n⚠ main is now ${head.slice(0, 7)} (pinned ${shortSha}). Run \`bun run sync:types --latest\` to bump.`,
+      `\n⚠ main is now ${head.sha.slice(0, 7)} (pinned ${shortSha}). Run \`bun run sync:types --ref <sha>\` to pin, or re-run to bump.`,
     );
   }
 }

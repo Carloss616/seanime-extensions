@@ -1,39 +1,39 @@
 {
   "repo": "5rahim/seanime",
-  "ref": "cdb81a55e03fc4391432c0bbb5cee41f761c63c3",
-  "syncedAt": "2026-06-03T17:41:26.272Z",
+  "ref": "46d7aec101195e530f40a503521d13c51d18f849",
+  "committedAt": "2026-07-08T14:17:38Z",
   "files": [
     {
       "src": "internal/extension_repo/goja_manga_test/manga-provider.d.ts",
-      "out": "manga-provider.d.ts"
+      "out": "types/goja/manga-provider.d.ts"
     },
     {
       "src": "internal/extension_repo/goja_onlinestream_test/onlinestream-provider.d.ts",
-      "out": "onlinestream-provider.d.ts"
+      "out": "types/goja/onlinestream-provider.d.ts"
     },
     {
       "src": "internal/extension_repo/goja_plugin_types/app.d.ts",
-      "out": "app.d.ts"
+      "out": "types/goja/app.d.ts"
     },
     {
       "src": "internal/extension_repo/goja_plugin_types/core.d.ts",
-      "out": "core.d.ts"
+      "out": "types/goja/core.d.ts"
     },
     {
       "src": "internal/extension_repo/goja_plugin_types/plugin.d.ts",
-      "out": "plugin.d.ts"
+      "out": "types/goja/plugin.d.ts"
     },
     {
       "src": "internal/extension_repo/goja_plugin_types/system.d.ts",
-      "out": "system.d.ts"
+      "out": "types/goja/system.d.ts"
     },
     {
       "src": "internal/extension_repo/goja_torrent_test/anime-torrent-provider.d.ts",
-      "out": "anime-torrent-provider.d.ts"
+      "out": "types/goja/anime-torrent-provider.d.ts"
     },
     {
       "src": "internal/extension_repo/goja_usermedia_test/custom-source.d.ts",
-      "out": "custom-source.d.ts"
+      "out": "types/goja/custom-source.d.ts"
     }
   ]
 }

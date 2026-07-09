@@ -1,4 +1,4 @@
-// AUTO-SYNCED from 5rahim/seanime@cdb81a5 — do not edit. Regenerate with `bun run sync:types`.
+// AUTO-SYNCED from 5rahim/seanime@46d7aec — do not edit. Regenerate with `bun run sync:types`.
 
 declare type Settings = {
     supportsAnime: boolean

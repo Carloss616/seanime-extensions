@@ -33,3 +33,9 @@ declare namespace $store {
   function remove(key: string): void;
   function removeAll(): void;
 }
+
+declare namespace $ui {
+  type BadgeComponentIntent = NonNullable<
+    Parameters<$ui.BadgeComponentFunction>[1]
+  >["intent"];
+}

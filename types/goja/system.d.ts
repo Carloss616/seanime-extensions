@@ -1,4 +1,4 @@
-// AUTO-SYNCED from 5rahim/seanime@cdb81a5 — do not edit. Regenerate with `bun run sync:types`.
+// AUTO-SYNCED from 5rahim/seanime@46d7aec — do not edit. Regenerate with `bun run sync:types`.
 /**
  * OS module provides a platform-independent interface to operating system functionality.
  * This is a restricted subset of Go's os package with permission checks.
