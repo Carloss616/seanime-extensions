@@ -1,4 +1,13 @@
-import { SHARED_LIB_NAME, SOURCE_PREFIX } from "../utils/constants";
+import {
+  progressPayloadKey,
+  progressSkipKey,
+  SHARED_LIB_NAME,
+  SOURCE_PREFIX,
+} from "../utils/constants";
+import {
+  buildProgressPayload,
+  isLocalCatalogEntry,
+} from "../utils/progress-capture";
 import type { sharedLib } from "./shared-lib";
 
 // Full-entry update hook (status / score / progress, from the entry edit UI).
@@ -13,10 +22,7 @@ export const onPreUpdateEntry = (event: $app.PreUpdateEntryEvent) => {
       event.next();
       return;
     }
-    // Skip if this update was triggered by us (post-hook's restore-from-remote
-    // path calls $anilist.updateEntry, which fires hooks recursively — we
-    // don't want to capture our own restore as a new edit).
-    if ($store.has(`progress:skip:${event.mediaId}`)) {
+    if ($store.has(progressSkipKey(event.mediaId))) {
       event.next();
       return;
     }
@@ -26,32 +32,17 @@ export const onPreUpdateEntry = (event: $app.PreUpdateEntryEvent) => {
     } catch (_) {
       m = null;
     }
-    const siteUrl = m?.siteUrl ?? "";
-    if (siteUrl.indexOf(SOURCE_PREFIX) !== 0) {
+    if (!isLocalCatalogEntry(m?.siteUrl ?? "", SOURCE_PREFIX)) {
       event.next();
       return;
     }
-    // Suppress unused warning: decodeLocalId is consumed by the post hook;
-    // we destructure it here to fail fast if the shared lib stops surfacing it.
     void decodeLocalId;
-    // Build the payload by including ONLY fields that carry a meaningful
-    // value. Null/undefined means "this field wasn't part of this update";
-    // persisting it would clobber the previously-known value when the post-
-    // hook merges into the cached entry. scoreRaw=0 is treated the same as
-    // null because AniList uses 0 to mean "un-rated" and omits the field
-    // from listData — capturing 0 here desyncs us from seanime's view and
-    // creates perpetual false-positive drift in the tray.
-    const payload: Partial<MangaProgressEntry> = {};
-    if (event.status != null) payload.status = event.status;
-    if (event.progress != null) payload.progress = event.progress;
-    if (event.scoreRaw != null && event.scoreRaw > 0) {
-      payload.score = event.scoreRaw;
-    }
-    if (Object.keys(payload).length === 0) {
+    const payload = buildProgressPayload(event, true);
+    if (!payload) {
       event.next();
       return;
     }
-    $store.set(`progress:${event.mediaId}`, payload);
+    $store.set(progressPayloadKey(event.mediaId), payload);
   } catch (e) {
     log.error("pre-update-entry error:", e);
   }

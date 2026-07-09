@@ -4,6 +4,10 @@ import { CAPTION_STYLE, LABEL_STYLE } from "../../../_components/text";
 import { trayHeader } from "../../../_components/tray-header";
 import { statusToPill } from "../../../_utils/anilist-status";
 import {
+  type ClientCacheScope,
+  clientCacheQueryKeys,
+} from "../utils/client-cache";
+import {
   CATALOG_FILENAME,
   K_CATALOG,
   K_DRIFT_FRESH_GIST,
@@ -20,8 +24,37 @@ import {
   K_UPDATED,
   PROGRESS_FILENAME,
   SHARED_LIB_NAME,
+  SILENT_SYNC_COOLDOWN_MS,
   SOURCE_PREFIX,
 } from "../utils/constants";
+import {
+  discoverExtId as discoverExtIdImpl,
+  localIdFromMediaId as localIdFromMediaIdImpl,
+  mediaIdFor as mediaIdForImpl,
+  resolveMediaId as resolveMediaIdImpl,
+} from "../utils/ext-id";
+import {
+  type CatalogFormRefs,
+  catalogEntryFromFormFields,
+  catalogFormFieldsFromEntry,
+  readCatalogFormFields,
+  writeCatalogFormFields,
+} from "../utils/form-entry";
+import {
+  FORMAT_OPTS,
+  MONTH_OPTS,
+  PREFERRED_OPTS,
+  STATUS_OPTS,
+} from "../utils/form-options";
+import { ent, formatListStatus, formatTs } from "../utils/format";
+import { parseGistId } from "../utils/gist-parse";
+import { detectImportKind } from "../utils/import-detect";
+import { wrapUpdateEntryWithSkip } from "../utils/progress-capture";
+import {
+  hasEntryProgressDrift as entryHasProgressDrift,
+  type SeanimeListData,
+} from "../utils/progress-drift";
+import { syncProgressRoundTrip } from "../utils/progress-roundtrip";
 import type { sharedLib } from "./shared-lib";
 
 export const register = (ctx: $ui.Context) => {
@@ -55,7 +88,6 @@ export const register = (ctx: $ui.Context) => {
     serializeProgress,
     mergeProgress,
     diffProgress,
-    progressMangaEquals,
   } = $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
   const log = createLogger();
 
@@ -89,13 +121,6 @@ export const register = (ctx: $ui.Context) => {
     const catalogIds = new Set(entries.get().map((e) => e.id));
     return detectOrphans(progress.get(), catalogIds).length;
   };
-  const formatTs = (ms: number) => {
-    if (!ms) return "—";
-    const d = new Date(ms);
-    const pad = (n: number) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  };
-
   async function pushProgressNow() {
     const gistId = effectiveGistId();
     if (!hasToken() || !gistId) {
@@ -236,8 +261,7 @@ export const register = (ctx: $ui.Context) => {
     scoreRaw: number | undefined,
     prog: number | undefined,
   ): void => {
-    $store.set(`progress:skip:${mediaId}`, true);
-    try {
+    wrapUpdateEntryWithSkip(mediaId, () => {
       $anilist.updateEntry(
         mediaId,
         status,
@@ -246,33 +270,16 @@ export const register = (ctx: $ui.Context) => {
         undefined,
         undefined,
       );
-    } finally {
-      $store.remove(`progress:skip:${mediaId}`);
-    }
+    });
   };
 
-  // Core sync logic shared by reloadProgress (with runBusy wrapper) and
-  // linkExistingGist (already inside its own runBusy, can't nest). Pulls
-  // remote → per-entry LWW merge → apply remote-side changes to seanime
-  // → push merged back. Idempotent in both directions.
   async function syncProgressInner(): Promise<{
     applied: number;
     skipped: number;
   }> {
     const gistId = effectiveGistId();
     const now = Date.now();
-    // Inline pull (instead of `pullProgress`) so we keep the parsed remote
-    // around — needed to decide whether the push at the end is a real
-    // sync or just a no-op revision that bumps the wrapper updatedAt.
-    let remoteStr = "";
-    try {
-      remoteStr = await client().getGistFile(gistId, PROGRESS_FILENAME);
-    } catch (_) {
-      remoteStr = "";
-    }
-    const remote = parseProgress(remoteStr, log);
     const localDoc = progress.get();
-    const merged = mergeProgress(localDoc, remote, now);
     const collection = await ctx.manga.getCollection();
     const lookup = buildMediaIdLookup(
       collection,
@@ -280,32 +287,21 @@ export const register = (ctx: $ui.Context) => {
       decodeLocalId,
       { extId: $storage.get<number>(K_EXT_ID) ?? undefined },
     );
-    const res = applyRemote(merged, localDoc, {
-      updateEntry: applyEntryViaSeanime,
+    const result = await syncProgressRoundTrip({
+      client: client(),
+      gistId,
+      filename: PROGRESS_FILENAME,
+      local: localDoc,
+      now,
+      log,
       mediaIdByLocalId: lookup,
+      updateEntry: applyEntryViaSeanime,
     });
-    // Push only when local has something the gist doesn't (extra entries
-    // or newer updatedAts). When `merged === remote` content-wise, pushing
-    // would only create a noise revision differing in top-level updatedAt
-    // — exactly the duplicate-revision problem the user saw after every
-    // chapter mark.
-    if (!progressMangaEquals(merged.manga, remote.manga)) {
-      await client().updateGistFile(
-        gistId,
-        PROGRESS_FILENAME,
-        serializeProgress(merged),
-      );
-    }
-    progress.set(merged);
+    progress.set(result.merged);
     progressUpdated.set(now);
-    $storage.set(K_PROGRESS, merged);
+    $storage.set(K_PROGRESS, result.merged);
     $storage.set(K_PROGRESS_UPDATED, now);
-    // When applyRemote actually wrote new state into seanime, refresh both
-    // seanime's in-process AniList cache and the frontend's React Query
-    // caches so the user sees the synced chapter numbers without having to
-    // hit refresh themselves. Skipped on no-op syncs to avoid noisy
-    // refetches when nothing changed.
-    if (res.applied > 0) {
+    if (result.applied > 0) {
       try {
         $anilist.refreshMangaCollection();
       } catch (e) {
@@ -313,7 +309,7 @@ export const register = (ctx: $ui.Context) => {
       }
       invalidateClientCaches({ progress: true });
     }
-    return res;
+    return { applied: result.applied, skipped: result.skipped };
   }
 
   // Silent background sync — used by event-triggered pulls (tray.onOpen,
@@ -323,7 +319,6 @@ export const register = (ctx: $ui.Context) => {
   // soft cooldown (`silentCooldownMs`) prevents spamming the network when
   // multiple events fire in close succession (e.g., tray.onOpen + navigate
   // both fire within ~1s).
-  const SILENT_COOLDOWN_MS = 10_000;
   let lastSilentSyncAt = 0;
   async function pullProgressSilent(reason: string): Promise<void> {
     const gistId = effectiveGistId();
@@ -334,7 +329,7 @@ export const register = (ctx: $ui.Context) => {
     // when anything else is in flight (the next event will retry).
     if (busyAction.get()) return;
     const nowMs = Date.now();
-    if (nowMs - lastSilentSyncAt < SILENT_COOLDOWN_MS) return;
+    if (nowMs - lastSilentSyncAt < SILENT_SYNC_COOLDOWN_MS) return;
     lastSilentSyncAt = nowMs;
     try {
       const hadProgressDrift = pendingProgressDrift.get() !== null;
@@ -387,30 +382,8 @@ export const register = (ctx: $ui.Context) => {
     });
   }
 
-  // Invalidate seanime's client-side React Query caches so the frontend
-  // refetches them after we mutate state. Keys are the endpoint constants
-  // from internal/events/endpoints.go.
-  //   catalog=true  → custom-source search results (the user's catalog
-  //                   appears in /custom-sources?provider=local-catalog).
-  //   progress=true → user's manga collection + anilist collection (so the
-  //                   manga entry page picks up new status / progress / score).
-  // Wrapped in try/catch — invalidation is best-effort UX; if it fails the
-  // user just has to refresh the page manually.
-  function invalidateClientCaches(opts: {
-    catalog?: boolean;
-    progress?: boolean;
-  }) {
-    const keys: string[] = [];
-    if (opts.catalog) {
-      keys.push("CUSTOM-SOURCE-custom-source-list-manga");
-    }
-    if (opts.progress) {
-      keys.push(
-        "MANGA-get-manga-collection",
-        "MANGA-get-anilist-manga-collection",
-        "MANGA-get-manga-entry",
-      );
-    }
+  function invalidateClientCaches(opts: ClientCacheScope) {
+    const keys = clientCacheQueryKeys(opts);
     if (keys.length === 0) return;
     try {
       $app.invalidateClientQuery(keys);
@@ -458,74 +431,29 @@ export const register = (ctx: $ui.Context) => {
     progressStatus.set(`Deleted orphan #${localId}`);
   }
 
-  // Compute the seanime mediaId for a catalog localId from the cached
-  // extensionIdentifier. Returns null when the extId hasn't been discovered
-  // yet (callers should run discoverExtId() first). Pure sync — usable from
-  // render to populate tooltips with the resolved mediaId.
-  function mediaIdFor(localId: number): number | null {
-    const extId = $storage.get<number>(K_EXT_ID);
-    if (extId == null) return null;
-    return encodeMediaId(extId, localId);
-  }
-
-  // Discover the seanime-assigned extensionIdentifier (1-1023) for this
-  // custom-source and cache it in $storage. Three strategies, in order:
-  //   1. Already cached — fast path, return immediately.
-  //   2. Derive from the cached mediaIdLookup (any entry the user has added
-  //      reveals the extId via its mediaId encoding).
-  //   3. Probe by sweeping $anilist.getManga for each candidate extId until
-  //      one returns a manga whose siteUrl starts with our PREFIX_SITEURL.
-  //      Slow on first run (up to 1023 sync calls) but cached forever after.
-  // Probing requires at least one localId we expect the custom-source to
-  // know about — we pick the first catalog entry. Returns null if none of
-  // the strategies succeed (empty catalog + nothing in collection + probe
-  // exhausted = source isn't installed, or extId is invalid).
-  async function discoverExtId(): Promise<number | null> {
-    const cached = $storage.get<number>(K_EXT_ID);
-    if (cached != null) return cached;
-    // 2. From cached lookup.
-    const lookup = mediaIdLookup.get();
-    if (lookup && lookup.size > 0) {
-      const [, anyMediaId] = lookup.entries().next().value as [number, number];
-      const extId = decodeExtId(anyMediaId);
-      $storage.set(K_EXT_ID, extId);
-      return extId;
+  const getMangaSafe = (mediaId: number) => {
+    try {
+      return $anilist.getManga(mediaId);
+    } catch {
+      return undefined;
     }
-    // 3. Probe via $anilist.getManga sweep. Need a localId to probe with.
-    const probeLocalId = entries.get()[0]?.id;
-    if (probeLocalId == null) return null;
-    for (let extId = 1; extId <= 1023; extId++) {
-      if (extId % 64 === 0) {
-        // Yield to the goja scheduler so the tray stays responsive during
-        // the sweep. $sleep(0) is the only available yield primitive (no
-        // setTimeout / requestAnimationFrame in goja).
-        $sleep(0);
-      }
-      const candidate = encodeMediaId(extId, probeLocalId);
-      try {
-        const m = $anilist.getManga(candidate);
-        if (m?.siteUrl && m.siteUrl.indexOf(SOURCE_PREFIX) === 0) {
-          $storage.set(K_EXT_ID, extId);
-          return extId;
-        }
-      } catch (_) {
-        // getManga throws for unknown mediaIds — keep probing.
-      }
-    }
-    return null;
-  }
+  };
 
-  // Resolve mediaId for any localId, kicking off discovery if needed. This
-  // is the single entry point used by navigateToMangaEntry, applyProgress,
-  // and the auto-add flow — none of them care whether the entry is in the
-  // user's collection yet; they just need the encoded id.
-  async function resolveMediaId(localId: number): Promise<number | null> {
-    const cached = mediaIdFor(localId);
-    if (cached != null) return cached;
-    const extId = await discoverExtId();
-    if (extId == null) return null;
-    return encodeMediaId(extId, localId);
-  }
+  const extIdDeps = () => ({
+    getCachedExtId: () => $storage.get<number>(K_EXT_ID),
+    setCachedExtId: (extId: number) => $storage.set(K_EXT_ID, extId),
+    getLookupEntry: () => {
+      const lookup = mediaIdLookup.get();
+      if (!lookup || lookup.size === 0) return undefined;
+      return lookup.entries().next().value as [number, number];
+    },
+    decodeExtId,
+    getProbeLocalId: () => entries.get()[0]?.id,
+    getManga: getMangaSafe,
+    sourcePrefix: SOURCE_PREFIX,
+    encodeMediaId,
+    sleep: $sleep,
+  });
 
   // "📤 Apply progress" button — appears on the entries list when local
   // progress drifts from seanime's state, AND on each orphan row.
@@ -537,7 +465,7 @@ export const register = (ctx: $ui.Context) => {
     if (!entry) return;
     await runBusy(`apply-progress-${localId}`, async () => {
       try {
-        const mediaId = await resolveMediaId(localId);
+        const mediaId = await resolveMediaIdImpl(localId, extIdDeps());
         if (mediaId == null) {
           ctx.toast.warning(
             `Couldn't resolve seanime mediaId for #${localId}. Make sure the local-catalog custom-source is installed and has this entry.`,
@@ -602,7 +530,7 @@ export const register = (ctx: $ui.Context) => {
   async function navigateToMangaEntry(localId: number) {
     await runBusy(`open-manga-${localId}`, async () => {
       try {
-        const mediaId = await resolveMediaId(localId);
+        const mediaId = await resolveMediaIdImpl(localId, extIdDeps());
         if (mediaId == null) {
           ctx.toast.warning(
             `Couldn't resolve seanime mediaId for #${localId}. Make sure the local-catalog custom-source is installed and has this entry.`,
@@ -647,8 +575,34 @@ export const register = (ctx: $ui.Context) => {
   const fJsonIn = ctx.fieldRef<string>("");
   const fGistLink = ctx.fieldRef<string>("");
 
-  // Armed state for the two-click "Delete remotely" confirmation. Stays armed
-  // until the user clicks confirm or any other action (disarmDelete()).
+  const catalogFormRefs: CatalogFormRefs = {
+    romaji: fRomaji,
+    english: fEnglish,
+    native: fNative,
+    preferred: fPreferred,
+    synonyms: fSynonyms,
+    cover: fCover,
+    banner: fBanner,
+    description: fDescription,
+    genres: fGenres,
+    status: fStatus,
+    format: fFormat,
+    chapters: fChapters,
+    volumes: fVolumes,
+    year: fYear,
+    month: fMonth,
+    day: fDay,
+    endYear: fEndYear,
+    endMonth: fEndMonth,
+    endDay: fEndDay,
+    isAdult: fIsAdult,
+    country: fCountry,
+    siteUrl: fSiteUrl,
+    idMal: fIdMal,
+    meanScore: fMeanScore,
+  };
+
+  // Armed state for the two-click "Delete remotely" confirmation.
   const deleteGistArmed = ctx.state<boolean>(false);
 
   // Armed catalog-entry id for the two-click entry-delete confirmation (0 =
@@ -681,16 +635,6 @@ export const register = (ctx: $ui.Context) => {
   // only show it when local progress drifts from seanime's tracked state
   // (or the entry isn't in the user's list yet), not for already-in-sync
   // rows where pushing is a no-op.
-  // Mirrors the fields of seanime's Manga_EntryListData (what e.listData is at
-  // runtime). The score field is named `score` here, NOT `scoreRaw` — only the
-  // PreUpdateEntryEvent / updateEntry() param is called scoreRaw; the tracked
-  // listData exposes `score`. Reading `.scoreRaw` off it is always undefined
-  // and made every rated row show false score drift.
-  type SeanimeListData = {
-    status?: $app.AL_MediaListStatus;
-    progress?: number;
-    score?: number;
-  };
   const seanimeListDataLookup = ctx.state<Map<number, SeanimeListData> | null>(
     null,
   );
@@ -851,15 +795,6 @@ export const register = (ctx: $ui.Context) => {
 
   // Accept a Gist raw URL, share URL, or a bare hex id; return the gist id
   // (or null if the input doesn't look like a gist).
-  const parseGistId = (input: string): string | null => {
-    const trimmed = input.trim();
-    if (!trimmed) return null;
-    if (/^[a-f0-9]+$/i.test(trimmed)) return trimmed;
-    const m = trimmed.match(
-      /gist\.github(?:usercontent)?\.com\/[^/]+\/([a-f0-9]+)/i,
-    );
-    return m ? m[1] : null;
-  };
   // MIGRATION (one-shot): legacy `gistUrl` userConfig field is gone from the
   // manifest. Existing installs may still have a value set; copy the parsed
   // id into $storage so the modern code path picks it up. New installs hit
@@ -875,7 +810,6 @@ export const register = (ctx: $ui.Context) => {
   // Gist binding lives entirely in $storage now (managed from the tray —
   // create / link / unlink / delete remotely).
   const effectiveGistId = (): string => $storage.get<string>(K_GIST) ?? "";
-  const ent = (n: number) => `${n} ${n === 1 ? "entry" : "entries"}`;
 
   // Reset the armed "Delete remotely" state. Called from every other event
   // handler so accidental arms don't linger.
@@ -1247,18 +1181,6 @@ export const register = (ctx: $ui.Context) => {
     });
   }
 
-  const num = (s: string | undefined): number | undefined => {
-    const v = Number((s ?? "").trim());
-    return (s ?? "").trim() !== "" && Number.isFinite(v) ? v : undefined;
-  };
-  const list = (s: string | undefined): string[] | undefined => {
-    const arr = (s ?? "")
-      .split(",")
-      .map((x) => x.trim())
-      .filter((x) => x.length > 0);
-    return arr.length > 0 ? arr : undefined;
-  };
-
   function persistLocal(next: MangaCatalogEntry[], updatedAt: number) {
     entries.set(next);
     $storage.set(K_CATALOG, next);
@@ -1355,44 +1277,7 @@ export const register = (ctx: $ui.Context) => {
   function openForm(id: number) {
     editingId.set(id);
     const e = entries.get().find((x) => x.id === id);
-    const t = e?.title;
-    fRomaji.setValue(t?.romaji ?? "");
-    fEnglish.setValue(t?.english ?? "");
-    fNative.setValue(t?.native ?? "");
-    // Best-effort restore of which variant userPreferred points at; default
-    // english when it matches none (or the entry predates this field).
-    const up = t?.userPreferred;
-    fPreferred.setValue(
-      up && up === t?.romaji
-        ? "romaji"
-        : up && up === t?.native
-          ? "native"
-          : "english",
-    );
-    fSynonyms.setValue((e?.synonyms ?? []).join(", "));
-    fCover.setValue(e?.coverImage?.extraLarge ?? e?.coverImage?.large ?? "");
-    fBanner.setValue(e?.bannerImage ?? "");
-    fDescription.setValue(e?.description ?? "");
-    fGenres.setValue((e?.genres ?? []).join(", "));
-    fStatus.setValue(e?.status ?? "");
-    fFormat.setValue(e?.format ?? "");
-    fChapters.setValue(e?.chapters != null ? String(e.chapters) : "");
-    fVolumes.setValue(e?.volumes != null ? String(e.volumes) : "");
-    fYear.setValue(e?.startDate?.year != null ? String(e.startDate.year) : "");
-    fMonth.setValue(
-      e?.startDate?.month != null ? String(e.startDate.month) : "",
-    );
-    fDay.setValue(e?.startDate?.day != null ? String(e.startDate.day) : "");
-    fEndYear.setValue(e?.endDate?.year != null ? String(e.endDate.year) : "");
-    fEndMonth.setValue(
-      e?.endDate?.month != null ? String(e.endDate.month) : "",
-    );
-    fEndDay.setValue(e?.endDate?.day != null ? String(e.endDate.day) : "");
-    fIsAdult.setValue(!!e?.isAdult);
-    fCountry.setValue(e?.countryOfOrigin ?? "");
-    fSiteUrl.setValue(e?.siteUrl ?? "");
-    fIdMal.setValue(e?.idMal != null ? String(e.idMal) : "");
-    fMeanScore.setValue(e?.meanScore != null ? String(e.meanScore) : "");
+    writeCatalogFormFields(catalogFormRefs, catalogFormFieldsFromEntry(e));
     view.set("form");
   }
 
@@ -1511,72 +1396,12 @@ export const register = (ctx: $ui.Context) => {
   ctx.registerEventHandler("lcm-save", () => {
     const current = entries.get();
     const id = editingId.get() > 0 ? editingId.get() : allocId();
-    // Spread the existing entry first so native fields the form doesn't surface
-    // (coverImage.color, season, …) survive an edit — e.g. an entry added via
-    // JSON import then re-saved through the form.
     const existing = current.find((x) => x.id === id);
-    const cover = (fCover.current ?? "").trim() || undefined;
-    const sd = {
-      year: num(fYear.current),
-      month: num(fMonth.current),
-      day: num(fDay.current),
-    };
-    const ed = {
-      year: num(fEndYear.current),
-      month: num(fEndMonth.current),
-      day: num(fEndDay.current),
-    };
-    const hasSd = sd.year != null || sd.month != null || sd.day != null;
-    const hasEd = ed.year != null || ed.month != null || ed.day != null;
-    const entry: MangaCatalogEntry = {
-      ...existing,
+    const entry = catalogEntryFromFormFields(
       id,
-      type: "MANGA",
-      updatedAt: Date.now(),
-      title: (() => {
-        const romaji = (fRomaji.current ?? "").trim() || undefined;
-        const english = (fEnglish.current ?? "").trim() || undefined;
-        const native = (fNative.current ?? "").trim() || undefined;
-        const pref = fPreferred.current ?? "english";
-        // userPreferred mirrors the picked variant; fall back to the first
-        // non-empty so it's never blank when any variant is filled.
-        const userPreferred =
-          (pref === "romaji" ? romaji : pref === "native" ? native : english) ||
-          english ||
-          romaji ||
-          native;
-        return { romaji, english, native, userPreferred };
-      })(),
-      synonyms: list(fSynonyms.current),
-      coverImage: cover
-        ? {
-            ...existing?.coverImage,
-            extraLarge: cover,
-            large: cover,
-            medium: cover,
-          }
-        : undefined,
-      bannerImage: (fBanner.current ?? "").trim() || undefined,
-      description: (fDescription.current ?? "").trim() || undefined,
-      genres: list(fGenres.current),
-      status: (() => {
-        const v = (fStatus.current ?? "").trim();
-        return v && v !== NONE ? (v as $app.AL_MediaStatus) : undefined;
-      })(),
-      format: (() => {
-        const v = (fFormat.current ?? "").trim();
-        return v && v !== NONE ? (v as $app.AL_MediaFormat) : undefined;
-      })(),
-      chapters: num(fChapters.current),
-      volumes: num(fVolumes.current),
-      startDate: hasSd ? sd : undefined,
-      endDate: hasEd ? ed : undefined,
-      isAdult: fIsAdult.current ? true : undefined,
-      countryOfOrigin: (fCountry.current ?? "").trim() || undefined,
-      siteUrl: (fSiteUrl.current ?? "").trim() || undefined,
-      idMal: num(fIdMal.current),
-      meanScore: num(fMeanScore.current),
-    };
+      existing,
+      readCatalogFormFields(catalogFormRefs),
+    );
     const err = validateEntry(entry);
     if (err) {
       ctx.toast.error(err);
@@ -1586,28 +1411,6 @@ export const register = (ctx: $ui.Context) => {
     view.set("list");
     void push(next);
   });
-
-  // Detect what shape of JSON was pasted into the import box. Catalog and
-  // progress both serialize to `{version, updatedAt, manga: ...}` but disagree
-  // on `manga`: an Array for catalog, an Object (id → entry) for progress.
-  // Legacy shapes supported: bare array (catalog), `entries` key (progress).
-  const detectImportKind = (
-    raw: string,
-  ): "catalog" | "progress" | "invalid" => {
-    let data: unknown;
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      return "invalid";
-    }
-    if (Array.isArray(data)) return "catalog";
-    if (!data || typeof data !== "object") return "invalid";
-    const obj = data as { manga?: unknown; entries?: unknown };
-    if (Array.isArray(obj.manga)) return "catalog";
-    if (obj.manga && typeof obj.manga === "object") return "progress";
-    if (obj.entries && typeof obj.entries === "object") return "progress";
-    return "invalid";
-  };
 
   // Single import handler — auto-detects catalog vs progress and dispatches
   // to the right merge / replace path. Merge semantics:
@@ -1673,52 +1476,6 @@ export const register = (ctx: $ui.Context) => {
     importFromField("replace"),
   );
 
-  // Radix-UI Select forbids Select.Item value="" (reserved for the
-  // "cleared" state shown via placeholder). Use a non-empty sentinel
-  // and treat it as undefined when serializing the entry.
-  const NONE = "-";
-  const STATUS_OPTS = [
-    { label: "—", value: NONE },
-    { label: "Releasing", value: "RELEASING" },
-    { label: "Finished", value: "FINISHED" },
-    { label: "Hiatus", value: "HIATUS" },
-    { label: "Cancelled", value: "CANCELLED" },
-    { label: "Not yet released", value: "NOT_YET_RELEASED" },
-  ];
-  const FORMAT_OPTS = [
-    { label: "—", value: NONE },
-    { label: "Manga", value: "MANGA" },
-    { label: "Novel", value: "NOVEL" },
-    { label: "One-shot", value: "ONE_SHOT" },
-  ];
-  // Which title variant becomes userPreferred. Values are the AL_BaseManga_Title
-  // keys so they round-trip through fPreferred unchanged.
-  const PREFERRED_OPTS = [
-    { label: "English", value: "english" },
-    { label: "Romaji", value: "romaji" },
-    { label: "Native", value: "native" },
-  ];
-  // Month picker options. Values are the 1-based month number as a string so
-  // they round-trip through fMonth unchanged (setValue String(e.month) /
-  // num(fMonth.current)); NONE clears it (num("-") === undefined).
-  const MONTH_OPTS = [
-    { label: "—", value: NONE },
-    ...[
-      "January",
-      "February",
-      "March",
-      "April",
-      "May",
-      "June",
-      "July",
-      "August",
-      "September",
-      "October",
-      "November",
-      "December",
-    ].map((label, i) => ({ label, value: String(i + 1) })),
-  ];
-
   const sectionHeader = (label: string) =>
     tray.text(label, { style: LABEL_STYLE });
 
@@ -1747,41 +1504,13 @@ export const register = (ctx: $ui.Context) => {
       },
     );
 
-  // Coerce before comparing local progress fields to seanime listData — see
-  // renderList drift comment (goja-wrapped Go strings fail ===).
-  const stringFieldDiff = (
-    local: string | undefined,
-    remote: string | undefined,
-  ): boolean => {
-    if (local === undefined) return false;
-    return String(local) !== String(remote ?? "");
-  };
-  const numericFieldDiff = (
-    local: number | undefined,
-    remote: number | undefined,
-  ): boolean => {
-    if (local === undefined) return false;
-    return Number(local) !== Number(remote ?? 0);
-  };
-
   function hasEntryProgressDrift(localId: number): boolean {
-    const rowProgress = progress.get().manga[String(localId)];
-    if (!rowProgress) return false;
-    const seanimeData = seanimeListDataLookup.get()?.get(localId);
-    const lookupReady = seanimeListDataLookup.get() != null;
-    return (
-      !lookupReady ||
-      !seanimeData ||
-      stringFieldDiff(rowProgress.status, seanimeData.status) ||
-      numericFieldDiff(rowProgress.progress, seanimeData.progress) ||
-      numericFieldDiff(rowProgress.score, seanimeData.score)
+    return entryHasProgressDrift(
+      progress.get().manga[String(localId)],
+      seanimeListDataLookup.get()?.get(localId),
+      seanimeListDataLookup.get() != null,
     );
   }
-
-  const formatListStatus = (status: string | undefined): string => {
-    if (!status) return "—";
-    return status.replace(/_/g, " ").toLowerCase();
-  };
 
   function renderProgressSection() {
     // Header row: section title on left, reload (gist only) + orphan toggle
@@ -2258,7 +1987,11 @@ export const register = (ctx: $ui.Context) => {
       // pending; the tooltip conveys the resolved mediaId / busy state.
       if (!drifting) {
         const inListMediaId = mediaIdLookup.get()?.get(e.id);
-        const computedMediaId = mediaIdFor(e.id);
+        const computedMediaId = mediaIdForImpl(
+          $storage.get<number>(K_EXT_ID),
+          e.id,
+          encodeMediaId,
+        );
         const resolvedMediaId = inListMediaId ?? computedMediaId;
         const openBusy = busyAction.get() === `open-manga-${e.id}`;
         const tooltipText = openBusy
@@ -2588,7 +2321,11 @@ export const register = (ctx: $ui.Context) => {
     if (!isNew && !drifting) {
       const openBusy = busyAction.get() === `open-manga-${id}`;
       const inListMediaId = mediaIdLookup.get()?.get(id);
-      const computedMediaId = mediaIdFor(id);
+      const computedMediaId = mediaIdForImpl(
+        $storage.get<number>(K_EXT_ID),
+        id,
+        encodeMediaId,
+      );
       const resolvedMediaId = inListMediaId ?? computedMediaId;
       const openTooltip = openBusy
         ? "Opening …"
@@ -2892,23 +2629,18 @@ export const register = (ctx: $ui.Context) => {
 
   const currentLocalId = ctx.state<number>(0);
 
-  const localIdFromMediaId = (mediaId: number): number => {
-    if (!isCustomSourceId(mediaId)) return 0;
-    let m: $app.AL_BaseManga | undefined;
-    try {
-      m = $anilist.getManga(mediaId);
-    } catch {
-      m = undefined;
-    }
-    const siteUrl = m?.siteUrl ?? "";
-    if (siteUrl.indexOf(SOURCE_PREFIX) !== 0) return 0;
-    return decodeLocalId(mediaId);
-  };
+  const localIdFromMediaId = (mediaId: number): number =>
+    localIdFromMediaIdImpl(mediaId, {
+      isCustomSourceId,
+      getManga: getMangaSafe,
+      sourcePrefix: SOURCE_PREFIX,
+      decodeLocalId,
+    });
 
   const pageBtn = ctx.action.newMangaPageButton({
-    label: "Catalog ⚙️",
-    intent: "primary-subtle",
-    tooltipText: "Edit catalog entry",
+    label: "🗂️",
+    intent: "gray-subtle",
+    tooltipText: "Edit local entry",
   });
   pageBtn.onClick((e) => {
     const local = localIdFromMediaId(e.media.id);
@@ -2939,35 +2671,6 @@ export const register = (ctx: $ui.Context) => {
     if (currentLocalId.get() > 0) pageBtn.mount();
     else pageBtn.unmount();
   }, [currentLocalId]);
-
-  const palette = ctx.newCommandPalette({
-    placeholder: "Local catalog…",
-    keyboardShortcut: "l",
-  });
-  const refreshPalette = () => {
-    const base = [
-      { label: "+ New entry", value: "new", onSelect: () => openForm(0) },
-      {
-        label: "↻ Reload catalog",
-        value: "lcm-reload-catalog",
-        onSelect: () => void reloadCatalog(),
-      },
-      {
-        label: "↻ Reload progress",
-        value: "lcm-reload-progress",
-        onSelect: () => void reloadProgress(),
-      },
-    ];
-    const items = entries.get().map((en) => ({
-      label: `⚙️ #${en.id} ${resolveUserPreferred(en.title) ?? ""}`,
-      value: `edit-${en.id}`,
-      filterType: "includes" as const,
-      onSelect: () => openForm(en.id),
-    }));
-    palette.setItems([...base, ...items]);
-  };
-  ctx.effect(() => refreshPalette(), [entries]);
-  palette.onOpen(() => refreshPalette());
 
   const autoSync = ($getUserPreference("autoSync") ?? "false") === "true";
   if (autoSync && hasToken()) {
@@ -3019,7 +2722,7 @@ export const register = (ctx: $ui.Context) => {
       // probe via $anilist.getManga (up to 1023 sync calls) on first run.
       if ($storage.get<number>(K_EXT_ID) == null) {
         try {
-          const result = await discoverExtId();
+          const result = await discoverExtIdImpl(extIdDeps());
           // After discovery, refresh lookups so the extId-based filter
           // actually applies (the prior refresh ran with extId=undefined
           // and fell back to siteUrl). Without this, the first tray.onOpen

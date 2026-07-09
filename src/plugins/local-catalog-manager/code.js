@@ -7,82 +7,288 @@ var onGetMangaCollection = (...args) => {
   var K_PROGRESS_UPDATED = "lcm_progress_updated_at";
   var K_SYNC_PAUSED = "lcm_sync_paused";
   var K_EXT_ID = "lcm_ext_id";
+  var STORE_SILENT_SYNC_AT = "lcm:silent-sync-at";
+  var SILENT_SYNC_COOLDOWN_MS = 1e4;
+  function progressSkipKey(mediaId) {
+    return `progress:skip:${mediaId}`;
+  }
+  function wrapUpdateEntryWithSkip(mediaId, fn) {
+    $store.set(progressSkipKey(mediaId), true);
+    try {
+      fn();
+    } finally {
+      $store.remove(progressSkipKey(mediaId));
+    }
+  }
+  var EXT_ID_OFFSET = 2147483648;
+  var LOCAL_ID_RANGE = 1099511627776;
+  function encodeMediaId(extId, localId) {
+    return EXT_ID_OFFSET + extId * LOCAL_ID_RANGE + localId;
+  }
+  function emptyDoc() {
+    return { version: 1, updatedAt: 0, manga: {}, anime: {} };
+  }
+  function parseEntries(src, log2, label) {
+    const out = {};
+    if (!src || typeof src !== "object") return out;
+    for (const [k, v] of Object.entries(src)) {
+      if (!v || typeof v !== "object") continue;
+      const updatedAt = typeof v.updatedAt === "number" ? v.updatedAt : 0;
+      if (typeof v.updatedAt !== "number") {
+        log2.warn(`${label} entry ${k} missing updatedAt, treating as 0`);
+      }
+      const { scoreRaw, ...rest } = v;
+      if (scoreRaw != null && Number(scoreRaw) > 0 && rest.score == null) {
+        rest.score = scoreRaw;
+      }
+      out[k] = { ...rest, updatedAt };
+    }
+    return out;
+  }
+  function parseProgress(raw, log2) {
+    if (raw == null || raw === "") return emptyDoc();
+    let data = raw;
+    if (typeof raw === "string") {
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        return emptyDoc();
+      }
+    }
+    if (!data || typeof data !== "object") {
+      return emptyDoc();
+    }
+    if (typeof data.version === "number" && data.version !== 1) {
+      log2.warn(
+        `progress.json version ${data.version} unknown, keeping entries`,
+      );
+    }
+    return {
+      version: typeof data.version === "number" ? data.version : 1,
+      updatedAt: typeof data.updatedAt === "number" ? data.updatedAt : 0,
+      manga: parseEntries(data.manga, log2, "progress"),
+      anime: parseEntries(data.anime, log2, "anime"),
+    };
+  }
+  function serializeEntries(map) {
+    const out = {};
+    const ids = Object.keys(map).sort((a, b) => Number(a) - Number(b));
+    for (const id of ids) {
+      const e = map[id];
+      const sorted = {};
+      for (const k of Object.keys(e).sort()) {
+        const val = e[k];
+        if (val === null || val === undefined) continue;
+        if (k === "score" && Number(val) === 0) continue;
+        sorted[k] = val;
+      }
+      out[id] = sorted;
+    }
+    return out;
+  }
+  function serializeProgress(doc) {
+    const stable = {
+      version: doc.version ?? 1,
+      updatedAt: doc.updatedAt ?? 0,
+      manga: serializeEntries(doc.manga),
+      anime: serializeEntries(doc.anime ?? {}),
+    };
+    return JSON.stringify(stable, null, 2);
+  }
+  function mergeEntries(local, remote) {
+    const out = {};
+    const ids = new Set([...Object.keys(local), ...Object.keys(remote)]);
+    for (const id of ids) {
+      const l = local[id];
+      const r = remote[id];
+      if (!l) {
+        out[id] = { ...r };
+        continue;
+      }
+      if (!r) {
+        out[id] = { ...l };
+        continue;
+      }
+      const lu = l.updatedAt ?? 0;
+      const ru = r.updatedAt ?? 0;
+      if (lu !== ru) {
+        out[id] = lu > ru ? { ...l } : { ...r };
+        continue;
+      }
+      const lp = l.progress ?? 0;
+      const rp = r.progress ?? 0;
+      out[id] = lp >= rp ? { ...l } : { ...r };
+    }
+    return out;
+  }
+  function mergeProgress(local, remote, now = 0) {
+    return {
+      version: 1,
+      updatedAt: now,
+      manga: mergeEntries(local.manga, remote.manga),
+      anime: mergeEntries(local.anime ?? {}, remote.anime ?? {}),
+    };
+  }
+  function progressMangaEquals(a, b) {
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    if (aKeys.length !== bKeys.length) return false;
+    for (const k of aKeys) {
+      if (!(k in b)) return false;
+      const ae = a[k];
+      const be = b[k];
+      if (Number(ae.updatedAt ?? 0) !== Number(be.updatedAt ?? 0)) return false;
+      if (Number(ae.progress ?? 0) !== Number(be.progress ?? 0)) return false;
+      if (Number(ae.score ?? 0) !== Number(be.score ?? 0)) return false;
+      if (Number(ae.repeat ?? 0) !== Number(be.repeat ?? 0)) return false;
+      if (String(ae.startedAt ?? "") !== String(be.startedAt ?? ""))
+        return false;
+      if (String(ae.completedAt ?? "") !== String(be.completedAt ?? "")) {
+        return false;
+      }
+      if (String(ae.status ?? "") !== String(be.status ?? "")) return false;
+    }
+    return true;
+  }
+  function createLogger() {
+    const prefix = `[${"local-catalog-manager"}]`;
+    return {
+      log: (...args2) => console.log(prefix, ...args2),
+      info: (...args2) => console.info(prefix, ...args2),
+      warn: (...args2) => console.warn(prefix, ...args2),
+      error: (...args2) => console.error(prefix, ...args2),
+      debug: (...args2) => console.debug(prefix, ...args2),
+    };
+  }
+  var log = createLogger();
+  function applyRemote(merged, local, deps) {
+    let applied = 0;
+    let skipped = 0;
+    for (const [localIdStr, entry] of Object.entries(merged.manga)) {
+      const before = local.manga[localIdStr];
+      if (before && (before.updatedAt ?? 0) >= (entry.updatedAt ?? 0)) continue;
+      const mediaId = deps.mediaIdByLocalId.get(Number(localIdStr));
+      if (mediaId == null) {
+        skipped++;
+        log.warn(
+          `orphan progress for localId ${localIdStr} (not in collection)`,
+        );
+        continue;
+      }
+      deps.updateEntry(
+        mediaId,
+        entry.status,
+        entry.score,
+        entry.progress,
+        undefined,
+        undefined,
+      );
+      applied++;
+    }
+    return { applied, skipped };
+  }
+  async function syncProgressRoundTrip(deps) {
+    let remoteStr = "";
+    try {
+      remoteStr = await deps.client.getGistFile(deps.gistId, deps.filename);
+    } catch (_) {
+      remoteStr = "";
+    }
+    const remote = parseProgress(remoteStr, deps.log);
+    const merged = mergeProgress(deps.local, remote, deps.now);
+    const res =
+      deps.skipApply || !deps.updateEntry
+        ? { applied: 0, skipped: 0 }
+        : (() => {
+            const lookup =
+              typeof deps.mediaIdByLocalId === "function"
+                ? deps.mediaIdByLocalId(merged)
+                : (deps.mediaIdByLocalId ?? new Map());
+            return applyRemote(merged, deps.local, {
+              updateEntry: deps.updateEntry,
+              mediaIdByLocalId: lookup,
+            });
+          })();
+    const pushed = !progressMangaEquals(merged.manga, remote.manga);
+    if (pushed) {
+      await deps.client.updateGistFile(
+        deps.gistId,
+        deps.filename,
+        serializeProgress(merged),
+      );
+    }
+    return {
+      merged,
+      remote,
+      applied: res.applied,
+      skipped: res.skipped,
+      pushed,
+    };
+  }
+  function buildEncodedMediaIdLookup(merged, extId) {
+    const map = new Map();
+    for (const key of Object.keys(merged.manga)) {
+      const localId = Number(key);
+      if (Number.isFinite(localId)) {
+        map.set(localId, encodeMediaId(extId, localId));
+      }
+    }
+    return map;
+  }
   var onGetMangaCollection2 = (event) => {
     (async () => {
       const {
-        createLogger,
+        createLogger: createLogger2,
         GistClient,
-        parseProgress,
-        mergeProgress,
-        progressMangaEquals,
-        serializeProgress,
-        encodeMediaId,
+        parseProgress: parseProgress2,
       } = $shared.use(SHARED_LIB_NAME);
-      const log = createLogger();
+      const log2 = createLogger2();
       try {
-        const COOLDOWN_KEY = "lcm:silent-sync-at";
-        const COOLDOWN_MS = 1e4;
-        const lastAt = $store.get(COOLDOWN_KEY) ?? 0;
+        const lastAt = $store.get(STORE_SILENT_SYNC_AT) ?? 0;
         const now = Date.now();
-        if (now - lastAt < COOLDOWN_MS) return;
-        $store.set(COOLDOWN_KEY, now);
+        if (now - lastAt < SILENT_SYNC_COOLDOWN_MS) return;
+        $store.set(STORE_SILENT_SYNC_AT, now);
         const token = ($getUserPreference("githubToken") ?? "").trim();
         const gistId = $storage.get(K_GIST) ?? "";
         if (!token || !gistId) return;
         if ($storage.get(K_SYNC_PAUSED)) return;
         const client = new GistClient(token, fetch);
-        const local = parseProgress($storage.get(K_PROGRESS), log);
-        let remoteStr = "";
-        try {
-          remoteStr = await client.getGistFile(gistId, PROGRESS_FILENAME);
-        } catch (_) {
-          remoteStr = "";
-        }
-        const remote = parseProgress(remoteStr, log);
-        const merged = mergeProgress(local, remote, now);
+        const local = parseProgress2($storage.get(K_PROGRESS), log2);
         const extId = $storage.get(K_EXT_ID);
-        let applied = 0;
-        if (extId != null) {
-          for (const [localIdStr, entry] of Object.entries(merged.manga)) {
-            const before = local.manga[localIdStr];
-            if (before && (before.updatedAt ?? 0) >= (entry.updatedAt ?? 0)) {
-              continue;
-            }
-            const localId = Number(localIdStr);
-            if (!Number.isFinite(localId)) continue;
-            const mediaId = encodeMediaId(extId, localId);
-            $store.set(`progress:skip:${mediaId}`, true);
-            try {
-              $anilist.updateEntry(
-                mediaId,
-                entry.status,
-                entry.score,
-                entry.progress,
-                undefined,
-                undefined,
-              );
-              applied++;
-            } catch (e) {
-              log.warn(`hook apply failed for localId ${localIdStr}:`, e);
-            } finally {
-              $store.remove(`progress:skip:${mediaId}`);
-            }
-          }
-        }
-        if (!progressMangaEquals(merged.manga, remote.manga)) {
-          await client.updateGistFile(
-            gistId,
-            PROGRESS_FILENAME,
-            serializeProgress(merged),
-          );
-        }
-        $storage.set(K_PROGRESS, merged);
+        const result = await syncProgressRoundTrip({
+          client,
+          gistId,
+          filename: PROGRESS_FILENAME,
+          local,
+          now,
+          log: log2,
+          skipApply: extId == null,
+          ...(extId != null
+            ? {
+                mediaIdByLocalId: (merged) =>
+                  buildEncodedMediaIdLookup(merged, extId),
+                updateEntry: (mediaId, status, scoreRaw, progress) => {
+                  wrapUpdateEntryWithSkip(mediaId, () => {
+                    $anilist.updateEntry(
+                      mediaId,
+                      status,
+                      scoreRaw,
+                      progress,
+                      undefined,
+                      undefined,
+                    );
+                  });
+                },
+              }
+            : {}),
+        });
+        $storage.set(K_PROGRESS, result.merged);
         $storage.set(K_PROGRESS_UPDATED, now);
-        if (applied > 0) {
+        if (result.applied > 0) {
           try {
             $anilist.refreshMangaCollection();
           } catch (e) {
-            log.warn("refreshMangaCollection failed:", e);
+            log2.warn("refreshMangaCollection failed:", e);
           }
           try {
             $app.invalidateClientQuery([
@@ -91,11 +297,11 @@ var onGetMangaCollection = (...args) => {
               "MANGA-get-manga-entry",
             ]);
           } catch (e) {
-            log.warn("invalidateClientQuery failed:", e);
+            log2.warn("invalidateClientQuery failed:", e);
           }
         }
       } catch (e) {
-        log.warn("on-get-manga-collection sync failed:", e);
+        log2.warn("on-get-manga-collection sync failed:", e);
       }
     })();
     event.next();
@@ -111,6 +317,21 @@ var onPostUpdateEntry = (...args) => {
   var K_PROGRESS = "lcm_progress";
   var K_PROGRESS_UPDATED = "lcm_progress_updated_at";
   var K_SYNC_PAUSED = "lcm_sync_paused";
+  var STORE_DRIFT_NOTIFIED = "lcm:drift-notified";
+  function progressSkipKey(mediaId) {
+    return `progress:skip:${mediaId}`;
+  }
+  function progressPayloadKey(mediaId) {
+    return `progress:${mediaId}`;
+  }
+  function wrapUpdateEntryWithSkip(mediaId, fn) {
+    $store.set(progressSkipKey(mediaId), true);
+    try {
+      fn();
+    } finally {
+      $store.remove(progressSkipKey(mediaId));
+    }
+  }
   var onPostUpdateEntry2 = (event) => {
     const {
       createLogger,
@@ -125,13 +346,12 @@ var onPostUpdateEntry = (...args) => {
         event.next();
         return;
       }
-      const key = `progress:${event.mediaId}`;
-      const payload = $store.get(key);
+      const payload = $store.get(progressPayloadKey(event.mediaId));
       if (!payload) {
         event.next();
         return;
       }
-      $store.remove(key);
+      $store.remove(progressPayloadKey(event.mediaId));
       const localId = decodeLocalId(event.mediaId);
       const now = Date.now();
       const local = parseProgress($storage.get(K_PROGRESS), log);
@@ -142,9 +362,8 @@ var onPostUpdateEntry = (...args) => {
         !syncPaused && token && gistId ? new GistClient(token, fetch) : null;
       const mediaId = event.mediaId;
       if (syncPaused && token && gistId) {
-        const notifiedKey = "lcm:drift-notified";
-        if (!$store.get(notifiedKey)) {
-          $store.set(notifiedKey, true);
+        if (!$store.get(STORE_DRIFT_NOTIFIED)) {
+          $store.set(STORE_DRIFT_NOTIFIED, true);
           log.warn(
             "catalog drift pending — saved locally only. Resolve in tray.",
           );
@@ -160,8 +379,7 @@ var onPostUpdateEntry = (...args) => {
         gistId,
         filename: PROGRESS_FILENAME,
         applyToSeanime: (entry) => {
-          $store.set(`progress:skip:${mediaId}`, true);
-          try {
+          wrapUpdateEntryWithSkip(mediaId, () => {
             $anilist.updateEntry(
               mediaId,
               entry.status,
@@ -170,9 +388,7 @@ var onPostUpdateEntry = (...args) => {
               undefined,
               undefined,
             );
-          } finally {
-            $store.remove(`progress:skip:${mediaId}`);
-          }
+          });
         },
         persistLocal: (doc, updatedAt) => {
           $storage.set(K_PROGRESS, doc);
@@ -279,6 +495,25 @@ var onPostUpdateEntryProgress = (...args) => {
 var onPreUpdateEntry = (...args) => {
   var SHARED_LIB_NAME = "local-catalog-manager";
   var SOURCE_PREFIX = "ext_custom_source_local-catalog";
+  function progressSkipKey(mediaId) {
+    return `progress:skip:${mediaId}`;
+  }
+  function progressPayloadKey(mediaId) {
+    return `progress:${mediaId}`;
+  }
+  function isLocalCatalogEntry(siteUrl, sourcePrefix) {
+    return (siteUrl ?? "").indexOf(sourcePrefix) === 0;
+  }
+  function buildProgressPayload(event, includeScore = false) {
+    const payload = {};
+    if (event.status != null) payload.status = event.status;
+    if (event.progress != null) payload.progress = event.progress;
+    if (includeScore && event.scoreRaw != null && event.scoreRaw > 0) {
+      payload.score = event.scoreRaw;
+    }
+    if (Object.keys(payload).length === 0) return null;
+    return payload;
+  }
   var onPreUpdateEntry2 = (event) => {
     const { createLogger, decodeLocalId } = $shared.use(SHARED_LIB_NAME);
     const log = createLogger();
@@ -287,7 +522,7 @@ var onPreUpdateEntry = (...args) => {
         event.next();
         return;
       }
-      if ($store.has(`progress:skip:${event.mediaId}`)) {
+      if ($store.has(progressSkipKey(event.mediaId))) {
         event.next();
         return;
       }
@@ -297,22 +532,16 @@ var onPreUpdateEntry = (...args) => {
       } catch (_) {
         m = null;
       }
-      const siteUrl = m?.siteUrl ?? "";
-      if (siteUrl.indexOf(SOURCE_PREFIX) !== 0) {
+      if (!isLocalCatalogEntry(m?.siteUrl ?? "", SOURCE_PREFIX)) {
         event.next();
         return;
       }
-      const payload = {};
-      if (event.status != null) payload.status = event.status;
-      if (event.progress != null) payload.progress = event.progress;
-      if (event.scoreRaw != null && event.scoreRaw > 0) {
-        payload.score = event.scoreRaw;
-      }
-      if (Object.keys(payload).length === 0) {
+      const payload = buildProgressPayload(event, true);
+      if (!payload) {
         event.next();
         return;
       }
-      $store.set(`progress:${event.mediaId}`, payload);
+      $store.set(progressPayloadKey(event.mediaId), payload);
     } catch (e) {
       log.error("pre-update-entry error:", e);
     }
@@ -325,6 +554,25 @@ var onPreUpdateEntry = (...args) => {
 var onPreUpdateEntryProgress = (...args) => {
   var SHARED_LIB_NAME = "local-catalog-manager";
   var SOURCE_PREFIX = "ext_custom_source_local-catalog";
+  function progressSkipKey(mediaId) {
+    return `progress:skip:${mediaId}`;
+  }
+  function progressPayloadKey(mediaId) {
+    return `progress:${mediaId}`;
+  }
+  function isLocalCatalogEntry(siteUrl, sourcePrefix) {
+    return (siteUrl ?? "").indexOf(sourcePrefix) === 0;
+  }
+  function buildProgressPayload(event, includeScore = false) {
+    const payload = {};
+    if (event.status != null) payload.status = event.status;
+    if (event.progress != null) payload.progress = event.progress;
+    if (includeScore && event.scoreRaw != null && event.scoreRaw > 0) {
+      payload.score = event.scoreRaw;
+    }
+    if (Object.keys(payload).length === 0) return null;
+    return payload;
+  }
   var onPreUpdateEntryProgress2 = (event) => {
     const { createLogger, decodeLocalId } = $shared.use(SHARED_LIB_NAME);
     const log = createLogger();
@@ -333,7 +581,7 @@ var onPreUpdateEntryProgress = (...args) => {
         event.next();
         return;
       }
-      if ($store.has(`progress:skip:${event.mediaId}`)) {
+      if ($store.has(progressSkipKey(event.mediaId))) {
         event.next();
         return;
       }
@@ -343,19 +591,16 @@ var onPreUpdateEntryProgress = (...args) => {
       } catch (_) {
         m = null;
       }
-      const siteUrl = m?.siteUrl ?? "";
-      if (siteUrl.indexOf(SOURCE_PREFIX) !== 0) {
+      if (!isLocalCatalogEntry(m?.siteUrl ?? "", SOURCE_PREFIX)) {
         event.next();
         return;
       }
-      const payload = {};
-      if (event.status != null) payload.status = event.status;
-      if (event.progress != null) payload.progress = event.progress;
-      if (Object.keys(payload).length === 0) {
+      const payload = buildProgressPayload(event);
+      if (!payload) {
         event.next();
         return;
       }
-      $store.set(`progress:${event.mediaId}`, payload);
+      $store.set(progressPayloadKey(event.mediaId), payload);
     } catch (e) {
       log.error("pre-update-entry-progress error:", e);
     }
@@ -709,6 +954,20 @@ var register = (...args) => {
       intent: STATUS_INTENT[status] ?? "gray",
     };
   }
+  var clientCacheQueryKeys = (opts) => {
+    const keys = [];
+    if (opts.catalog) {
+      keys.push("CUSTOM-SOURCE-custom-source-list-manga");
+    }
+    if (opts.progress) {
+      keys.push(
+        "MANGA-get-manga-collection",
+        "MANGA-get-anilist-manga-collection",
+        "MANGA-get-manga-entry",
+      );
+    }
+    return keys;
+  };
   var SHARED_LIB_NAME = "local-catalog-manager";
   var SOURCE_PREFIX = "ext_custom_source_local-catalog";
   var CATALOG_FILENAME = "seanime-local-catalog.json";
@@ -726,9 +985,547 @@ var register = (...args) => {
   var K_DRIFT_FRESH_GIST = "lcm_drift_fresh_gist";
   var K_PROGRESS_DRIFT_REMOTE = "lcm_progress_drift_remote";
   var K_EXT_ID = "lcm_ext_id";
+  var SILENT_SYNC_COOLDOWN_MS = 1e4;
+  function progressSkipKey(mediaId) {
+    return `progress:skip:${mediaId}`;
+  }
+  var MAX_EXT_ID = 1023;
+  function mediaIdFor(extId, localId, encode) {
+    if (extId == null) return null;
+    return encode(extId, localId);
+  }
+  async function discoverExtId(deps) {
+    const cached = deps.getCachedExtId();
+    if (cached != null) return cached;
+    const lookupEntry = deps.getLookupEntry();
+    if (lookupEntry) {
+      const [, anyMediaId] = lookupEntry;
+      const extId = deps.decodeExtId(anyMediaId);
+      deps.setCachedExtId(extId);
+      return extId;
+    }
+    const probeLocalId = deps.getProbeLocalId();
+    if (probeLocalId == null) return null;
+    for (let extId = 1; extId <= MAX_EXT_ID; extId++) {
+      if (extId % 64 === 0) deps.sleep(0);
+      const candidate = deps.encodeMediaId(extId, probeLocalId);
+      try {
+        const m = deps.getManga(candidate);
+        if (m?.siteUrl && m.siteUrl.indexOf(deps.sourcePrefix) === 0) {
+          deps.setCachedExtId(extId);
+          return extId;
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+  async function resolveMediaId(localId, deps) {
+    const cached = mediaIdFor(
+      deps.getCachedExtId(),
+      localId,
+      deps.encodeMediaId,
+    );
+    if (cached != null) return cached;
+    const extId = await discoverExtId(deps);
+    if (extId == null) return null;
+    return deps.encodeMediaId(extId, localId);
+  }
+  function localIdFromMediaId(mediaId, deps) {
+    if (!deps.isCustomSourceId(mediaId)) return 0;
+    let m;
+    try {
+      m = deps.getManga(mediaId) ?? undefined;
+    } catch {
+      m = undefined;
+    }
+    const siteUrl = m?.siteUrl ?? "";
+    if (siteUrl.indexOf(deps.sourcePrefix) !== 0) return 0;
+    return deps.decodeLocalId(mediaId);
+  }
+  var NONE = "-";
+  var STATUS_OPTS = [
+    { label: "—", value: NONE },
+    { label: "Releasing", value: "RELEASING" },
+    { label: "Finished", value: "FINISHED" },
+    { label: "Hiatus", value: "HIATUS" },
+    { label: "Cancelled", value: "CANCELLED" },
+    { label: "Not yet released", value: "NOT_YET_RELEASED" },
+  ];
+  var FORMAT_OPTS = [
+    { label: "—", value: NONE },
+    { label: "Manga", value: "MANGA" },
+    { label: "Novel", value: "NOVEL" },
+    { label: "One-shot", value: "ONE_SHOT" },
+  ];
+  var PREFERRED_OPTS = [
+    { label: "English", value: "english" },
+    { label: "Romaji", value: "romaji" },
+    { label: "Native", value: "native" },
+  ];
+  var MONTH_OPTS = [
+    { label: "—", value: NONE },
+    ...[
+      "January",
+      "February",
+      "March",
+      "April",
+      "May",
+      "June",
+      "July",
+      "August",
+      "September",
+      "October",
+      "November",
+      "December",
+    ].map((label, i) => ({ label, value: String(i + 1) })),
+  ];
+  function parseOptionalNumber(s) {
+    const v = Number((s ?? "").trim());
+    return (s ?? "").trim() !== "" && Number.isFinite(v) ? v : undefined;
+  }
+  function parseCommaList(s) {
+    const arr = (s ?? "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter((x) => x.length > 0);
+    return arr.length > 0 ? arr : undefined;
+  }
+  var EMPTY_FORM_FIELDS = {
+    romaji: "",
+    english: "",
+    native: "",
+    preferred: "english",
+    synonyms: "",
+    cover: "",
+    banner: "",
+    description: "",
+    genres: "",
+    status: "",
+    format: "",
+    chapters: "",
+    volumes: "",
+    year: "",
+    month: "",
+    day: "",
+    endYear: "",
+    endMonth: "",
+    endDay: "",
+    isAdult: false,
+    country: "",
+    siteUrl: "",
+    idMal: "",
+    meanScore: "",
+  };
+  var readCatalogFormFields = (refs) => ({
+    romaji: refs.romaji.current ?? "",
+    english: refs.english.current ?? "",
+    native: refs.native.current ?? "",
+    preferred: refs.preferred.current ?? "english",
+    synonyms: refs.synonyms.current ?? "",
+    cover: refs.cover.current ?? "",
+    banner: refs.banner.current ?? "",
+    description: refs.description.current ?? "",
+    genres: refs.genres.current ?? "",
+    status: refs.status.current ?? "",
+    format: refs.format.current ?? "",
+    chapters: refs.chapters.current ?? "",
+    volumes: refs.volumes.current ?? "",
+    year: refs.year.current ?? "",
+    month: refs.month.current ?? "",
+    day: refs.day.current ?? "",
+    endYear: refs.endYear.current ?? "",
+    endMonth: refs.endMonth.current ?? "",
+    endDay: refs.endDay.current ?? "",
+    isAdult: !!refs.isAdult.current,
+    country: refs.country.current ?? "",
+    siteUrl: refs.siteUrl.current ?? "",
+    idMal: refs.idMal.current ?? "",
+    meanScore: refs.meanScore.current ?? "",
+  });
+  var writeCatalogFormFields = (refs, fields) => {
+    refs.romaji.setValue(fields.romaji);
+    refs.english.setValue(fields.english);
+    refs.native.setValue(fields.native);
+    refs.preferred.setValue(fields.preferred);
+    refs.synonyms.setValue(fields.synonyms);
+    refs.cover.setValue(fields.cover);
+    refs.banner.setValue(fields.banner);
+    refs.description.setValue(fields.description);
+    refs.genres.setValue(fields.genres);
+    refs.status.setValue(fields.status);
+    refs.format.setValue(fields.format);
+    refs.chapters.setValue(fields.chapters);
+    refs.volumes.setValue(fields.volumes);
+    refs.year.setValue(fields.year);
+    refs.month.setValue(fields.month);
+    refs.day.setValue(fields.day);
+    refs.endYear.setValue(fields.endYear);
+    refs.endMonth.setValue(fields.endMonth);
+    refs.endDay.setValue(fields.endDay);
+    refs.isAdult.setValue(fields.isAdult);
+    refs.country.setValue(fields.country);
+    refs.siteUrl.setValue(fields.siteUrl);
+    refs.idMal.setValue(fields.idMal);
+    refs.meanScore.setValue(fields.meanScore);
+  };
+  var preferredVariantKey = (t) => {
+    const up = t?.userPreferred;
+    if (up && up === t?.romaji) return "romaji";
+    if (up && up === t?.native) return "native";
+    return "english";
+  };
+  var optionalMediaEnum = (v) => {
+    const trimmed = v.trim();
+    return trimmed && trimmed !== NONE ? trimmed : undefined;
+  };
+  var catalogFormFieldsFromEntry = (e) => {
+    if (!e) return EMPTY_FORM_FIELDS;
+    const t = e.title;
+    return {
+      romaji: t?.romaji ?? "",
+      english: t?.english ?? "",
+      native: t?.native ?? "",
+      preferred: preferredVariantKey(t),
+      synonyms: (e.synonyms ?? []).join(", "),
+      cover: e.coverImage?.extraLarge ?? e.coverImage?.large ?? "",
+      banner: e.bannerImage ?? "",
+      description: e.description ?? "",
+      genres: (e.genres ?? []).join(", "),
+      status: e.status ?? "",
+      format: e.format ?? "",
+      chapters: e.chapters != null ? String(e.chapters) : "",
+      volumes: e.volumes != null ? String(e.volumes) : "",
+      year: e.startDate?.year != null ? String(e.startDate.year) : "",
+      month: e.startDate?.month != null ? String(e.startDate.month) : "",
+      day: e.startDate?.day != null ? String(e.startDate.day) : "",
+      endYear: e.endDate?.year != null ? String(e.endDate.year) : "",
+      endMonth: e.endDate?.month != null ? String(e.endDate.month) : "",
+      endDay: e.endDate?.day != null ? String(e.endDate.day) : "",
+      isAdult: !!e.isAdult,
+      country: e.countryOfOrigin ?? "",
+      siteUrl: e.siteUrl ?? "",
+      idMal: e.idMal != null ? String(e.idMal) : "",
+      meanScore: e.meanScore != null ? String(e.meanScore) : "",
+    };
+  };
+  var catalogEntryFromFormFields = (id, existing, fields, now = Date.now()) => {
+    const cover = fields.cover.trim() || undefined;
+    const sd = {
+      year: parseOptionalNumber(fields.year),
+      month: parseOptionalNumber(fields.month),
+      day: parseOptionalNumber(fields.day),
+    };
+    const ed = {
+      year: parseOptionalNumber(fields.endYear),
+      month: parseOptionalNumber(fields.endMonth),
+      day: parseOptionalNumber(fields.endDay),
+    };
+    const hasSd = sd.year != null || sd.month != null || sd.day != null;
+    const hasEd = ed.year != null || ed.month != null || ed.day != null;
+    const romaji = fields.romaji.trim() || undefined;
+    const english = fields.english.trim() || undefined;
+    const native = fields.native.trim() || undefined;
+    const pref = fields.preferred || "english";
+    const userPreferred =
+      (pref === "romaji" ? romaji : pref === "native" ? native : english) ||
+      english ||
+      romaji ||
+      native;
+    return {
+      ...existing,
+      id,
+      type: "MANGA",
+      updatedAt: now,
+      title: { romaji, english, native, userPreferred },
+      synonyms: parseCommaList(fields.synonyms),
+      coverImage: cover
+        ? {
+            ...existing?.coverImage,
+            extraLarge: cover,
+            large: cover,
+            medium: cover,
+          }
+        : undefined,
+      bannerImage: fields.banner.trim() || undefined,
+      description: fields.description.trim() || undefined,
+      genres: parseCommaList(fields.genres),
+      status: optionalMediaEnum(fields.status),
+      format: optionalMediaEnum(fields.format),
+      chapters: parseOptionalNumber(fields.chapters),
+      volumes: parseOptionalNumber(fields.volumes),
+      startDate: hasSd ? sd : undefined,
+      endDate: hasEd ? ed : undefined,
+      isAdult: fields.isAdult ? true : undefined,
+      countryOfOrigin: fields.country.trim() || undefined,
+      siteUrl: fields.siteUrl.trim() || undefined,
+      idMal: parseOptionalNumber(fields.idMal),
+      meanScore: parseOptionalNumber(fields.meanScore),
+    };
+  };
+  var formatTs = (ms) => {
+    if (!ms) return "—";
+    const d = new Date(ms);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  var formatListStatus = (status) => {
+    if (!status) return "—";
+    return status.replace(/_/g, " ").toLowerCase();
+  };
+  var ent = (n) => `${n} ${n === 1 ? "entry" : "entries"}`;
+  function parseGistId(input) {
+    const trimmed = input.trim();
+    if (!trimmed) return null;
+    if (/^[a-f0-9]+$/i.test(trimmed)) return trimmed;
+    const m = trimmed.match(
+      /gist\.github(?:usercontent)?\.com\/[^/]+\/([a-f0-9]+)/i,
+    );
+    return m ? m[1] : null;
+  }
+  var detectImportKind = (raw) => {
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return "invalid";
+    }
+    if (Array.isArray(data)) return "catalog";
+    if (!data || typeof data !== "object") return "invalid";
+    const obj = data;
+    if (Array.isArray(obj.manga)) return "catalog";
+    if (obj.manga && typeof obj.manga === "object") return "progress";
+    if (obj.entries && typeof obj.entries === "object") return "progress";
+    return "invalid";
+  };
+  function wrapUpdateEntryWithSkip(mediaId, fn) {
+    $store.set(progressSkipKey(mediaId), true);
+    try {
+      fn();
+    } finally {
+      $store.remove(progressSkipKey(mediaId));
+    }
+  }
+  var stringFieldDiff = (local, remote) => {
+    if (local === undefined) return false;
+    return String(local) !== String(remote ?? "");
+  };
+  var numericFieldDiff = (local, remote) => {
+    if (local === undefined) return false;
+    return Number(local) !== Number(remote ?? 0);
+  };
+  var hasEntryProgressDrift = (rowProgress, seanimeData, lookupReady) => {
+    if (!rowProgress) return false;
+    return (
+      !lookupReady ||
+      !seanimeData ||
+      stringFieldDiff(rowProgress.status, seanimeData.status) ||
+      numericFieldDiff(rowProgress.progress, seanimeData.progress) ||
+      numericFieldDiff(rowProgress.score, seanimeData.score)
+    );
+  };
+  function emptyDoc() {
+    return { version: 1, updatedAt: 0, manga: {}, anime: {} };
+  }
+  function parseEntries(src, log2, label) {
+    const out = {};
+    if (!src || typeof src !== "object") return out;
+    for (const [k, v] of Object.entries(src)) {
+      if (!v || typeof v !== "object") continue;
+      const updatedAt = typeof v.updatedAt === "number" ? v.updatedAt : 0;
+      if (typeof v.updatedAt !== "number") {
+        log2.warn(`${label} entry ${k} missing updatedAt, treating as 0`);
+      }
+      const { scoreRaw, ...rest } = v;
+      if (scoreRaw != null && Number(scoreRaw) > 0 && rest.score == null) {
+        rest.score = scoreRaw;
+      }
+      out[k] = { ...rest, updatedAt };
+    }
+    return out;
+  }
+  function parseProgress(raw, log2) {
+    if (raw == null || raw === "") return emptyDoc();
+    let data = raw;
+    if (typeof raw === "string") {
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        return emptyDoc();
+      }
+    }
+    if (!data || typeof data !== "object") {
+      return emptyDoc();
+    }
+    if (typeof data.version === "number" && data.version !== 1) {
+      log2.warn(
+        `progress.json version ${data.version} unknown, keeping entries`,
+      );
+    }
+    return {
+      version: typeof data.version === "number" ? data.version : 1,
+      updatedAt: typeof data.updatedAt === "number" ? data.updatedAt : 0,
+      manga: parseEntries(data.manga, log2, "progress"),
+      anime: parseEntries(data.anime, log2, "anime"),
+    };
+  }
+  function serializeEntries(map) {
+    const out = {};
+    const ids = Object.keys(map).sort((a, b) => Number(a) - Number(b));
+    for (const id of ids) {
+      const e = map[id];
+      const sorted = {};
+      for (const k of Object.keys(e).sort()) {
+        const val = e[k];
+        if (val === null || val === undefined) continue;
+        if (k === "score" && Number(val) === 0) continue;
+        sorted[k] = val;
+      }
+      out[id] = sorted;
+    }
+    return out;
+  }
+  function serializeProgress(doc) {
+    const stable = {
+      version: doc.version ?? 1,
+      updatedAt: doc.updatedAt ?? 0,
+      manga: serializeEntries(doc.manga),
+      anime: serializeEntries(doc.anime ?? {}),
+    };
+    return JSON.stringify(stable, null, 2);
+  }
+  function mergeEntries(local, remote) {
+    const out = {};
+    const ids = new Set([...Object.keys(local), ...Object.keys(remote)]);
+    for (const id of ids) {
+      const l = local[id];
+      const r = remote[id];
+      if (!l) {
+        out[id] = { ...r };
+        continue;
+      }
+      if (!r) {
+        out[id] = { ...l };
+        continue;
+      }
+      const lu = l.updatedAt ?? 0;
+      const ru = r.updatedAt ?? 0;
+      if (lu !== ru) {
+        out[id] = lu > ru ? { ...l } : { ...r };
+        continue;
+      }
+      const lp = l.progress ?? 0;
+      const rp = r.progress ?? 0;
+      out[id] = lp >= rp ? { ...l } : { ...r };
+    }
+    return out;
+  }
+  function mergeProgress(local, remote, now = 0) {
+    return {
+      version: 1,
+      updatedAt: now,
+      manga: mergeEntries(local.manga, remote.manga),
+      anime: mergeEntries(local.anime ?? {}, remote.anime ?? {}),
+    };
+  }
+  function progressMangaEquals(a, b) {
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    if (aKeys.length !== bKeys.length) return false;
+    for (const k of aKeys) {
+      if (!(k in b)) return false;
+      const ae = a[k];
+      const be = b[k];
+      if (Number(ae.updatedAt ?? 0) !== Number(be.updatedAt ?? 0)) return false;
+      if (Number(ae.progress ?? 0) !== Number(be.progress ?? 0)) return false;
+      if (Number(ae.score ?? 0) !== Number(be.score ?? 0)) return false;
+      if (Number(ae.repeat ?? 0) !== Number(be.repeat ?? 0)) return false;
+      if (String(ae.startedAt ?? "") !== String(be.startedAt ?? ""))
+        return false;
+      if (String(ae.completedAt ?? "") !== String(be.completedAt ?? "")) {
+        return false;
+      }
+      if (String(ae.status ?? "") !== String(be.status ?? "")) return false;
+    }
+    return true;
+  }
+  function createLogger() {
+    const prefix = `[${"local-catalog-manager"}]`;
+    return {
+      log: (...args2) => console.log(prefix, ...args2),
+      info: (...args2) => console.info(prefix, ...args2),
+      warn: (...args2) => console.warn(prefix, ...args2),
+      error: (...args2) => console.error(prefix, ...args2),
+      debug: (...args2) => console.debug(prefix, ...args2),
+    };
+  }
+  var log = createLogger();
+  function applyRemote(merged, local, deps) {
+    let applied = 0;
+    let skipped = 0;
+    for (const [localIdStr, entry] of Object.entries(merged.manga)) {
+      const before = local.manga[localIdStr];
+      if (before && (before.updatedAt ?? 0) >= (entry.updatedAt ?? 0)) continue;
+      const mediaId = deps.mediaIdByLocalId.get(Number(localIdStr));
+      if (mediaId == null) {
+        skipped++;
+        log.warn(
+          `orphan progress for localId ${localIdStr} (not in collection)`,
+        );
+        continue;
+      }
+      deps.updateEntry(
+        mediaId,
+        entry.status,
+        entry.score,
+        entry.progress,
+        undefined,
+        undefined,
+      );
+      applied++;
+    }
+    return { applied, skipped };
+  }
+  async function syncProgressRoundTrip(deps) {
+    let remoteStr = "";
+    try {
+      remoteStr = await deps.client.getGistFile(deps.gistId, deps.filename);
+    } catch (_) {
+      remoteStr = "";
+    }
+    const remote = parseProgress(remoteStr, deps.log);
+    const merged = mergeProgress(deps.local, remote, deps.now);
+    const res =
+      deps.skipApply || !deps.updateEntry
+        ? { applied: 0, skipped: 0 }
+        : (() => {
+            const lookup =
+              typeof deps.mediaIdByLocalId === "function"
+                ? deps.mediaIdByLocalId(merged)
+                : (deps.mediaIdByLocalId ?? new Map());
+            return applyRemote(merged, deps.local, {
+              updateEntry: deps.updateEntry,
+              mediaIdByLocalId: lookup,
+            });
+          })();
+    const pushed = !progressMangaEquals(merged.manga, remote.manga);
+    if (pushed) {
+      await deps.client.updateGistFile(
+        deps.gistId,
+        deps.filename,
+        serializeProgress(merged),
+      );
+    }
+    return {
+      merged,
+      remote,
+      applied: res.applied,
+      skipped: res.skipped,
+      pushed,
+    };
+  }
   var register2 = (ctx) => {
     const {
-      createLogger,
+      createLogger: createLogger2,
       GistClient,
       parseCatalog,
       resolveUserPreferred,
@@ -741,22 +1538,21 @@ var register = (...args) => {
       upsertEntry,
       validateEntry,
       decodeLocalId,
-      decodeExtId,
-      encodeMediaId,
-      isCustomSourceId,
+      decodeExtId: decodeExtId2,
+      encodeMediaId: encodeMediaId2,
+      isCustomSourceId: isCustomSourceId2,
       buildMediaIdLookup,
-      applyRemote,
+      applyRemote: applyRemote2,
       detectOrphans,
       pruneOrphans,
       pullProgress,
       pushProgress,
-      parseProgress,
-      serializeProgress,
-      mergeProgress,
+      parseProgress: parseProgress2,
+      serializeProgress: serializeProgress2,
+      mergeProgress: mergeProgress2,
       diffProgress,
-      progressMangaEquals,
     } = $shared.use(SHARED_LIB_NAME);
-    const log = createLogger();
+    const log2 = createLogger2();
     const tray = ctx.newTray({
       iconUrl:
         "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/local-catalog-manager/assets/icon.png",
@@ -770,7 +1566,8 @@ var register = (...args) => {
     const editingId = ctx.state(0);
     const rawUrl = ctx.state($storage.get(K_RAW) ?? "");
     const status = ctx.state("");
-    const loadProgressDoc = () => parseProgress($storage.get(K_PROGRESS), log);
+    const loadProgressDoc = () =>
+      parseProgress2($storage.get(K_PROGRESS), log2);
     const progress = ctx.state(loadProgressDoc());
     const progressUpdated = ctx.state($storage.get(K_PROGRESS_UPDATED) ?? 0);
     const progressStatus = ctx.state("");
@@ -778,12 +1575,6 @@ var register = (...args) => {
     const orphanCount = () => {
       const catalogIds = new Set(entries.get().map((e) => e.id));
       return detectOrphans(progress.get(), catalogIds).length;
-    };
-    const formatTs = (ms) => {
-      if (!ms) return "—";
-      const d = new Date(ms);
-      const pad = (n) => String(n).padStart(2, "0");
-      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
     };
     async function pushProgressNow() {
       const gistId = effectiveGistId();
@@ -814,7 +1605,7 @@ var register = (...args) => {
             `Pushed ${Object.keys(merged.manga).length} entries`,
           );
         } catch (e) {
-          log.warn("push progress failed:", e);
+          log2.warn("push progress failed:", e);
           progressStatus.set(`Push failed: ${String(e)}`);
         }
       });
@@ -847,7 +1638,7 @@ var register = (...args) => {
             decodeLocalId,
             { extId: $storage.get(K_EXT_ID) ?? undefined },
           );
-          const res = applyRemote(merged, progress.get(), {
+          const res = applyRemote2(merged, progress.get(), {
             updateEntry: applyEntryViaSeanime,
             mediaIdByLocalId: lookup,
           });
@@ -859,7 +1650,7 @@ var register = (...args) => {
             `Pulled — applied ${res.applied}${res.skipped ? `, skipped ${res.skipped} orphan(s)` : ""}`,
           );
         } catch (e) {
-          log.warn("pull progress failed:", e);
+          log2.warn("pull progress failed:", e);
           progressStatus.set(`Pull failed: ${String(e)}`);
         }
       });
@@ -879,7 +1670,7 @@ var register = (...args) => {
       await runBusy("reload-catalog", async () => {
         try {
           const content = await client().getGistFile(gistId, CATALOG_FILENAME);
-          const remote = parseCatalog(content, log).manga;
+          const remote = parseCatalog(content, log2).manga;
           const now = Date.now();
           const merged = mergeCatalog(entries.get(), remote);
           if (catalogsEqual(merged, remote)) {
@@ -901,8 +1692,7 @@ var register = (...args) => {
       });
     }
     const applyEntryViaSeanime = (mediaId, status2, scoreRaw, prog) => {
-      $store.set(`progress:skip:${mediaId}`, true);
-      try {
+      wrapUpdateEntryWithSkip(mediaId, () => {
         $anilist.updateEntry(
           mediaId,
           status2,
@@ -911,22 +1701,12 @@ var register = (...args) => {
           undefined,
           undefined,
         );
-      } finally {
-        $store.remove(`progress:skip:${mediaId}`);
-      }
+      });
     };
     async function syncProgressInner() {
       const gistId = effectiveGistId();
       const now = Date.now();
-      let remoteStr = "";
-      try {
-        remoteStr = await client().getGistFile(gistId, PROGRESS_FILENAME);
-      } catch (_) {
-        remoteStr = "";
-      }
-      const remote = parseProgress(remoteStr, log);
       const localDoc = progress.get();
-      const merged = mergeProgress(localDoc, remote, now);
       const collection = await ctx.manga.getCollection();
       const lookup = buildMediaIdLookup(
         collection,
@@ -934,32 +1714,30 @@ var register = (...args) => {
         decodeLocalId,
         { extId: $storage.get(K_EXT_ID) ?? undefined },
       );
-      const res = applyRemote(merged, localDoc, {
-        updateEntry: applyEntryViaSeanime,
+      const result = await syncProgressRoundTrip({
+        client: client(),
+        gistId,
+        filename: PROGRESS_FILENAME,
+        local: localDoc,
+        now,
+        log: log2,
         mediaIdByLocalId: lookup,
+        updateEntry: applyEntryViaSeanime,
       });
-      if (!progressMangaEquals(merged.manga, remote.manga)) {
-        await client().updateGistFile(
-          gistId,
-          PROGRESS_FILENAME,
-          serializeProgress(merged),
-        );
-      }
-      progress.set(merged);
+      progress.set(result.merged);
       progressUpdated.set(now);
-      $storage.set(K_PROGRESS, merged);
+      $storage.set(K_PROGRESS, result.merged);
       $storage.set(K_PROGRESS_UPDATED, now);
-      if (res.applied > 0) {
+      if (result.applied > 0) {
         try {
           $anilist.refreshMangaCollection();
         } catch (e) {
-          log.warn("refreshMangaCollection failed:", e);
+          log2.warn("refreshMangaCollection failed:", e);
         }
         invalidateClientCaches({ progress: true });
       }
-      return res;
+      return { applied: result.applied, skipped: result.skipped };
     }
-    const SILENT_COOLDOWN_MS = 1e4;
     let lastSilentSyncAt = 0;
     async function pullProgressSilent(reason) {
       const gistId = effectiveGistId();
@@ -967,7 +1745,7 @@ var register = (...args) => {
       if (pendingDrift.get()) return;
       if (busyAction.get()) return;
       const nowMs = Date.now();
-      if (nowMs - lastSilentSyncAt < SILENT_COOLDOWN_MS) return;
+      if (nowMs - lastSilentSyncAt < SILENT_SYNC_COOLDOWN_MS) return;
       lastSilentSyncAt = nowMs;
       try {
         const hadProgressDrift = pendingProgressDrift.get() !== null;
@@ -982,7 +1760,7 @@ var register = (...args) => {
           );
         }
       } catch (e) {
-        log.warn(`silent pull failed (${reason}):`, e);
+        log2.warn(`silent pull failed (${reason}):`, e);
       }
     }
     async function reloadProgress() {
@@ -1008,28 +1786,18 @@ var register = (...args) => {
             `Reloaded — applied ${res.applied}${res.skipped ? `, skipped ${res.skipped} orphan(s)` : ""}${hadProgressDrift ? " · drift merged" : ""}`,
           );
         } catch (e) {
-          log.warn("reload progress failed:", e);
+          log2.warn("reload progress failed:", e);
           progressStatus.set(`Reload failed: ${String(e)}`);
         }
       });
     }
     function invalidateClientCaches(opts) {
-      const keys = [];
-      if (opts.catalog) {
-        keys.push("CUSTOM-SOURCE-custom-source-list-manga");
-      }
-      if (opts.progress) {
-        keys.push(
-          "MANGA-get-manga-collection",
-          "MANGA-get-anilist-manga-collection",
-          "MANGA-get-manga-entry",
-        );
-      }
+      const keys = clientCacheQueryKeys(opts);
       if (keys.length === 0) return;
       try {
         $app.invalidateClientQuery(keys);
       } catch (e) {
-        log.warn("invalidateClientQuery failed:", e);
+        log2.warn("invalidateClientQuery failed:", e);
       }
     }
     function persistProgress(next, updatedAt) {
@@ -1046,7 +1814,7 @@ var register = (...args) => {
           next,
           updatedAt,
         ).catch((e) => {
-          log.warn("progress push failed:", e);
+          log2.warn("progress push failed:", e);
         });
       }
       invalidateClientCaches({ progress: true });
@@ -1065,51 +1833,34 @@ var register = (...args) => {
       persistProgress(pruneOrphans(progress.get(), [localId], now), now);
       progressStatus.set(`Deleted orphan #${localId}`);
     }
-    function mediaIdFor(localId) {
-      const extId = $storage.get(K_EXT_ID);
-      if (extId == null) return null;
-      return encodeMediaId(extId, localId);
-    }
-    async function discoverExtId() {
-      const cached = $storage.get(K_EXT_ID);
-      if (cached != null) return cached;
-      const lookup = mediaIdLookup.get();
-      if (lookup && lookup.size > 0) {
-        const [, anyMediaId] = lookup.entries().next().value;
-        const extId = decodeExtId(anyMediaId);
-        $storage.set(K_EXT_ID, extId);
-        return extId;
+    const getMangaSafe = (mediaId) => {
+      try {
+        return $anilist.getManga(mediaId);
+      } catch {
+        return;
       }
-      const probeLocalId = entries.get()[0]?.id;
-      if (probeLocalId == null) return null;
-      for (let extId = 1; extId <= 1023; extId++) {
-        if (extId % 64 === 0) {
-          $sleep(0);
-        }
-        const candidate = encodeMediaId(extId, probeLocalId);
-        try {
-          const m = $anilist.getManga(candidate);
-          if (m?.siteUrl && m.siteUrl.indexOf(SOURCE_PREFIX) === 0) {
-            $storage.set(K_EXT_ID, extId);
-            return extId;
-          }
-        } catch (_) {}
-      }
-      return null;
-    }
-    async function resolveMediaId(localId) {
-      const cached = mediaIdFor(localId);
-      if (cached != null) return cached;
-      const extId = await discoverExtId();
-      if (extId == null) return null;
-      return encodeMediaId(extId, localId);
-    }
+    };
+    const extIdDeps = () => ({
+      getCachedExtId: () => $storage.get(K_EXT_ID),
+      setCachedExtId: (extId) => $storage.set(K_EXT_ID, extId),
+      getLookupEntry: () => {
+        const lookup = mediaIdLookup.get();
+        if (!lookup || lookup.size === 0) return;
+        return lookup.entries().next().value;
+      },
+      decodeExtId: decodeExtId2,
+      getProbeLocalId: () => entries.get()[0]?.id,
+      getManga: getMangaSafe,
+      sourcePrefix: SOURCE_PREFIX,
+      encodeMediaId: encodeMediaId2,
+      sleep: $sleep,
+    });
     async function applyProgress(localId) {
       const entry = progress.get().manga[String(localId)];
       if (!entry) return;
       await runBusy(`apply-progress-${localId}`, async () => {
         try {
-          const mediaId = await resolveMediaId(localId);
+          const mediaId = await resolveMediaId(localId, extIdDeps());
           if (mediaId == null) {
             ctx.toast.warning(
               `Couldn't resolve seanime mediaId for #${localId}. Make sure the local-catalog custom-source is installed and has this entry.`,
@@ -1131,7 +1882,7 @@ var register = (...args) => {
           try {
             $anilist.refreshMangaCollection();
           } catch (e) {
-            log.warn("refreshMangaCollection failed:", e);
+            log2.warn("refreshMangaCollection failed:", e);
           }
           invalidateClientCaches({ progress: true });
           ctx.toast.success(
@@ -1151,7 +1902,7 @@ var register = (...args) => {
     async function navigateToMangaEntry(localId) {
       await runBusy(`open-manga-${localId}`, async () => {
         try {
-          const mediaId = await resolveMediaId(localId);
+          const mediaId = await resolveMediaId(localId, extIdDeps());
           if (mediaId == null) {
             ctx.toast.warning(
               `Couldn't resolve seanime mediaId for #${localId}. Make sure the local-catalog custom-source is installed and has this entry.`,
@@ -1191,6 +1942,32 @@ var register = (...args) => {
     const fEndDay = ctx.fieldRef("");
     const fJsonIn = ctx.fieldRef("");
     const fGistLink = ctx.fieldRef("");
+    const catalogFormRefs = {
+      romaji: fRomaji,
+      english: fEnglish,
+      native: fNative,
+      preferred: fPreferred,
+      synonyms: fSynonyms,
+      cover: fCover,
+      banner: fBanner,
+      description: fDescription,
+      genres: fGenres,
+      status: fStatus,
+      format: fFormat,
+      chapters: fChapters,
+      volumes: fVolumes,
+      year: fYear,
+      month: fMonth,
+      day: fDay,
+      endYear: fEndYear,
+      endMonth: fEndMonth,
+      endDay: fEndDay,
+      isAdult: fIsAdult,
+      country: fCountry,
+      siteUrl: fSiteUrl,
+      idMal: fIdMal,
+      meanScore: fMeanScore,
+    };
     const deleteGistArmed = ctx.state(false);
     const deleteArmedId = ctx.state(0);
     const bindingExpanded = ctx.state(false);
@@ -1207,13 +1984,13 @@ var register = (...args) => {
         }),
       );
       const listData = new Map();
-      for (const list2 of collection.lists ?? []) {
-        for (const e of list2.entries ?? []) {
+      for (const list of collection.lists ?? []) {
+        for (const e of list.entries ?? []) {
           const mid = e.media?.id;
-          if (typeof mid !== "number" || !isCustomSourceId(mid)) continue;
+          if (typeof mid !== "number" || !isCustomSourceId2(mid)) continue;
           let isOurs = false;
           if (extId != null) {
-            isOurs = decodeExtId(mid) === extId;
+            isOurs = decodeExtId2(mid) === extId;
           } else {
             const su = e.media?.siteUrl ?? "";
             isOurs = su.indexOf(SOURCE_PREFIX) === 0;
@@ -1294,25 +2071,15 @@ var register = (...args) => {
     const token = () => ($getUserPreference("githubToken") ?? "").trim();
     const hasToken = () => token().length > 0;
     const client = () => new GistClient(token(), (u, i) => ctx.fetch(u, i));
-    const parseGistId = (input) => {
-      const trimmed = input.trim();
-      if (!trimmed) return null;
-      if (/^[a-f0-9]+$/i.test(trimmed)) return trimmed;
-      const m = trimmed.match(
-        /gist\.github(?:usercontent)?\.com\/[^/]+\/([a-f0-9]+)/i,
-      );
-      return m ? m[1] : null;
-    };
     const legacyGistUrl = ($getUserPreference("gistUrl") ?? "").trim();
     if (legacyGistUrl && !$storage.get(K_GIST)) {
       const parsed = parseGistId(legacyGistUrl);
       if (parsed) {
         $storage.set(K_GIST, parsed);
-        log.log("migrated legacy gistUrl config to $storage");
+        log2.log("migrated legacy gistUrl config to $storage");
       }
     }
     const effectiveGistId = () => $storage.get(K_GIST) ?? "";
-    const ent = (n) => `${n} ${n === 1 ? "entry" : "entries"}`;
     const disarmDelete = () => {
       if (deleteGistArmed.get()) deleteGistArmed.set(false);
       if (deleteArmedId.get() !== 0) deleteArmedId.set(0);
@@ -1387,7 +2154,7 @@ var register = (...args) => {
           $storage.set(K_OWNER, info.owner);
           $storage.set(K_RAW, info.rawUrl);
           rawUrl.set(info.rawUrl);
-          remote = parseCatalog(info.content, log).manga;
+          remote = parseCatalog(info.content, log2).manga;
         } catch (e) {
           ctx.toast.error(
             `Linked, but couldn't fetch remote catalog: ${e.message}. Use Pull to retry.`,
@@ -1431,7 +2198,7 @@ var register = (...args) => {
         } catch (_) {
           remoteRaw = "";
         }
-        const remote = parseProgress(remoteRaw, log);
+        const remote = parseProgress2(remoteRaw, log2);
         const local = progress.get();
         const localCount = Object.keys(local.manga).length;
         const remoteCount = Object.keys(remote.manga).length;
@@ -1450,7 +2217,7 @@ var register = (...args) => {
           `Linked to gist ${gistId} — ${catalogSummary}. Progress ${progSummary}.`,
         );
       } catch (e) {
-        log.warn("progress sync after link failed:", e);
+        log2.warn("progress sync after link failed:", e);
         ctx.toast.warning(
           `Linked to gist ${gistId} — ${catalogSummary}. Progress sync failed: ${e.message}. Use Reload progress to retry.`,
         );
@@ -1506,7 +2273,7 @@ var register = (...args) => {
         const now = Date.now();
         let resolved;
         if (mode === "merge") {
-          resolved = mergeProgress(drift.local, drift.remote, now);
+          resolved = mergeProgress2(drift.local, drift.remote, now);
         } else if (mode === "local") {
           resolved = { ...drift.local, updatedAt: now };
         } else {
@@ -1520,7 +2287,7 @@ var register = (...args) => {
             decodeLocalId,
             { extId: $storage.get(K_EXT_ID) ?? undefined },
           );
-          const res = applyRemote(resolved, drift.local, {
+          const res = applyRemote2(resolved, drift.local, {
             updateEntry: applyEntryViaSeanime,
             mediaIdByLocalId: lookup,
           });
@@ -1533,10 +2300,10 @@ var register = (...args) => {
               await client().updateGistFile(
                 gistId,
                 PROGRESS_FILENAME,
-                serializeProgress(resolved),
+                serializeProgress2(resolved),
               );
             } catch (e) {
-              log.warn("push after progress drift resolve failed:", e);
+              log2.warn("push after progress drift resolve failed:", e);
             }
           }
           ctx.toast.success(
@@ -1568,10 +2335,10 @@ var register = (...args) => {
         client()
           .deleteGist(gistId)
           .then(() => {
-            log.log(`cleaned up fresh gist ${gistId}`);
+            log2.log(`cleaned up fresh gist ${gistId}`);
           })
           .catch((e) => {
-            log.warn("cleanup of fresh gist failed:", e);
+            log2.warn("cleanup of fresh gist failed:", e);
           });
         ctx.toast.info(
           "Link cancelled. Local catalog kept. Empty gist deleted from GitHub.",
@@ -1599,17 +2366,6 @@ var register = (...args) => {
         }
       });
     }
-    const num = (s) => {
-      const v = Number((s ?? "").trim());
-      return (s ?? "").trim() !== "" && Number.isFinite(v) ? v : undefined;
-    };
-    const list = (s) => {
-      const arr = (s ?? "")
-        .split(",")
-        .map((x) => x.trim())
-        .filter((x) => x.length > 0);
-      return arr.length > 0 ? arr : undefined;
-    };
     function persistLocal(next, updatedAt) {
       entries.set(next);
       $storage.set(K_CATALOG, next);
@@ -1675,7 +2431,7 @@ var register = (...args) => {
       await runBusy("pull-catalog", async () => {
         try {
           const content = await client().getGistFile(gistId, CATALOG_FILENAME);
-          const remote = parseCatalog(content, log).manga;
+          const remote = parseCatalog(content, log2).manga;
           persistLocal(remote, Date.now());
           ctx.toast.success(`Pulled ${ent(remote.length)}`);
         } catch (e) {
@@ -1693,44 +2449,7 @@ var register = (...args) => {
     function openForm(id) {
       editingId.set(id);
       const e = entries.get().find((x) => x.id === id);
-      const t = e?.title;
-      fRomaji.setValue(t?.romaji ?? "");
-      fEnglish.setValue(t?.english ?? "");
-      fNative.setValue(t?.native ?? "");
-      const up = t?.userPreferred;
-      fPreferred.setValue(
-        up && up === t?.romaji
-          ? "romaji"
-          : up && up === t?.native
-            ? "native"
-            : "english",
-      );
-      fSynonyms.setValue((e?.synonyms ?? []).join(", "));
-      fCover.setValue(e?.coverImage?.extraLarge ?? e?.coverImage?.large ?? "");
-      fBanner.setValue(e?.bannerImage ?? "");
-      fDescription.setValue(e?.description ?? "");
-      fGenres.setValue((e?.genres ?? []).join(", "));
-      fStatus.setValue(e?.status ?? "");
-      fFormat.setValue(e?.format ?? "");
-      fChapters.setValue(e?.chapters != null ? String(e.chapters) : "");
-      fVolumes.setValue(e?.volumes != null ? String(e.volumes) : "");
-      fYear.setValue(
-        e?.startDate?.year != null ? String(e.startDate.year) : "",
-      );
-      fMonth.setValue(
-        e?.startDate?.month != null ? String(e.startDate.month) : "",
-      );
-      fDay.setValue(e?.startDate?.day != null ? String(e.startDate.day) : "");
-      fEndYear.setValue(e?.endDate?.year != null ? String(e.endDate.year) : "");
-      fEndMonth.setValue(
-        e?.endDate?.month != null ? String(e.endDate.month) : "",
-      );
-      fEndDay.setValue(e?.endDate?.day != null ? String(e.endDate.day) : "");
-      fIsAdult.setValue(!!e?.isAdult);
-      fCountry.setValue(e?.countryOfOrigin ?? "");
-      fSiteUrl.setValue(e?.siteUrl ?? "");
-      fIdMal.setValue(e?.idMal != null ? String(e.idMal) : "");
-      fMeanScore.setValue(e?.meanScore != null ? String(e.meanScore) : "");
+      writeCatalogFormFields(catalogFormRefs, catalogFormFieldsFromEntry(e));
       view.set("form");
     }
     ctx.registerEventHandler("lcm-new", () => {
@@ -1811,7 +2530,7 @@ var register = (...args) => {
         ctx.dom.clipboard.write(url);
         ctx.toast.success(`Raw URL copied — ${url}`);
       } catch (e) {
-        log.warn("clipboard write failed:", e);
+        log2.warn("clipboard write failed:", e);
         ctx.toast.info(url);
       }
     });
@@ -1848,70 +2567,11 @@ var register = (...args) => {
       const current = entries.get();
       const id = editingId.get() > 0 ? editingId.get() : allocId();
       const existing = current.find((x) => x.id === id);
-      const cover = (fCover.current ?? "").trim() || undefined;
-      const sd = {
-        year: num(fYear.current),
-        month: num(fMonth.current),
-        day: num(fDay.current),
-      };
-      const ed = {
-        year: num(fEndYear.current),
-        month: num(fEndMonth.current),
-        day: num(fEndDay.current),
-      };
-      const hasSd = sd.year != null || sd.month != null || sd.day != null;
-      const hasEd = ed.year != null || ed.month != null || ed.day != null;
-      const entry = {
-        ...existing,
+      const entry = catalogEntryFromFormFields(
         id,
-        type: "MANGA",
-        updatedAt: Date.now(),
-        title: (() => {
-          const romaji = (fRomaji.current ?? "").trim() || undefined;
-          const english = (fEnglish.current ?? "").trim() || undefined;
-          const native = (fNative.current ?? "").trim() || undefined;
-          const pref = fPreferred.current ?? "english";
-          const userPreferred =
-            (pref === "romaji"
-              ? romaji
-              : pref === "native"
-                ? native
-                : english) ||
-            english ||
-            romaji ||
-            native;
-          return { romaji, english, native, userPreferred };
-        })(),
-        synonyms: list(fSynonyms.current),
-        coverImage: cover
-          ? {
-              ...existing?.coverImage,
-              extraLarge: cover,
-              large: cover,
-              medium: cover,
-            }
-          : undefined,
-        bannerImage: (fBanner.current ?? "").trim() || undefined,
-        description: (fDescription.current ?? "").trim() || undefined,
-        genres: list(fGenres.current),
-        status: (() => {
-          const v = (fStatus.current ?? "").trim();
-          return v && v !== NONE ? v : undefined;
-        })(),
-        format: (() => {
-          const v = (fFormat.current ?? "").trim();
-          return v && v !== NONE ? v : undefined;
-        })(),
-        chapters: num(fChapters.current),
-        volumes: num(fVolumes.current),
-        startDate: hasSd ? sd : undefined,
-        endDate: hasEd ? ed : undefined,
-        isAdult: fIsAdult.current ? true : undefined,
-        countryOfOrigin: (fCountry.current ?? "").trim() || undefined,
-        siteUrl: (fSiteUrl.current ?? "").trim() || undefined,
-        idMal: num(fIdMal.current),
-        meanScore: num(fMeanScore.current),
-      };
+        existing,
+        readCatalogFormFields(catalogFormRefs),
+      );
       const err = validateEntry(entry);
       if (err) {
         ctx.toast.error(err);
@@ -1921,21 +2581,6 @@ var register = (...args) => {
       view.set("list");
       push(next);
     });
-    const detectImportKind = (raw) => {
-      let data;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        return "invalid";
-      }
-      if (Array.isArray(data)) return "catalog";
-      if (!data || typeof data !== "object") return "invalid";
-      const obj = data;
-      if (Array.isArray(obj.manga)) return "catalog";
-      if (obj.manga && typeof obj.manga === "object") return "progress";
-      if (obj.entries && typeof obj.entries === "object") return "progress";
-      return "invalid";
-    };
     const importFromField = (mode) => {
       const raw = (fJsonIn.current ?? "").trim();
       if (!raw) {
@@ -1951,7 +2596,7 @@ var register = (...args) => {
       }
       try {
         if (kind === "catalog") {
-          const imported = parseCatalog(raw, log).manga;
+          const imported = parseCatalog(raw, log2).manga;
           if (imported.length === 0) {
             ctx.toast.error("Catalog JSON has no valid entries.");
             return;
@@ -1966,7 +2611,7 @@ var register = (...args) => {
               : `Catalog replaced · ${ent(next.length)}`,
           );
         } else {
-          const imported = parseProgress(raw, log);
+          const imported = parseProgress2(raw, log2);
           const importedCount = Object.keys(imported.manga).length;
           if (importedCount === 0) {
             ctx.toast.error("Progress JSON has no entries.");
@@ -1975,7 +2620,7 @@ var register = (...args) => {
           const now = Date.now();
           const next =
             mode === "merge"
-              ? mergeProgress(progress.get(), imported, now)
+              ? mergeProgress2(progress.get(), imported, now)
               : { ...imported, updatedAt: now };
           persistProgress(next, now);
           fJsonIn.setValue("");
@@ -1996,43 +2641,6 @@ var register = (...args) => {
     ctx.registerEventHandler("lcm-import-replace", () =>
       importFromField("replace"),
     );
-    const NONE = "-";
-    const STATUS_OPTS = [
-      { label: "—", value: NONE },
-      { label: "Releasing", value: "RELEASING" },
-      { label: "Finished", value: "FINISHED" },
-      { label: "Hiatus", value: "HIATUS" },
-      { label: "Cancelled", value: "CANCELLED" },
-      { label: "Not yet released", value: "NOT_YET_RELEASED" },
-    ];
-    const FORMAT_OPTS = [
-      { label: "—", value: NONE },
-      { label: "Manga", value: "MANGA" },
-      { label: "Novel", value: "NOVEL" },
-      { label: "One-shot", value: "ONE_SHOT" },
-    ];
-    const PREFERRED_OPTS = [
-      { label: "English", value: "english" },
-      { label: "Romaji", value: "romaji" },
-      { label: "Native", value: "native" },
-    ];
-    const MONTH_OPTS = [
-      { label: "—", value: NONE },
-      ...[
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-      ].map((label, i) => ({ label, value: String(i + 1) })),
-    ];
     const sectionHeader = (label) => tray.text(label, { style: LABEL_STYLE });
     const statCard = (value, label) =>
       tray.stack(
@@ -2058,31 +2666,13 @@ var register = (...args) => {
           },
         },
       );
-    const stringFieldDiff = (local, remote) => {
-      if (local === undefined) return false;
-      return String(local) !== String(remote ?? "");
-    };
-    const numericFieldDiff = (local, remote) => {
-      if (local === undefined) return false;
-      return Number(local) !== Number(remote ?? 0);
-    };
-    function hasEntryProgressDrift(localId) {
-      const rowProgress = progress.get().manga[String(localId)];
-      if (!rowProgress) return false;
-      const seanimeData = seanimeListDataLookup.get()?.get(localId);
-      const lookupReady = seanimeListDataLookup.get() != null;
-      return (
-        !lookupReady ||
-        !seanimeData ||
-        stringFieldDiff(rowProgress.status, seanimeData.status) ||
-        numericFieldDiff(rowProgress.progress, seanimeData.progress) ||
-        numericFieldDiff(rowProgress.score, seanimeData.score)
+    function hasEntryProgressDrift2(localId) {
+      return hasEntryProgressDrift(
+        progress.get().manga[String(localId)],
+        seanimeListDataLookup.get()?.get(localId),
+        seanimeListDataLookup.get() != null,
       );
     }
-    const formatListStatus = (status2) => {
-      if (!status2) return "—";
-      return status2.replace(/_/g, " ").toLowerCase();
-    };
     function renderProgressSection() {
       const linked = hasToken() && !!effectiveGistId();
       const oCount = orphanCount();
@@ -2442,7 +3032,7 @@ var register = (...args) => {
       items.push(
         ...renderCodeBlockSection({
           label: "{...} GENERATED INLINE PROGRESS JSON",
-          content: serializeProgress(progress.get()),
+          content: serializeProgress2(progress.get()),
           expanded: progressJsonExpanded.get(),
           toggleEvent: "lcm-toggle-progress-json",
           expandTooltip:
@@ -2506,7 +3096,7 @@ var register = (...args) => {
       const allEntries = entries.get();
       const drifting = hasDrift();
       const q = entrySearch.get().toLowerCase();
-      const list2 = q
+      const list = q
         ? allEntries.filter((e) => {
             const title = (resolveUserPreferred(e.title) ?? "").toLowerCase();
             if (title.includes(q)) return true;
@@ -2514,7 +3104,7 @@ var register = (...args) => {
             return syns.some((s) => s.toLowerCase().includes(q));
           })
         : allEntries;
-      const rows = list2.map((e) => {
+      const rows = list.map((e) => {
         const title = resolveUserPreferred(e.title) ?? "(untitled)";
         const rowProg = progress.get().manga[String(e.id)]?.progress;
         const row = {
@@ -2527,7 +3117,11 @@ var register = (...args) => {
         row.status = statusToPill(e.status);
         if (!drifting) {
           const inListMediaId = mediaIdLookup.get()?.get(e.id);
-          const computedMediaId = mediaIdFor(e.id);
+          const computedMediaId = mediaIdFor(
+            $storage.get(K_EXT_ID),
+            e.id,
+            encodeMediaId2,
+          );
           const resolvedMediaId = inListMediaId ?? computedMediaId;
           const openBusy = busyAction.get() === `open-manga-${e.id}`;
           const tooltipText = openBusy
@@ -2549,7 +3143,7 @@ var register = (...args) => {
             const seanimeData = seanimeListDataLookup.get()?.get(e.id);
             const inListForApply = seanimeData != null;
             const applyRowBusy = busyAction.get() === `apply-progress-${e.id}`;
-            const hasDriftRow = hasEntryProgressDrift(e.id);
+            const hasDriftRow = hasEntryProgressDrift2(e.id);
             if (hasDriftRow || applyRowBusy) {
               const progSummary = [
                 rowProgress.status?.toLowerCase(),
@@ -2829,13 +3423,17 @@ var register = (...args) => {
       const rowProgress = isNew ? undefined : progress.get().manga[String(id)];
       const applyBusy = busyAction.get() === `apply-progress-${id}`;
       const showApply =
-        !isNew && !!rowProgress && (hasEntryProgressDrift(id) || applyBusy);
+        !isNew && !!rowProgress && (hasEntryProgressDrift2(id) || applyBusy);
       const drifting = hasDrift();
       const headerActions = [];
       if (!isNew && !drifting) {
         const openBusy = busyAction.get() === `open-manga-${id}`;
         const inListMediaId = mediaIdLookup.get()?.get(id);
-        const computedMediaId = mediaIdFor(id);
+        const computedMediaId = mediaIdFor(
+          $storage.get(K_EXT_ID),
+          id,
+          encodeMediaId2,
+        );
         const resolvedMediaId = inListMediaId ?? computedMediaId;
         const openTooltip = openBusy
           ? "Opening …"
@@ -3133,25 +3731,20 @@ var register = (...args) => {
       );
     }
     const currentLocalId = ctx.state(0);
-    const localIdFromMediaId = (mediaId) => {
-      if (!isCustomSourceId(mediaId)) return 0;
-      let m;
-      try {
-        m = $anilist.getManga(mediaId);
-      } catch {
-        m = undefined;
-      }
-      const siteUrl = m?.siteUrl ?? "";
-      if (siteUrl.indexOf(SOURCE_PREFIX) !== 0) return 0;
-      return decodeLocalId(mediaId);
-    };
+    const localIdFromMediaId2 = (mediaId) =>
+      localIdFromMediaId(mediaId, {
+        isCustomSourceId: isCustomSourceId2,
+        getManga: getMangaSafe,
+        sourcePrefix: SOURCE_PREFIX,
+        decodeLocalId,
+      });
     const pageBtn = ctx.action.newMangaPageButton({
-      label: "Catalog ⚙️",
-      intent: "primary-subtle",
-      tooltipText: "Edit catalog entry",
+      label: "\uD83D\uDDC2️",
+      intent: "gray-subtle",
+      tooltipText: "Edit local entry",
     });
     pageBtn.onClick((e) => {
-      const local = localIdFromMediaId(e.media.id);
+      const local = localIdFromMediaId2(e.media.id);
       if (local && entries.get().some((x) => x.id === local)) {
         openForm(local);
         tray.open();
@@ -3161,7 +3754,7 @@ var register = (...args) => {
     });
     ctx.screen.onNavigate((e) => {
       const id = e.searchParams?.id ? parseInt(e.searchParams.id, 10) : 0;
-      const local = id > 0 ? localIdFromMediaId(id) : 0;
+      const local = id > 0 ? localIdFromMediaId2(id) : 0;
       currentLocalId.set(local);
       if (local > 0) {
         pullProgressSilent("opened entry");
@@ -3172,34 +3765,6 @@ var register = (...args) => {
       if (currentLocalId.get() > 0) pageBtn.mount();
       else pageBtn.unmount();
     }, [currentLocalId]);
-    const palette = ctx.newCommandPalette({
-      placeholder: "Local catalog…",
-      keyboardShortcut: "l",
-    });
-    const refreshPalette = () => {
-      const base = [
-        { label: "+ New entry", value: "new", onSelect: () => openForm(0) },
-        {
-          label: "↻ Reload catalog",
-          value: "lcm-reload-catalog",
-          onSelect: () => void reloadCatalog(),
-        },
-        {
-          label: "↻ Reload progress",
-          value: "lcm-reload-progress",
-          onSelect: () => void reloadProgress(),
-        },
-      ];
-      const items = entries.get().map((en) => ({
-        label: `⚙️ #${en.id} ${resolveUserPreferred(en.title) ?? ""}`,
-        value: `edit-${en.id}`,
-        filterType: "includes",
-        onSelect: () => openForm(en.id),
-      }));
-      palette.setItems([...base, ...items]);
-    };
-    ctx.effect(() => refreshPalette(), [entries]);
-    palette.onOpen(() => refreshPalette());
     const autoSync = ($getUserPreference("autoSync") ?? "false") === "true";
     if (autoSync && hasToken()) {
       const mins = Math.max(
@@ -3228,11 +3793,11 @@ var register = (...args) => {
           const collection = await ctx.manga.getCollection();
           refreshLookupsFromCollection(collection);
         } catch (e) {
-          log.warn("mediaIdLookup refresh failed:", e);
+          log2.warn("mediaIdLookup refresh failed:", e);
         }
         if ($storage.get(K_EXT_ID) == null) {
           try {
-            const result = await discoverExtId();
+            const result = await discoverExtId(extIdDeps());
             if (result != null) {
               try {
                 const fresh = await ctx.manga.getCollection();
@@ -3240,7 +3805,7 @@ var register = (...args) => {
               } catch (_) {}
             }
           } catch (e) {
-            log.warn("extId discovery failed:", e);
+            log2.warn("extId discovery failed:", e);
           }
         }
         await pullProgressSilent("tray opened");

@@ -4,8 +4,11 @@ import {
   K_PROGRESS_UPDATED,
   K_SYNC_PAUSED,
   PROGRESS_FILENAME,
+  progressPayloadKey,
   SHARED_LIB_NAME,
+  STORE_DRIFT_NOTIFIED,
 } from "../utils/constants";
+import { wrapUpdateEntryWithSkip } from "../utils/progress-capture";
 import type { sharedLib } from "./shared-lib";
 
 // Persist captured payload + sync with the gist (source of truth).
@@ -26,13 +29,14 @@ export const onPostUpdateEntry = (event: $app.PostUpdateEntryEvent) => {
       event.next();
       return;
     }
-    const key = `progress:${event.mediaId}`;
-    const payload = $store.get<Partial<MangaProgressEntry>>(key);
+    const payload = $store.get<Partial<MangaProgressEntry>>(
+      progressPayloadKey(event.mediaId),
+    );
     if (!payload) {
       event.next();
       return;
     }
-    $store.remove(key);
+    $store.remove(progressPayloadKey(event.mediaId));
 
     const localId = decodeLocalId(event.mediaId);
     const now = Date.now();
@@ -40,16 +44,12 @@ export const onPostUpdateEntry = (event: $app.PostUpdateEntryEvent) => {
     const token = ($getUserPreference("githubToken") ?? "").trim();
     const gistId = $storage.get<string>(K_GIST) ?? "";
     const syncPaused = $storage.get<boolean>(K_SYNC_PAUSED) ?? false;
-    // When drift is pending, force local-only writes by nulling the client.
-    // handlePostUpdate's "persist-local-only" branch handles it correctly.
     const client =
       !syncPaused && token && gistId ? new GistClient(token, fetch) : null;
     const mediaId = event.mediaId;
     if (syncPaused && token && gistId) {
-      // Toast at most once per drift session (cleared when drift resolves).
-      const notifiedKey = "lcm:drift-notified";
-      if (!$store.get<boolean>(notifiedKey)) {
-        $store.set(notifiedKey, true);
+      if (!$store.get<boolean>(STORE_DRIFT_NOTIFIED)) {
+        $store.set(STORE_DRIFT_NOTIFIED, true);
         log.warn(
           "catalog drift pending — saved locally only. Resolve in tray.",
         );
@@ -66,11 +66,7 @@ export const onPostUpdateEntry = (event: $app.PostUpdateEntryEvent) => {
       gistId,
       filename: PROGRESS_FILENAME,
       applyToSeanime: (entry: MangaProgressEntry) => {
-        // Block recursive capture: our restore triggers $anilist.updateEntry,
-        // which fires onPre/PostUpdateEntry again. The pre-hook checks this
-        // flag and bails — otherwise we'd restore in a loop.
-        $store.set(`progress:skip:${mediaId}`, true);
-        try {
+        wrapUpdateEntryWithSkip(mediaId, () => {
           $anilist.updateEntry(
             mediaId,
             entry.status,
@@ -79,9 +75,7 @@ export const onPostUpdateEntry = (event: $app.PostUpdateEntryEvent) => {
             undefined,
             undefined,
           );
-        } finally {
-          $store.remove(`progress:skip:${mediaId}`);
-        }
+        });
       },
       persistLocal: (doc: LocalProgress, updatedAt: number) => {
         $storage.set(K_PROGRESS, doc);

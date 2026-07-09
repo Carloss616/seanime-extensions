@@ -17,8 +17,8 @@ Extension types: `custom-source` (a metadata provider for the collection) and `p
    - Entries use seanime's native AL_BaseManga shape. `id` + non-empty `title` required; the rest optional. v2 replaced the old flat shape (cover/banner/year/country).
    - Configurable in-memory cache TTL (Cache minutes).
 
-2. Local Catalog Manager (plugin, v2.2.0)
-   - Companion to Local Catalog: add/edit/delete entries from the tray, the **Catalog ⚙️** manga-page button, or the command palette.
+2. Local Catalog Manager (plugin, v2.2.1)
+   - Companion to Local Catalog: add/edit/delete entries from the tray or the 🗂️ manga-page button.
    - Tray UI: **list view** (sync controls, reading-progress section, searchable entry list) and **form view** (contextual cover+title header, reading-progress cards with seanime drift compare + Apply, full AL_BaseManga fields). Opening the tray on a local-catalog manga page auto-jumps into that entry's form.
    - Gist mode (GitHub PAT with `gist` scope): pushes catalog.json to a secret Gist the source reads; supports manual Pull and scheduled Auto-sync (interval configurable, default 30 min, uses the `cron` scope).
    - Local mode (no token): entries persist in plugin storage; user copies serialized JSON into the source's Inline catalog JSON field.

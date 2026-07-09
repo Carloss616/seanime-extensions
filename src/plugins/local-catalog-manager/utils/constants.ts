@@ -53,3 +53,16 @@ export const K_PROGRESS_DRIFT_REMOTE = "lcm_progress_drift_remote";
 // for catalog entries that aren't in the user's list yet — needed by the
 // "Open →" link and the auto-add path in "Push local progress".
 export const K_EXT_ID = "lcm_ext_id";
+
+// $store keys (cross-runtime, in-memory).
+export const STORE_SILENT_SYNC_AT = "lcm:silent-sync-at";
+export const STORE_DRIFT_NOTIFIED = "lcm:drift-notified";
+export const SILENT_SYNC_COOLDOWN_MS = 10_000;
+
+export function progressSkipKey(mediaId: number): string {
+  return `progress:skip:${mediaId}`;
+}
+
+export function progressPayloadKey(mediaId: number): string {
+  return `progress:${mediaId}`;
+}
