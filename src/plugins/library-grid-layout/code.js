@@ -79,45 +79,56 @@ var register = (...args) => {
     }
     return tray.flex(row, { gap: 3, style: { alignItems: "center" } });
   }
+  var K_COLS = "columnsByScope";
+  var K_USE_DEFAULT = "useSeanimeDefault";
+  var ABS_MIN = 1;
+  var ABS_MAX = 12;
+  var SCOPES = [
+    { key: "mobile", label: "Mobile", min: 0 },
+    { key: "tablet", label: "Tablet", min: 768 },
+    { key: "laptop", label: "Laptop", min: 1280 },
+    { key: "desktop", label: "Desktop", min: 1920 },
+  ];
+  var DEFAULTS = {
+    mobile: 4,
+    tablet: 6,
+    laptop: 8,
+    desktop: 12,
+  };
+  var GRID_SELECTOR = "[data-media-card-grid], [data-media-card-lazy-grid]";
+  var sanitizeColumns = (raw) => {
+    const src = raw ?? {};
+    const cfg = {};
+    let floor = ABS_MIN;
+    for (const s of SCOPES) {
+      let v = Number(src[s.key] ?? DEFAULTS[s.key]);
+      if (!Number.isFinite(v)) v = DEFAULTS[s.key];
+      v = Math.max(ABS_MIN, Math.min(ABS_MAX, Math.round(v)));
+      v = Math.max(floor, v);
+      cfg[s.key] = v;
+      floor = v;
+    }
+    return cfg;
+  };
+  var scopeForWidth = (w) => {
+    let chosen = SCOPES[0];
+    for (const s of SCOPES) if (w >= s.min) chosen = s;
+    return chosen;
+  };
+  var scopeBounds = (idx, cfg) => ({
+    lower: idx > 0 ? cfg[SCOPES[idx - 1].key] : ABS_MIN,
+    upper: idx < SCOPES.length - 1 ? cfg[SCOPES[idx + 1].key] : ABS_MAX,
+  });
+  var applyScopeDelta = (cfg, key, delta) => {
+    const idx = SCOPES.findIndex((s) => s.key === key);
+    const { lower, upper } = scopeBounds(idx, cfg);
+    const next = Math.max(lower, Math.min(upper, cfg[key] + delta));
+    if (next === cfg[key]) return null;
+    return { ...cfg, [key]: next };
+  };
   var register2 = (ctx) => {
-    const K_COLS = "columnsByScope";
-    const K_USE_DEFAULT = "useSeanimeDefault";
-    const ABS_MIN = 1;
-    const ABS_MAX = 12;
-    const SCOPES = [
-      { key: "mobile", label: "Mobile", min: 0 },
-      { key: "tablet", label: "Tablet", min: 768 },
-      { key: "laptop", label: "Laptop", min: 1280 },
-      { key: "desktop", label: "Desktop", min: 1920 },
-    ];
-    const DEFAULTS = {
-      mobile: 4,
-      tablet: 6,
-      laptop: 8,
-      desktop: 12,
-    };
-    const SELECTOR = "[data-media-card-grid], [data-media-card-lazy-grid]";
-    const sanitize = (raw) => {
-      const src = raw ?? {};
-      const cfg = {};
-      let floor = ABS_MIN;
-      for (const s of SCOPES) {
-        let v = Number(src[s.key] ?? DEFAULTS[s.key]);
-        if (!Number.isFinite(v)) v = DEFAULTS[s.key];
-        v = Math.max(ABS_MIN, Math.min(ABS_MAX, Math.round(v)));
-        v = Math.max(floor, v);
-        cfg[s.key] = v;
-        floor = v;
-      }
-      return cfg;
-    };
-    const colsByScope = ctx.state(sanitize($storage.get(K_COLS)));
+    const colsByScope = ctx.state(sanitizeColumns($storage.get(K_COLS)));
     const useDefault = ctx.state($storage.get(K_USE_DEFAULT) ?? false);
-    const scopeForWidth = (w) => {
-      let chosen = SCOPES[0];
-      for (const s of SCOPES) if (w >= s.min) chosen = s;
-      return chosen;
-    };
     let lastValue = "";
     const applyToGrids = (grids, cfg) => {
       if (useDefault.get()) {
@@ -133,11 +144,13 @@ var register = (...args) => {
         g.setStyle("grid-template-columns", value);
       }
     };
-    const reapply = async () => {
-      const grids = await ctx.dom.query(SELECTOR);
-      applyToGrids(grids, colsByScope.get());
+    const paint = async (cfg) => {
+      applyToGrids(await ctx.dom.query(GRID_SELECTOR), cfg);
     };
-    ctx.dom.observe(SELECTOR, (grids) => {
+    const reapply = async () => {
+      await paint(colsByScope.get());
+    };
+    ctx.dom.observe(GRID_SELECTOR, (grids) => {
       applyToGrids(grids, colsByScope.get());
     });
     ctx.dom.onMainTabReady(() => {
@@ -150,18 +163,11 @@ var register = (...args) => {
       reapply();
     });
     const setScope = async (key, delta) => {
-      const idx = SCOPES.findIndex((s) => s.key === key);
-      const cfg = { ...colsByScope.get() };
-      const lower = idx > 0 ? cfg[SCOPES[idx - 1].key] : ABS_MIN;
-      const upper =
-        idx < SCOPES.length - 1 ? cfg[SCOPES[idx + 1].key] : ABS_MAX;
-      const next = Math.max(lower, Math.min(upper, cfg[key] + delta));
-      if (next === cfg[key]) return;
-      cfg[key] = next;
+      const cfg = applyScopeDelta(colsByScope.get(), key, delta);
+      if (!cfg) return;
       colsByScope.set(cfg);
       $storage.set(K_COLS, cfg);
-      const grids = await ctx.dom.query(SELECTOR);
-      applyToGrids(grids, cfg);
+      await paint(cfg);
     };
     ctx.registerEventHandler("lgl-toggle-default", () => {
       const v = !useDefault.get();
@@ -170,11 +176,10 @@ var register = (...args) => {
       reapply();
     });
     ctx.registerEventHandler("lgl-reset", async () => {
-      const cfg = sanitize(DEFAULTS);
+      const cfg = sanitizeColumns(DEFAULTS);
       colsByScope.set(cfg);
       $storage.set(K_COLS, cfg);
-      const grids = await ctx.dom.query(SELECTOR);
-      applyToGrids(grids, cfg);
+      await paint(cfg);
     });
     const tray = ctx.newTray({
       iconUrl:
@@ -189,9 +194,7 @@ var register = (...args) => {
       const activeN = cfg[active.key];
       const scopeRow = (s) => {
         const idx = SCOPES.findIndex((x) => x.key === s.key);
-        const lower = idx > 0 ? cfg[SCOPES[idx - 1].key] : ABS_MIN;
-        const upper =
-          idx < SCOPES.length - 1 ? cfg[SCOPES[idx + 1].key] : ABS_MAX;
+        const { lower, upper } = scopeBounds(idx, cfg);
         const val = cfg[s.key];
         const isActive = s.key === active.key;
         return tray.flex(
