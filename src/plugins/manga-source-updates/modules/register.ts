@@ -3,6 +3,38 @@ import { createDomDecorator } from "../../../_components/dom-decorator";
 import { type EntryListRow, entryList } from "../../../_components/entry-list";
 import { trayHeader } from "../../../_components/tray-header";
 import scanPanelHtml from "../assets/scan-panel.html";
+import { readCardAttrs } from "../utils/card-dom";
+import { makeProbe, unreadChapters } from "../utils/chapters";
+import { classify, isBadKind } from "../utils/classify";
+import { readingEntries } from "../utils/collection";
+import {
+  K_EXCLUDED,
+  K_PINNED,
+  K_PROBES,
+  K_RESULTS,
+  REASONS,
+  reasonIntent,
+  reasonLabel,
+} from "../utils/constants";
+import { createHeaderProgressReader } from "../utils/header-progress";
+import { hydrateProbes, hydrateResults } from "../utils/hydrate";
+import {
+  isManualMatchConfirmDialog,
+  mappingSigFromHtml,
+} from "../utils/manual-match";
+import { isActiveProvider, pruneInactiveProbes } from "../utils/providers";
+import { readSelectedProvider } from "../utils/selected-provider";
+import { cardBadgeKind, statusFor } from "../utils/status";
+import { collectTitles, resolveTitle } from "../utils/titles";
+import type {
+  ExcludeReason,
+  MangaResult,
+  ProbeMap,
+  ProviderProbe,
+  ResultKind,
+  ResultRowMedia,
+  StoredResult,
+} from "../utils/types";
 
 // Scan the reading list (all CURRENT entries) and, per manga, probe every
 // installed source to find new chapters. Traffic is cut by TTL (skip a manga
@@ -10,184 +42,6 @@ import scanPanelHtml from "../assets/scan-panel.html";
 // sits far behind the reading progress is remembered and skipped next time).
 // There is NO per-manga "selected provider": seanime owns the reader's source
 // selection, so we just report the best (most unread) across the user's sources.
-
-// $storage keys.
-const K_EXCLUDED = "excludedProviders"; // Record<mediaId, Record<providerId, reason>>
-const K_RESULTS = "lastResults"; // Record<mediaId, StoredResult>
-const K_PINNED = "pinnedProviders"; // Record<mediaId, providerId[]> — user-locked
-const K_PROBES = "lastProbes"; // Record<mediaId, Record<providerId, ProviderProbe>> — per-source detail
-
-// The three outcomes that both classify a source AND are reasons to auto-exclude
-// it — the shared base of ResultKind and ExcludeReason.
-type AutoBadKind = "not-matched" | "error-found" | "outdated";
-
-// Per-manga / per-source classification outcome.
-type ResultKind = AutoBadKind | "new" | "up-to-date" | "all-excluded";
-
-// Why a source is excluded: the auto-exclude kinds plus manual-only reasons.
-type ExcludeReason = AutoBadKind | "bad-numbering" | "other";
-
-// Persisted per-manga scan outcome — reused on a TTL-fresh rescan AND to
-// rehydrate the tray after a reload (the in-memory state is otherwise empty).
-interface StoredResult {
-  title: string;
-  cover?: string;
-  latest: number; // highest chapter across the matched sources
-  read: number;
-  sources: number; // how many sources have this manga (matched, non-excluded)
-  newSources?: number; // of those, how many have unread chapters (drives the M in "+N · M")
-  kind: ResultKind;
-  checkedAt: number; // ms epoch
-}
-
-type ResultRowMedia = Pick<StoredResult, "title" | "cover">;
-
-interface MangaResult extends StoredResult {
-  mediaId: number;
-  isNew: boolean;
-  fromCache: boolean;
-}
-
-// One probed source in the per-manga detail view.
-interface ProviderProbe {
-  provider: string;
-  providerName: string;
-  latest: number;
-  count: number;
-  matched: boolean; // true = returned chapters
-  errored: boolean; // true = fetch threw (vs. simply no match)
-}
-
-// Build a probe entry from a getChapterContainer read (null = thrown/error).
-function makeProbe(
-  provider: string,
-  providerName: string,
-  chapters: $app.HibikeManga_ChapterDetails[] | null,
-): ProviderProbe {
-  return {
-    provider,
-    // Coerce: providerName comes from the Go-bound getProviders() map, and it's
-    // used in charCodeAt (avatar hash) + tray.text — a raw wrapper misbehaves.
-    providerName: String(providerName),
-    latest: chapters ? latestChapter(chapters) : 0,
-    count: chapters?.length ?? 0,
-    matched: !!chapters && chapters.length > 0,
-    errored: chapters == null,
-  };
-}
-
-// Whole chapters still unread — chapter numbers are floats (e.g. 12.5), so the
-// badge count floors the gap; classification must use the same rule or a manga
-// with +0 can stay "new" (green) and in the New chapters list.
-function unreadChapters(read: number, latest: number): number {
-  return Math.max(0, Math.floor(latest - read));
-}
-
-// Classify a source's result for a manga. `read` is the user's progress; `gap`
-// the far-behind threshold. Shared by the scan and the detail probe.
-function classify(
-  read: number,
-  latest: number,
-  count: number,
-  errored: boolean,
-  gap: number,
-): ResultKind {
-  if (errored) return "error-found";
-  if (count === 0) return "not-matched";
-  if (read > 0 && read - latest >= gap) return "outdated";
-  return unreadChapters(read, latest) > 0 ? "new" : "up-to-date";
-}
-
-// Kinds that mark a source as a bad match for a manga -> auto-exclude.
-function isBadKind(kind: ResultKind): boolean {
-  return (
-    kind === "not-matched" || kind === "error-found" || kind === "outdated"
-  );
-}
-
-// One table per exclusion reason: `menu` = dropdown label, `badge` = short label
-// on the EXCLUDED row, `intent` = badge color. Keys match the automatic
-// auto-exclude reasons (not-matched / error-found / outdated) so manual + auto
-// read the same, plus manual-only ones. Dropdown order = key order here.
-const REASONS: Record<
-  ExcludeReason,
-  { menu: string; badge: string; intent: $ui.BadgeComponentIntent }
-> = {
-  outdated: { menu: "Behind / outdated", badge: "behind", intent: "warning" },
-  // Sources that mangle numbering: fake gaps, invented far-future numbers,
-  // duplicate chapters under different numbers, etc.
-  "bad-numbering": {
-    menu: "Wrong chapter numbers",
-    badge: "bad numbers",
-    intent: "warning",
-  },
-  "not-matched": { menu: "No match", badge: "no match", intent: "warning" },
-  "error-found": { menu: "Fetch error", badge: "error", intent: "alert" },
-  other: { menu: "Other", badge: "manual", intent: "gray" },
-};
-const reasonLabel = (key: ExcludeReason) => REASONS[key].badge;
-const reasonIntent = (key: ExcludeReason) => REASONS[key].intent;
-
-// Highest numeric chapter in a container. `chapter` is a Go-wrapped string
-// (e.g. "12", "12.5"); coerce before parsing (see CLAUDE.md goja boundary).
-function latestChapter(chapters: $app.HibikeManga_ChapterDetails[]): number {
-  let max = 0;
-  for (const ch of chapters) {
-    const n = Number.parseFloat(String(ch.chapter));
-    if (!Number.isNaN(n) && n > max) max = n;
-  }
-  return max;
-}
-
-// De-duped title list to help the provider match the manga (fuzzy search).
-function collectTitles(media: $app.AL_BaseManga): string[] {
-  const t = media.title ?? {};
-  const raw = [t.userPreferred, t.english, t.romaji, ...(media.synonyms ?? [])];
-  const seen: Record<string, true> = {};
-  const out: string[] = [];
-  for (const s of raw) {
-    if (s == null) continue;
-    const v = String(s).trim();
-    if (v && !seen[v]) {
-      seen[v] = true;
-      out.push(v);
-    }
-  }
-  return out;
-}
-
-function resolveTitle(media: $app.AL_BaseManga): string {
-  const t = media.title ?? {};
-  return String(t.userPreferred ?? t.english ?? t.romaji ?? "Unknown");
-}
-
-// Rebuild the last-scan rows from $storage so the tray shows them immediately
-// after a plugin reload, without re-scanning. mediaId is the map key; every
-// row is flagged fromCache.
-function hydrateResults(): MangaResult[] {
-  const stored = $storage.get<Record<string, StoredResult>>(K_RESULTS) ?? {};
-  const out: MangaResult[] = [];
-  for (const key of Object.keys(stored)) {
-    const r = stored[key];
-    out.push({
-      ...r,
-      mediaId: Number(key),
-      isNew: r.kind === "new",
-      fromCache: true,
-    });
-  }
-  out.sort((a, b) =>
-    String(a.title ?? "").localeCompare(String(b.title ?? "")),
-  );
-  return out;
-}
-
-// Rehydrate the per-source probes from $storage (keyed by provider id).
-function hydrateProbes(): Record<number, Record<string, ProviderProbe>> {
-  return (
-    $storage.get<Record<number, Record<string, ProviderProbe>>>(K_PROBES) ?? {}
-  );
-}
 
 export const register = (ctx: $ui.Context) => {
   const tray = ctx.newTray({ iconUrl: __MANIFEST_ICON__, withContent: true });
@@ -234,7 +88,6 @@ export const register = (ctx: $ui.Context) => {
   // seeded from $storage so a scanned manga shows its last per-source result
   // after a reload (unscanned providers render as "not scanned"). setProbes()
   // keeps the in-memory state and $storage in sync.
-  type ProbeMap = Record<string, ProviderProbe>;
   const probeCache = ctx.state<Record<number, ProbeMap>>(hydrateProbes());
   function setProbes(mediaId: number, probes: ProbeMap) {
     const next = { ...probeCache.get(), [mediaId]: probes };
@@ -249,18 +102,54 @@ export const register = (ctx: $ui.Context) => {
   // tray render tree, so opening it also opens the tray.
   const confirmGlobalOpen = ctx.state<boolean>(false);
 
-  // Collect every CURRENT reading entry across the collection's lists.
-  function readingEntries(
-    col: $app.Manga_Collection,
-  ): $app.Manga_CollectionEntry[] {
-    const out: $app.Manga_CollectionEntry[] = [];
-    for (const list of col.lists ?? []) {
-      if (String(list.status) !== "CURRENT") continue;
-      for (const e of list.entries ?? []) {
-        if (e?.media) out.push(e);
+  // Last seen manual-mapping sig per manga — detect save/remove in the modal.
+  const lastMappingSigByMedia: Record<number, string | undefined> = {};
+
+  // Recalculate list-row summaries ignoring inactive providers (probes stay in
+  // storage — disabled / uninstalled sources are only hidden from the UI).
+  function reconcileInactiveProviders(): void {
+    const active = ctx.manga.getProviders();
+    const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
+    const cache = probeCache.get();
+    const stored = $storage.get<Record<string, StoredResult>>(K_RESULTS) ?? {};
+    let rowsChanged = false;
+    const nextResults = results.get().map((r) => {
+      const probes = pruneInactiveProbes(cache[r.mediaId] ?? {}, active);
+      const summary = buildResult(r.mediaId, r, r.read, gap, probes);
+      const isNew = summary.kind === "new";
+      if (
+        r.latest === summary.latest &&
+        r.sources === summary.sources &&
+        r.newSources === summary.newSources &&
+        r.kind === summary.kind &&
+        r.isNew === isNew
+      ) {
+        return r;
       }
+      rowsChanged = true;
+      const row: MangaResult = {
+        ...summary,
+        mediaId: r.mediaId,
+        isNew,
+        fromCache: r.fromCache,
+        checkedAt: r.checkedAt,
+      };
+      stored[String(r.mediaId)] = {
+        title: row.title,
+        cover: row.cover,
+        latest: row.latest,
+        read: row.read,
+        sources: row.sources,
+        newSources: row.newSources,
+        kind: row.kind,
+        checkedAt: row.checkedAt,
+      };
+      return row;
+    });
+    if (rowsChanged) {
+      results.set(nextResults);
+      $storage.set(K_RESULTS, stored);
     }
-    return out;
   }
 
   // Read seanime's cached chapter list for a provider — respects manual match
@@ -277,10 +166,8 @@ export const register = (ctx: $ui.Context) => {
     }
   }
 
-  // Read a container for a single provider. When `skipCache` is false (default),
-  // prefer seanime's cache / manual match; otherwise search with AniList titles.
-  // Scan paths pass skipCache after emptyCache — the no-title call throws when
-  // there is no binding, and a single outer catch used to mark that as "error".
+  // Read a container for a single provider. Prefer cache / manual match; scan
+  // paths pass skipCache after emptyCache and fall through to title search.
   async function readContainer(
     mediaId: number,
     provider: string,
@@ -296,7 +183,7 @@ export const register = (ctx: $ui.Context) => {
         });
         if (cached?.chapters?.length) return cached.chapters;
       } catch {
-        // no cache / manual match — fall through to title search
+        /* no cache / manual match */
       }
     }
 
@@ -329,11 +216,14 @@ export const register = (ctx: $ui.Context) => {
     const excluded =
       $storage.get<Record<string, Record<string, string>>>(K_EXCLUDED) ?? {};
     const providers = ctx.manga.getProviders();
-    const providerIds = Object.keys(providers).filter(
-      (p) => p !== "local-manga",
+    const providerIds = Object.keys(providers).filter((p) =>
+      isActiveProvider(p, providers),
     );
     const matched = Object.values(probes).filter(
-      (p) => p.matched && excluded[key]?.[p.provider] == null,
+      (p) =>
+        p.matched &&
+        isActiveProvider(p.provider, providers) &&
+        excluded[key]?.[p.provider] == null,
     );
     const maxLatest = matched.reduce((m, p) => Math.max(m, p.latest), 0);
     // M in "+N · M" = matched sources that actually have unread chapters, not the
@@ -346,7 +236,7 @@ export const register = (ctx: $ui.Context) => {
       kind = classify(read, maxLatest, matched.length, false, gap);
     } else {
       const availableCount = providerIds.filter(
-        (p) => excluded[key]?.[p] == null,
+        (p) => isActiveProvider(p, providers) && excluded[key]?.[p] == null,
       ).length;
       kind = availableCount === 0 ? "all-excluded" : "not-matched";
     }
@@ -549,6 +439,25 @@ export const register = (ctx: $ui.Context) => {
           media,
           read,
           gap,
+          (partialProbes) => {
+            setProbes(mediaId, partialProbes);
+            const partial = buildResult(
+              mediaId,
+              {
+                title,
+                cover: media.coverImage?.large ?? media.coverImage?.extraLarge,
+              },
+              read,
+              gap,
+              partialProbes,
+            );
+            upsert({
+              ...partial,
+              mediaId,
+              isNew: partial.kind === "new",
+              fromCache: false,
+            });
+          },
         );
         // Persist the per-source probes too, so opening this manga's detail
         // shows each provider's result instead of "not scanned".
@@ -726,17 +635,21 @@ export const register = (ctx: $ui.Context) => {
   // wrong-match counts left in K_PROBES after the user corrects a provider.
   async function syncProbesFromCache(mediaId: number) {
     if (scanning.get() || individualScanRunning()) return;
-    const existing = probeCache.get()[mediaId];
-    if (!existing || !Object.keys(existing).length) return;
 
+    const existing = probeCache.get()[mediaId] ?? {};
     const key = String(mediaId);
     const excluded =
       $storage.get<Record<string, Record<string, string>>>(K_EXCLUDED) ?? {};
     const providers = ctx.manga.getProviders();
+    const providerIds = Object.keys(existing).length
+      ? Object.keys(existing)
+      : Object.keys(providers).filter((p) => isActiveProvider(p, providers));
+    if (!providerIds.length) return;
+
     const next: ProbeMap = { ...existing };
     let changed = false;
 
-    for (const pid of Object.keys(existing)) {
+    for (const pid of providerIds) {
       if (excluded[key]?.[pid] != null) continue;
       const chs = await readCachedContainer(mediaId, pid);
       // Only UPGRADE from a cache read that actually returned chapters. A miss
@@ -748,6 +661,7 @@ export const register = (ctx: $ui.Context) => {
       const probe = makeProbe(pid, providers[pid] ?? pid, chs);
       const prev = existing[pid];
       if (
+        !prev ||
         prev.latest !== probe.latest ||
         prev.count !== probe.count ||
         prev.matched !== probe.matched ||
@@ -818,11 +732,9 @@ export const register = (ctx: $ui.Context) => {
     }
   }
 
-  // Scan ONE provider for a manga and merge its probe into the cache, leaving
-  // every other provider's stored result untouched. Refreshes the list row.
-  // Used by the per-source rescan button and the re-include flow.
+  // Scan one provider (emptyCache + title search), merge probe, refresh list row.
+  // Tray rescan, re-include, and manual-match hook all use this.
   async function scanOneProvider(mediaId: number, provider: string) {
-    // One scan at a time — same global guard as probeMangaDetail.
     if (scanning.get() || individualScanRunning()) return;
     scanningProvider.set(provider);
     try {
@@ -831,11 +743,10 @@ export const register = (ctx: $ui.Context) => {
       const providers = ctx.manga.getProviders();
       const titles = collectTitles(found.media);
       const year = found.media.startDate?.year;
-      const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
       await ctx.manga.emptyCache(mediaId);
       const chs = await readContainer(mediaId, provider, titles, year, true);
       const probe = makeProbe(provider, providers[provider] ?? provider, chs);
-      // Replace just this provider's probe; keep the others as-is.
+      const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
       const merged = {
         ...(probeCache.get()[mediaId] ?? {}),
         [provider]: probe,
@@ -934,57 +845,6 @@ export const register = (ctx: $ui.Context) => {
     } else {
       rebuildStoredRow(mediaId);
     }
-  }
-
-  // Status pill: `+N · M` where N = unread chapters on the best source, M = how
-  // many sources actually have unread chapters. When N is 0 there's nothing new,
-  // so drop the "+" and show a plain "0 · 0". Non-matched states keep a word.
-  // `thinLabel` is the compact variant for the narrow card badge: just `+N` (no
-  // `· M`) and single glyphs for the word states (− / X) so it fits the cover.
-  function statusFor(
-    r: MangaResult,
-    thinLabel = false,
-  ): {
-    label: string;
-    intent: $ui.BadgeComponentIntent;
-    tip: string;
-  } {
-    const n = unreadChapters(r.read, r.latest);
-    const m = n > 0 ? (r.newSources ?? 0) : 0;
-    const label = thinLabel
-      ? n > 0
-        ? `+${n}`
-        : "0"
-      : n > 0
-        ? `+${n} · ${m}`
-        : "0 · 0";
-    // `+N · M` tooltip decodes the compact badge; word states describe themselves.
-    const nmTip = `${n} unread by ${m} source${m === 1 ? "" : "s"}`;
-    // The three "+N · M" kinds differ only by color; the rest are self-describing.
-    const MAP: Record<
-      ResultKind,
-      { label: string; intent: $ui.BadgeComponentIntent; tip: string }
-    > = {
-      new: { label, intent: "success", tip: nmTip },
-      "up-to-date": { label, intent: "gray", tip: nmTip },
-      outdated: { label, intent: "warning", tip: nmTip },
-      "not-matched": {
-        label: thinLabel ? "−" : "no match",
-        intent: "warning",
-        tip: "No source matched",
-      },
-      "all-excluded": {
-        label: thinLabel ? "−" : "all excluded",
-        intent: "warning",
-        tip: "All sources excluded",
-      },
-      "error-found": {
-        label: thinLabel ? "X" : "error",
-        intent: "alert",
-        tip: "Source errored",
-      },
-    };
-    return MAP[r.kind] ?? MAP["error-found"];
   }
 
   function toRow(r: MangaResult): EntryListRow {
@@ -1204,7 +1064,8 @@ export const register = (ctx: $ui.Context) => {
     // EXCLUDED row: name + why it was excluded (excluded sources aren't probed
     // for chapters, so no status count / chapter) + Include.
     const excludedRow = (pid: string): EntryListRow => {
-      const name = String(providers[pid] ?? pid);
+      const p = probeByProvider[pid];
+      const name = p ? p.providerName : String(providers[pid] ?? pid);
       const reason = excludedForManga[pid] as ExcludeReason;
       return {
         title: name,
@@ -1228,6 +1089,7 @@ export const register = (ctx: $ui.Context) => {
     const latestOf = (pid: string) => probeByProvider[pid]?.latest ?? -1;
     const includedIds = Object.keys(providers)
       .filter((pid) => pid !== "local-manga" && excludedForManga[pid] == null)
+      .filter((pid) => isActiveProvider(pid, providers))
       .sort((a, b) => {
         const byLatest = latestOf(b) - latestOf(a);
         if (byLatest !== 0) return byLatest;
@@ -1235,9 +1097,11 @@ export const register = (ctx: $ui.Context) => {
           String(providers[b] ?? b),
         );
       });
-    const excludedIds = Object.keys(excludedForManga).sort((a, b) =>
-      String(providers[a] ?? a).localeCompare(String(providers[b] ?? b)),
-    );
+    const excludedIds = Object.keys(excludedForManga)
+      .filter((pid) => isActiveProvider(pid, providers))
+      .sort((a, b) =>
+        String(providers[a] ?? a).localeCompare(String(providers[b] ?? b)),
+      );
     // Both groups are entry-list sections. AVAILABLE always renders (its empty
     // state carries the "No sources" / "Scanning" caption); EXCLUDED only when
     // there's at least one excluded source (null → joinDividers skips it).
@@ -1420,6 +1284,9 @@ export const register = (ctx: $ui.Context) => {
   // restartable observers, re-arm lifecycle). Decorations are registered further
   // down; onNavigate re-arms it (SPA nav doesn't fire onMainTabReady).
   const dm = createDomDecorator(ctx);
+  const headerProgress = createHeaderProgressReader(ctx);
+
+  const CARD_REDECORATE_YIELD_EVERY = 24;
 
   // Opening the tray while on a manga entry page jumps to that manga's source
   // detail; opening it anywhere else shows the list.
@@ -1428,7 +1295,10 @@ export const register = (ctx: $ui.Context) => {
     const raw = isManga ? e.searchParams?.id : "";
     const id = raw ? parseInt(String(raw), 10) : 0;
     const mediaId = Number.isFinite(id) ? id : 0;
+    headerProgress.clearCache();
     currentMediaId.set(mediaId);
+    delete lastMappingSigByMedia[mediaId];
+    reconcileInactiveProviders();
     if (mediaId > 0) void syncProbesFromCache(mediaId);
     dm.arm();
   });
@@ -1437,6 +1307,7 @@ export const register = (ctx: $ui.Context) => {
   tray.onOpen(() => {
     void (async () => {
       const id = currentMediaId.get();
+      reconcileInactiveProviders();
       for (const r of results.get()) {
         if (!r.isNew || r.mediaId === id) continue;
         await syncProbesFromCache(r.mediaId);
@@ -1493,66 +1364,67 @@ export const register = (ctx: $ui.Context) => {
     }
   };
 
+  const cardBadgeContent = (
+    mediaId: number,
+    progress: number,
+  ): {
+    sig: string;
+    row: MangaResult | undefined;
+    label: string;
+    intent: $ui.BadgeComponentIntent;
+    tip: string;
+  } => {
+    const row = results.get().find((r) => r.mediaId === mediaId);
+    if (!row) {
+      return {
+        sig: `${mediaId}:none`,
+        row: undefined,
+        label: "",
+        intent: "gray",
+        tip: "",
+      };
+    }
+    const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
+    const kind = cardBadgeKind(row, progress, gap);
+    const s = statusFor({ ...row, read: progress, kind }, true);
+    return {
+      sig: `${mediaId}:${s.label}:${s.intent}`,
+      row,
+      label: s.label,
+      intent: s.intent,
+      tip: s.tip,
+    };
+  };
+
   // §3: a "+N · M" badge on scanned manga cards in the library grid. Compute the
   // desired content, then hand off to the shared harness (loop/duplicate guard,
   // per-mediaId lock, denshi-safe query/append). Unread is derived from the
   // card's OWN live progress so a read updates it with no gap.
   const decorateCard = async (el: $ui.DOMElement) => {
-    let mediaId = 0;
-    try {
-      mediaId = Number((await el.getAttribute("data-media-id")) ?? 0);
-    } catch {
-      return;
-    }
+    let attrsCache: ReturnType<typeof readCardAttrs> | null = null;
+    const cardAttrs = () => {
+      if (!attrsCache) attrsCache = readCardAttrs(el);
+      return attrsCache;
+    };
+
+    const { mediaId } = await readCardAttrs(el);
     if (!mediaId) return;
-
-    // Progress from the card's own list-data (String() guards the goja
-    // wrapped-empty-string trap; inner catch keeps a bad attr from aborting).
-    let progress = 0;
-    try {
-      const ld = String((await el.getAttribute("data-list-data")) ?? "");
-      if (ld) progress = Number(JSON.parse(ld).progress ?? 0);
-    } catch {
-      /* progress stays 0 */
-    }
-
-    const row = results.get().find((r) => r.mediaId === mediaId);
-    let sig: string;
-    let label = "";
-    let intent: $ui.BadgeComponentIntent = "gray";
-    let tip = "";
-    if (row) {
-      const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
-      // Reclassify against the card's live progress so +N is never stale; keep
-      // terminal kinds (no-match / all-excluded / error) as-is.
-      let kind = row.kind;
-      if (kind === "new" || kind === "up-to-date" || kind === "outdated") {
-        kind = classify(progress, row.latest, row.sources, false, gap);
-      }
-      const s = statusFor({ ...row, read: progress, kind }, true);
-      label = s.label;
-      intent = s.intent;
-      tip = s.tip;
-      sig = `${mediaId}:${label}:${intent}`;
-    } else {
-      sig = `${mediaId}:none`;
-    }
 
     await dm.decorate(el, {
       marker: "msu-card-badge",
       lockKey: String(mediaId),
-      sig,
-      render: (node) => {
-        // Unscanned manga: hidden signed marker (no visible badge, not re-run).
+      sig: async () => {
+        const { progress } = await cardAttrs();
+        return cardBadgeContent(mediaId, progress).sig;
+      },
+      render: async (node) => {
+        const { progress } = await cardAttrs();
+        const { row, label, intent, tip } = cardBadgeContent(mediaId, progress);
         if (!row) {
           node.setStyle("display", "none");
           el.append(node);
           return;
         }
-        // Inject into the card CONTAINER (el), NOT the card body: the body has
-        // `isolate` (own stacking context) that traps a child below the hover
-        // popup (z-15) at any z-index. As a sibling of the popup with z-16 the
-        // badge stays visible; pointer-events:none so it doesn't eat hover/click.
         const bgClass = cardBadgeBgClass(intent);
         node.setStyle("position", "absolute");
         node.setStyle("z-index", "16");
@@ -1580,25 +1452,11 @@ export const register = (ctx: $ui.Context) => {
       .replace(/</g, "&lt;")
       .replace(/"/g, "&quot;");
 
-  const decorateBar = async (container: $ui.DOMElement) => {
-    const mediaId = currentMediaId.get();
-    if (!mediaId) return; // not on a manga entry page
-    const selectedPid = await container.getAttribute("data-selected-provider");
-
-    // Fresh reader progress from the entry header (no gap on read); fall back to
-    // the stored row's read if the badge isn't present.
+  const buildBarItems = async (container: $ui.DOMElement, mediaId: number) => {
+    const selectedPid = await readSelectedProvider(ctx, container);
     let read = results.get().find((r) => r.mediaId === mediaId)?.read ?? 0;
-    try {
-      const pEl = await ctx.dom.queryOne(
-        "[data-media-page-header-progress-badge-progress]",
-      );
-      if (pEl) {
-        const t = String((await pEl.getText()) ?? "").trim();
-        if (t && !Number.isNaN(Number(t))) read = Number(t);
-      }
-    } catch {
-      /* keep row read */
-    }
+    const fromHeader = await headerProgress.read();
+    if (fromHeader != null) read = fromHeader;
 
     const key = String(mediaId);
     const probes = probeCache.get()[mediaId] ?? {};
@@ -1607,7 +1465,9 @@ export const register = (ctx: $ui.Context) => {
       {};
     const providers = ctx.manga.getProviders();
     const items = Object.keys(probes)
-      .filter((pid) => pid !== "local-manga" && excluded[pid] == null)
+      .filter(
+        (pid) => isActiveProvider(pid, providers) && excluded[pid] == null,
+      )
       .map((pid) => ({ pid, p: probes[pid] }))
       .filter((x) => x.p?.matched && unreadChapters(read, x.p.latest) > 0)
       .map((x) => ({
@@ -1618,25 +1478,29 @@ export const register = (ctx: $ui.Context) => {
       }))
       .sort((a, b) => b.latest - a.latest || a.name.localeCompare(b.name));
 
-    // selectedPid is part of the desired content (it drives which badge is
-    // highlighted), so fold it into the sig — otherwise switching the reader's
-    // source dropdown leaves the sig unchanged and the guard skips the rebuild.
     const sig = items.length
       ? `${selectedPid ?? ""}|${items.map((i) => `${i.pid}+${i.unread}`).join(",")}`
       : "none";
 
+    return { items, selectedPid, sig };
+  };
+
+  const decorateBar = async (container: $ui.DOMElement) => {
+    const mediaId = currentMediaId.get();
+    if (!mediaId) return;
+
     await dm.decorate(container, {
       marker: "msu-bar",
-      lockKey: "bar", // singleton per entry page
-      sig,
+      lockKey: "bar",
+      sig: async () => (await buildBarItems(container, mediaId)).sig,
       scope: container,
       render: async (node) => {
-        // Anchor after the first header row (source selector) — always present.
+        const { items, selectedPid } = await buildBarItems(container, mediaId);
         const headers = await container.query(
           "[data-chapter-list-header-container]",
         );
         const anchor = headers?.[0];
-        if (!anchor) return; // chapter list not ready yet; a later pass retries
+        if (!anchor) return;
         if (!items.length) {
           node.setStyle("display", "none");
           anchor.after(node);
@@ -1652,11 +1516,9 @@ export const register = (ctx: $ui.Context) => {
               .map((i) => {
                 const title = `${escHtml(i.name)}: ${i.unread} unread chapter${i.unread === 1 ? "" : "s"}`;
                 const label = `${escHtml(i.name)} +${i.unread}`;
-                const intentClass =
-                  // selectedPid is wrapped in quotes, so includes() works for exact match
-                  selectedPid?.includes(i.pid)
-                    ? "text-green bg-green-50 border-green-500 dark:text-green-300"
-                    : "text-blue bg-blue-50 border-blue-500 dark:text-blue-300";
+                const intentClass = selectedPid?.includes(i.pid)
+                  ? "text-green bg-green-50 border-green-500 dark:text-green-300"
+                  : "text-blue bg-blue-50 border-blue-500 dark:text-blue-300";
 
                 return `<span title="${title}" class="UI-Badge__root inline-flex flex-none w-fit overflow-hidden justify-center items-center gap-2 group/badge ${intentClass} border border-opacity-40 dark:bg-opacity-10 h-6 px-2 text-xs font-semibold tracking-wide rounded-full">${label}</span>`;
               })
@@ -1670,18 +1532,23 @@ export const register = (ctx: $ui.Context) => {
   // Explicit query→decorate passes (run on arm + refresh) — cover elements
   // already mounted before the observers ran; the sig guard keeps them idempotent.
   const redecorateCards = async () => {
+    reconcileInactiveProviders();
     try {
       const cards = await ctx.dom.query(
         '[data-media-entry-card-container][data-media-type="manga"]',
       );
-      for (const el of cards ?? []) void decorateCard(el);
+      const list = cards ?? [];
+      for (let i = 0; i < list.length; i++) {
+        void decorateCard(list[i]);
+        if (i % CARD_REDECORATE_YIELD_EVERY === 0) $sleep(0);
+      }
     } catch {
       /* no cards on this screen */
     }
   };
   const redecorateBar = async () => {
     try {
-      const cont = await ctx.dom.queryOne("[data-chapter-list-container]");
+      const cont = (await ctx.dom.query("[data-chapter-list-container]"))?.[0];
       if (cont) void decorateBar(cont);
     } catch {
       /* not on an entry page */
@@ -1703,29 +1570,60 @@ export const register = (ctx: $ui.Context) => {
   // double-attach; each re-open is a fresh element (no attr) → re-hooked. query()
   // [0], never the denshi-broken queryOne. ponytail: attribute guard only, no
   // handle bookkeeping — the modal element is discarded on close.
+  const dialogTitle = async (dialog: $ui.DOMElement): Promise<string> => {
+    const titleEl = (await dialog.query(".UI-Modal__title"))[0];
+    return titleEl
+      ? String((await titleEl.getText()) ?? "")
+          .trim()
+          .toLowerCase()
+      : "";
+  };
+
   const hookReloadModal = async (dialog: $ui.DOMElement) => {
-    if (!currentMediaId.get()) return; // not on a manga entry page
+    if (!currentMediaId.get()) return;
     try {
-      const titleEl = (await dialog.query(".UI-Modal__title"))[0];
-      const title = titleEl
-        ? String((await titleEl.getText()) ?? "")
-            .trim()
-            .toLowerCase()
-        : "";
-      if (title !== "reload sources") return; // some other dialog
+      if ((await dialogTitle(dialog)) !== "reload sources") return;
       const btn = (await dialog.query("button:not(.UI-Modal__close)"))[0];
       if (!btn) return;
       if (await btn.hasAttribute("data-msu-reload-hooked")) return;
       btn.setAttribute("data-msu-reload-hooked", "1");
       btn.addEventListener("click", () => {
-        if (!syncNativeButtons()) return; // native-button sync disabled in config
+        if (!syncNativeButtons()) return;
         const id = currentMediaId.get();
         if (id <= 0) return;
-        if (rejectIfBusy()) return; // toast + ignore while another scan runs
+        if (rejectIfBusy()) return;
         void probeMangaDetail(id);
       });
     } catch {
       /* couldn't hook this render */
+    }
+  };
+
+  const watchManualMatchDialog = async (dialog: $ui.DOMElement) => {
+    const mediaId = currentMediaId.get();
+    if (mediaId <= 0) return;
+    try {
+      if ((await dialogTitle(dialog)) !== "manual match") return;
+
+      const html = String(dialog.innerHTML ?? "");
+      if (isManualMatchConfirmDialog(html)) return;
+
+      const sig = mappingSigFromHtml(html);
+      if (sig === null) return;
+
+      const prev = lastMappingSigByMedia[mediaId];
+      lastMappingSigByMedia[mediaId] = sig;
+      if (prev === undefined || prev === sig) return;
+
+      const provider = await readSelectedProvider(ctx);
+      if (!provider) return;
+
+      void scanOneProvider(mediaId, provider).then(() => {
+        dm.refresh();
+        void redecorateBar();
+      });
+    } catch {
+      /* modal parse failed */
     }
   };
 
@@ -1770,22 +1668,12 @@ export const register = (ctx: $ui.Context) => {
   // progress into `results` so EVERYTHING that reads from state reacts — the
   // native [MSU] button, the tray detail, the list, and (via the effect) the
   // card badges + bar — not just the observed DOM.
-  const applyProgressFromDom = async () => {
+  const applyProgressFromDom = async (badgeEl?: $ui.DOMElement) => {
     const id = currentMediaId.get();
     if (!id) return;
-    let read: number | null = null;
-    try {
-      const pEl = await ctx.dom.queryOne(
-        "[data-media-page-header-progress-badge-progress]",
-      );
-      if (pEl) {
-        const t = String((await pEl.getText()) ?? "").trim();
-        if (t && !Number.isNaN(Number(t))) read = Number(t);
-      }
-    } catch {
-      /* keep null */
-    }
+    const read = await headerProgress.read(badgeEl);
     if (read == null) return;
+    headerProgress.setCache(read);
     const cur = results.get().find((r) => r.mediaId === id);
     if (!cur || Number(cur.read) === read) return; // nothing new
     const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
@@ -1824,17 +1712,26 @@ export const register = (ctx: $ui.Context) => {
   );
   // The "Reload sources" confirm modal mounts as a document-root portal, so it's
   // observed on its own (not under the chapter-list container).
-  dm.observe("[role='dialog']", (els) => {
-    for (const el of els ?? []) void hookReloadModal(el);
-  });
+  dm.observe(
+    "[role='dialog']",
+    (els) => {
+      for (const el of els ?? []) {
+        void hookReloadModal(el);
+        void watchManualMatchDialog(el);
+      }
+    },
+    { withInnerHTML: true },
+  );
   // The library page's "Refresh sources" dropdown is a radix menu portal — hook
   // its item on every open (radix re-mounts the menu each time).
   dm.observe("[role='menu']", (els) => {
     for (const el of els ?? []) void hookRefreshMenu(el);
   });
-  dm.observe("[data-media-page-header-progress-badge-progress]", () => {
-    void applyProgressFromDom();
-    void redecorateBar();
+  dm.observe("[data-media-page-header-progress-badge-progress]", (els) => {
+    void (async () => {
+      await applyProgressFromDom(els?.[0]);
+      await redecorateBar();
+    })();
   });
   dm.pass(redecorateCards);
   dm.pass(redecorateBar);
@@ -1844,9 +1741,10 @@ export const register = (ctx: $ui.Context) => {
   ctx.effect(() => {
     results.get();
     probeCache.get();
+    scanProgress.get();
     currentMediaId.get();
     dm.refresh();
-  }, [results, probeCache, currentMediaId]);
+  }, [results, probeCache, scanProgress, currentMediaId]);
 
   // Confirm-before-global-scan view. A state-driven swap of the whole tray
   // content (like the reference extension's overlay) instead of a native

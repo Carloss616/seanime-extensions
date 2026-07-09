@@ -14,6 +14,25 @@ var register = (...args) => {
     }
     return out;
   }
+  async function domAttr(el, key) {
+    const sync = el.attributes?.[key];
+    if (sync != null && sync !== "") return String(sync);
+    try {
+      const async = await el.getAttribute(key);
+      if (async != null && async !== "") return String(async);
+    } catch {}
+    return;
+  }
+  async function parseDomNumber(el) {
+    if (!el) return null;
+    const sync = String(el.textContent ?? "").trim();
+    if (sync && !Number.isNaN(Number(sync))) return Number(sync);
+    try {
+      const async = String((await el.getText()) ?? "").trim();
+      if (async && !Number.isNaN(Number(async))) return Number(async);
+    } catch {}
+    return null;
+  }
   function decideDecoration(existingSigs, desiredSig) {
     return existingSigs.length === 1 && existingSigs[0] === desiredSig
       ? "skip"
@@ -21,6 +40,7 @@ var register = (...args) => {
   }
   function createDomDecorator(ctx) {
     const locks = new Set();
+    const dirty = new Set();
     const observers = [];
     const passes = [];
     let stops = [];
@@ -48,9 +68,13 @@ var register = (...args) => {
     }
     async function decorate(el, o) {
       const lk = `${o.marker}:${o.lockKey}`;
-      if (locks.has(lk)) return;
+      if (locks.has(lk)) {
+        dirty.add(lk);
+        return;
+      }
       locks.add(lk);
       try {
+        const desiredSig = typeof o.sig === "function" ? await o.sig() : o.sig;
         const scope = o.scope ?? el;
         const sigAttr = `data-${o.marker}-sig`;
         let existing = [];
@@ -61,9 +85,10 @@ var register = (...args) => {
         }
         const sigs = [];
         for (const x of existing) {
-          sigs.push(String((await x.getAttribute(sigAttr)) ?? ""));
+          const sig = (await domAttr(x, sigAttr)) ?? "";
+          sigs.push(sig);
         }
-        if (decideDecoration(sigs, o.sig) === "skip") return;
+        if (decideDecoration(sigs, desiredSig) === "skip") return;
         for (const x of existing) {
           try {
             x.remove();
@@ -71,11 +96,12 @@ var register = (...args) => {
         }
         const node = await ctx.dom.createElement("div");
         node.setAttribute(`data-${o.marker}`, "1");
-        node.setAttribute(sigAttr, o.sig);
+        node.setAttribute(sigAttr, desiredSig);
         await o.render(node);
       } catch {
       } finally {
         locks.delete(lk);
+        if (dirty.delete(lk)) decorate(el, o);
       }
     }
     function start() {
@@ -424,10 +450,33 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
 </script>
 </body></html>
 `;
-  var K_EXCLUDED = "excludedProviders";
-  var K_RESULTS = "lastResults";
-  var K_PINNED = "pinnedProviders";
-  var K_PROBES = "lastProbes";
+  async function readCardAttrs(el) {
+    const fromAttr = Number((await domAttr(el, "data-media-id")) ?? 0);
+    let progress = 0;
+    let mediaId = fromAttr;
+    try {
+      const ld = (await domAttr(el, "data-list-data")) ?? "";
+      if (ld) {
+        const parsed = JSON.parse(ld);
+        progress = Number(parsed.progress ?? 0);
+        if (!mediaId) {
+          mediaId = Number(parsed.mediaId ?? parsed.media?.id ?? 0);
+        }
+      }
+    } catch {}
+    return { mediaId, progress };
+  }
+  function latestChapter(chapters) {
+    let max = 0;
+    for (const ch of chapters) {
+      const n = Number.parseFloat(String(ch.chapter));
+      if (!Number.isNaN(n) && n > max) max = n;
+    }
+    return max;
+  }
+  function unreadChapters(read, latest) {
+    return Math.max(0, Math.floor(latest - read));
+  }
   function makeProbe(provider, providerName, chapters) {
     return {
       provider,
@@ -437,9 +486,6 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       matched: !!chapters && chapters.length > 0,
       errored: chapters == null,
     };
-  }
-  function unreadChapters(read, latest) {
-    return Math.max(0, Math.floor(latest - read));
   }
   function classify(read, latest, count, errored, gap) {
     if (errored) return "error-found";
@@ -452,6 +498,20 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       kind === "not-matched" || kind === "error-found" || kind === "outdated"
     );
   }
+  function readingEntries(col) {
+    const out = [];
+    for (const list of col.lists ?? []) {
+      if (String(list.status) !== "CURRENT") continue;
+      for (const e of list.entries ?? []) {
+        if (e?.media) out.push(e);
+      }
+    }
+    return out;
+  }
+  var K_EXCLUDED = "excludedProviders";
+  var K_RESULTS = "lastResults";
+  var K_PINNED = "pinnedProviders";
+  var K_PROBES = "lastProbes";
   var REASONS = {
     outdated: { menu: "Behind / outdated", badge: "behind", intent: "warning" },
     "bad-numbering": {
@@ -465,13 +525,133 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   };
   var reasonLabel = (key) => REASONS[key].badge;
   var reasonIntent = (key) => REASONS[key].intent;
-  function latestChapter(chapters) {
-    let max = 0;
-    for (const ch of chapters) {
-      const n = Number.parseFloat(String(ch.chapter));
-      if (!Number.isNaN(n) && n > max) max = n;
+  function createHeaderProgressReader(ctx) {
+    let cache = null;
+    const read = async (badgeEl) => {
+      const fromBadge = await parseDomNumber(badgeEl);
+      if (fromBadge != null) return fromBadge;
+      if (badgeEl == null && cache != null) return cache;
+      try {
+        const els = await ctx.dom.query(
+          "[data-media-page-header-progress-badge-progress]",
+        );
+        return await parseDomNumber(els?.[0]);
+      } catch {
+        return null;
+      }
+    };
+    return {
+      read,
+      setCache: (v) => {
+        cache = v;
+      },
+      clearCache: () => {
+        cache = null;
+      },
+    };
+  }
+  function hydrateResults() {
+    const stored = $storage.get(K_RESULTS) ?? {};
+    const out = [];
+    for (const key of Object.keys(stored)) {
+      const r = stored[key];
+      out.push({
+        ...r,
+        mediaId: Number(key),
+        isNew: r.kind === "new",
+        fromCache: true,
+      });
     }
-    return max;
+    out.sort((a, b) =>
+      String(a.title ?? "").localeCompare(String(b.title ?? "")),
+    );
+    return out;
+  }
+  function hydrateProbes() {
+    return $storage.get(K_PROBES) ?? {};
+  }
+  function mappingSigFromHtml(html) {
+    const h = html.toLowerCase();
+    if (h.includes("no manual match")) return "none";
+    const m = /current mapping:\s*<span[^>]*>([^<]*)<\/span>/i.exec(html);
+    if (m) {
+      const id = m[1].trim();
+      return id || "empty";
+    }
+    if (h.includes("current mapping:")) return "present";
+    return null;
+  }
+  function isManualMatchConfirmDialog(html) {
+    const h = html.toLowerCase();
+    return h.includes("are you sure") && !h.includes("current mapping:");
+  }
+  function isActiveProvider(pid, installed) {
+    return pid !== "local-manga" && pid in installed;
+  }
+  function pruneInactiveProbes(probes, installed) {
+    const out = {};
+    for (const [pid, p] of Object.entries(probes)) {
+      if (isActiveProvider(pid, installed)) out[pid] = p;
+    }
+    return out;
+  }
+  function normalizeProviderId(raw) {
+    return String(raw ?? "")
+      .trim()
+      .replace(/^["']|["']$/g, "");
+  }
+  async function readSelectedProvider(ctx, container) {
+    try {
+      const cont =
+        container ??
+        (await ctx.dom.query("[data-chapter-list-container]"))?.[0];
+      if (!cont) return "";
+      return normalizeProviderId(
+        String((await domAttr(cont, "data-selected-provider")) ?? ""),
+      );
+    } catch {
+      return "";
+    }
+  }
+  function statusFor(r, thinLabel = false) {
+    const n = unreadChapters(r.read, r.latest);
+    const m = n > 0 ? (r.newSources ?? 0) : 0;
+    const label = thinLabel
+      ? n > 0
+        ? `+${n}`
+        : "0"
+      : n > 0
+        ? `+${n} · ${m}`
+        : "0 · 0";
+    const nmTip = `${n} unread by ${m} source${m === 1 ? "" : "s"}`;
+    const MAP = {
+      new: { label, intent: "success", tip: nmTip },
+      "up-to-date": { label, intent: "gray", tip: nmTip },
+      outdated: { label, intent: "warning", tip: nmTip },
+      "not-matched": {
+        label: thinLabel ? "−" : "no match",
+        intent: "warning",
+        tip: "No source matched",
+      },
+      "all-excluded": {
+        label: thinLabel ? "−" : "all excluded",
+        intent: "warning",
+        tip: "All sources excluded",
+      },
+      "error-found": {
+        label: thinLabel ? "X" : "error",
+        intent: "alert",
+        tip: "Source errored",
+      },
+    };
+    return MAP[r.kind] ?? MAP["error-found"];
+  }
+  function cardBadgeKind(row, progress, gap) {
+    let kind = row.kind;
+    if (kind === "new" || kind === "up-to-date" || kind === "outdated") {
+      kind = classify(progress, row.latest, row.sources, false, gap);
+    }
+    return kind;
   }
   function collectTitles(media) {
     const t = media.title ?? {};
@@ -496,26 +676,6 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   function resolveTitle(media) {
     const t = media.title ?? {};
     return String(t.userPreferred ?? t.english ?? t.romaji ?? "Unknown");
-  }
-  function hydrateResults() {
-    const stored = $storage.get(K_RESULTS) ?? {};
-    const out = [];
-    for (const key of Object.keys(stored)) {
-      const r = stored[key];
-      out.push({
-        ...r,
-        mediaId: Number(key),
-        isNew: r.kind === "new",
-        fromCache: true,
-      });
-    }
-    out.sort((a, b) =>
-      String(a.title ?? "").localeCompare(String(b.title ?? "")),
-    );
-    return out;
-  }
-  function hydrateProbes() {
-    return $storage.get(K_PROBES) ?? {};
   }
   var register2 = (ctx) => {
     const tray = ctx.newTray({
@@ -547,15 +707,50 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     const currentMediaId = ctx.state(0);
     const confirmGlobalOpen = ctx.state(false);
-    function readingEntries(col) {
-      const out = [];
-      for (const list of col.lists ?? []) {
-        if (String(list.status) !== "CURRENT") continue;
-        for (const e of list.entries ?? []) {
-          if (e?.media) out.push(e);
+    const lastMappingSigByMedia = {};
+    function reconcileInactiveProviders() {
+      const active = ctx.manga.getProviders();
+      const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
+      const cache = probeCache.get();
+      const stored = $storage.get(K_RESULTS) ?? {};
+      let rowsChanged = false;
+      const nextResults = results.get().map((r) => {
+        const probes = pruneInactiveProbes(cache[r.mediaId] ?? {}, active);
+        const summary = buildResult(r.mediaId, r, r.read, gap, probes);
+        const isNew = summary.kind === "new";
+        if (
+          r.latest === summary.latest &&
+          r.sources === summary.sources &&
+          r.newSources === summary.newSources &&
+          r.kind === summary.kind &&
+          r.isNew === isNew
+        ) {
+          return r;
         }
+        rowsChanged = true;
+        const row = {
+          ...summary,
+          mediaId: r.mediaId,
+          isNew,
+          fromCache: r.fromCache,
+          checkedAt: r.checkedAt,
+        };
+        stored[String(r.mediaId)] = {
+          title: row.title,
+          cover: row.cover,
+          latest: row.latest,
+          read: row.read,
+          sources: row.sources,
+          newSources: row.newSources,
+          kind: row.kind,
+          checkedAt: row.checkedAt,
+        };
+        return row;
+      });
+      if (rowsChanged) {
+        results.set(nextResults);
+        $storage.set(K_RESULTS, stored);
       }
-      return out;
     }
     async function readCachedContainer(mediaId, provider) {
       try {
@@ -598,11 +793,14 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       const key = String(mediaId);
       const excluded = $storage.get(K_EXCLUDED) ?? {};
       const providers = ctx.manga.getProviders();
-      const providerIds = Object.keys(providers).filter(
-        (p) => p !== "local-manga",
+      const providerIds = Object.keys(providers).filter((p) =>
+        isActiveProvider(p, providers),
       );
       const matched = Object.values(probes).filter(
-        (p) => p.matched && excluded[key]?.[p.provider] == null,
+        (p) =>
+          p.matched &&
+          isActiveProvider(p.provider, providers) &&
+          excluded[key]?.[p.provider] == null,
       );
       const maxLatest = matched.reduce((m, p) => Math.max(m, p.latest), 0);
       const newSources = matched.filter(
@@ -613,7 +811,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         kind = classify(read, maxLatest, matched.length, false, gap);
       } else {
         const availableCount = providerIds.filter(
-          (p) => excluded[key]?.[p] == null,
+          (p) => isActiveProvider(p, providers) && excluded[key]?.[p] == null,
         ).length;
         kind = availableCount === 0 ? "all-excluded" : "not-matched";
       }
@@ -768,6 +966,26 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
             media,
             read,
             gap,
+            (partialProbes) => {
+              setProbes(mediaId, partialProbes);
+              const partial = buildResult(
+                mediaId,
+                {
+                  title,
+                  cover:
+                    media.coverImage?.large ?? media.coverImage?.extraLarge,
+                },
+                read,
+                gap,
+                partialProbes,
+              );
+              upsert({
+                ...partial,
+                mediaId,
+                isNew: partial.kind === "new",
+                fromCache: false,
+              });
+            },
           );
           setProbes(mediaId, probes);
           stored[key] = result;
@@ -897,20 +1115,24 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     async function syncProbesFromCache(mediaId) {
       if (scanning.get() || individualScanRunning()) return;
-      const existing = probeCache.get()[mediaId];
-      if (!existing || !Object.keys(existing).length) return;
+      const existing = probeCache.get()[mediaId] ?? {};
       const key = String(mediaId);
       const excluded = $storage.get(K_EXCLUDED) ?? {};
       const providers = ctx.manga.getProviders();
+      const providerIds = Object.keys(existing).length
+        ? Object.keys(existing)
+        : Object.keys(providers).filter((p) => isActiveProvider(p, providers));
+      if (!providerIds.length) return;
       const next = { ...existing };
       let changed = false;
-      for (const pid of Object.keys(existing)) {
+      for (const pid of providerIds) {
         if (excluded[key]?.[pid] != null) continue;
         const chs = await readCachedContainer(mediaId, pid);
         if (!chs || chs.length === 0) continue;
         const probe = makeProbe(pid, providers[pid] ?? pid, chs);
         const prev = existing[pid];
         if (
+          !prev ||
           prev.latest !== probe.latest ||
           prev.count !== probe.count ||
           prev.matched !== probe.matched ||
@@ -975,10 +1197,10 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         const providers = ctx.manga.getProviders();
         const titles = collectTitles(found.media);
         const year = found.media.startDate?.year;
-        const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
         await ctx.manga.emptyCache(mediaId);
         const chs = await readContainer(mediaId, provider, titles, year, true);
         const probe = makeProbe(provider, providers[provider] ?? provider, chs);
+        const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
         const merged = {
           ...(probeCache.get()[mediaId] ?? {}),
           [provider]: probe,
@@ -1051,39 +1273,6 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       } else {
         rebuildStoredRow(mediaId);
       }
-    }
-    function statusFor(r, thinLabel = false) {
-      const n = unreadChapters(r.read, r.latest);
-      const m = n > 0 ? (r.newSources ?? 0) : 0;
-      const label = thinLabel
-        ? n > 0
-          ? `+${n}`
-          : "0"
-        : n > 0
-          ? `+${n} · ${m}`
-          : "0 · 0";
-      const nmTip = `${n} unread by ${m} source${m === 1 ? "" : "s"}`;
-      const MAP = {
-        new: { label, intent: "success", tip: nmTip },
-        "up-to-date": { label, intent: "gray", tip: nmTip },
-        outdated: { label, intent: "warning", tip: nmTip },
-        "not-matched": {
-          label: thinLabel ? "−" : "no match",
-          intent: "warning",
-          tip: "No source matched",
-        },
-        "all-excluded": {
-          label: thinLabel ? "−" : "all excluded",
-          intent: "warning",
-          tip: "All sources excluded",
-        },
-        "error-found": {
-          label: thinLabel ? "X" : "error",
-          intent: "alert",
-          tip: "Source errored",
-        },
-      };
-      return MAP[r.kind] ?? MAP["error-found"];
     }
     function toRow(r) {
       const prog = scanProgress.get();
@@ -1263,7 +1452,8 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         };
       };
       const excludedRow = (pid) => {
-        const name = String(providers[pid] ?? pid);
+        const p = probeByProvider[pid];
+        const name = p ? p.providerName : String(providers[pid] ?? pid);
         const reason = excludedForManga[pid];
         return {
           title: name,
@@ -1282,6 +1472,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       const latestOf = (pid) => probeByProvider[pid]?.latest ?? -1;
       const includedIds = Object.keys(providers)
         .filter((pid) => pid !== "local-manga" && excludedForManga[pid] == null)
+        .filter((pid) => isActiveProvider(pid, providers))
         .sort((a, b) => {
           const byLatest = latestOf(b) - latestOf(a);
           if (byLatest !== 0) return byLatest;
@@ -1289,9 +1480,11 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
             String(providers[b] ?? b),
           );
         });
-      const excludedIds = Object.keys(excludedForManga).sort((a, b) =>
-        String(providers[a] ?? a).localeCompare(String(providers[b] ?? b)),
-      );
+      const excludedIds = Object.keys(excludedForManga)
+        .filter((pid) => isActiveProvider(pid, providers))
+        .sort((a, b) =>
+          String(providers[a] ?? a).localeCompare(String(providers[b] ?? b)),
+        );
       const availableSection = entryList(tray, {
         headerLabel: "AVAILABLE",
         rows: includedIds.map(availableRow),
@@ -1441,12 +1634,17 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       }
     }
     const dm = createDomDecorator(ctx);
+    const headerProgress = createHeaderProgressReader(ctx);
+    const CARD_REDECORATE_YIELD_EVERY = 24;
     ctx.screen.onNavigate((e) => {
       const isManga = String(e.pathname ?? "").includes("/manga/");
       const raw = isManga ? e.searchParams?.id : "";
       const id = raw ? parseInt(String(raw), 10) : 0;
       const mediaId = Number.isFinite(id) ? id : 0;
+      headerProgress.clearCache();
       currentMediaId.set(mediaId);
+      delete lastMappingSigByMedia[mediaId];
+      reconcileInactiveProviders();
       if (mediaId > 0) syncProbesFromCache(mediaId);
       dm.arm();
     });
@@ -1454,6 +1652,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     tray.onOpen(() => {
       (async () => {
         const id = currentMediaId.get();
+        reconcileInactiveProviders();
         for (const r of results.get()) {
           if (!r.isNew || r.mediaId === id) continue;
           await syncProbesFromCache(r.mediaId);
@@ -1492,43 +1691,49 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           return "bg-gray-500";
       }
     };
-    const decorateCard = async (el) => {
-      let mediaId = 0;
-      try {
-        mediaId = Number((await el.getAttribute("data-media-id")) ?? 0);
-      } catch {
-        return;
-      }
-      if (!mediaId) return;
-      let progress = 0;
-      try {
-        const ld = String((await el.getAttribute("data-list-data")) ?? "");
-        if (ld) progress = Number(JSON.parse(ld).progress ?? 0);
-      } catch {}
+    const cardBadgeContent = (mediaId, progress) => {
       const row = results.get().find((r) => r.mediaId === mediaId);
-      let sig;
-      let label = "";
-      let intent = "gray";
-      let tip = "";
-      if (row) {
-        const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
-        let kind = row.kind;
-        if (kind === "new" || kind === "up-to-date" || kind === "outdated") {
-          kind = classify(progress, row.latest, row.sources, false, gap);
-        }
-        const s = statusFor({ ...row, read: progress, kind }, true);
-        label = s.label;
-        intent = s.intent;
-        tip = s.tip;
-        sig = `${mediaId}:${label}:${intent}`;
-      } else {
-        sig = `${mediaId}:none`;
+      if (!row) {
+        return {
+          sig: `${mediaId}:none`,
+          row: undefined,
+          label: "",
+          intent: "gray",
+          tip: "",
+        };
       }
+      const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
+      const kind = cardBadgeKind(row, progress, gap);
+      const s = statusFor({ ...row, read: progress, kind }, true);
+      return {
+        sig: `${mediaId}:${s.label}:${s.intent}`,
+        row,
+        label: s.label,
+        intent: s.intent,
+        tip: s.tip,
+      };
+    };
+    const decorateCard = async (el) => {
+      let attrsCache = null;
+      const cardAttrs = () => {
+        if (!attrsCache) attrsCache = readCardAttrs(el);
+        return attrsCache;
+      };
+      const { mediaId } = await readCardAttrs(el);
+      if (!mediaId) return;
       await dm.decorate(el, {
         marker: "msu-card-badge",
         lockKey: String(mediaId),
-        sig,
-        render: (node) => {
+        sig: async () => {
+          const { progress } = await cardAttrs();
+          return cardBadgeContent(mediaId, progress).sig;
+        },
+        render: async (node) => {
+          const { progress } = await cardAttrs();
+          const { row, label, intent, tip } = cardBadgeContent(
+            mediaId,
+            progress,
+          );
           if (!row) {
             node.setStyle("display", "none");
             el.append(node);
@@ -1552,28 +1757,19 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/"/g, "&quot;");
-    const decorateBar = async (container) => {
-      const mediaId = currentMediaId.get();
-      if (!mediaId) return;
-      const selectedPid = await container.getAttribute(
-        "data-selected-provider",
-      );
+    const buildBarItems = async (container, mediaId) => {
+      const selectedPid = await readSelectedProvider(ctx, container);
       let read = results.get().find((r) => r.mediaId === mediaId)?.read ?? 0;
-      try {
-        const pEl = await ctx.dom.queryOne(
-          "[data-media-page-header-progress-badge-progress]",
-        );
-        if (pEl) {
-          const t = String((await pEl.getText()) ?? "").trim();
-          if (t && !Number.isNaN(Number(t))) read = Number(t);
-        }
-      } catch {}
+      const fromHeader = await headerProgress.read();
+      if (fromHeader != null) read = fromHeader;
       const key = String(mediaId);
       const probes = probeCache.get()[mediaId] ?? {};
       const excluded = $storage.get(K_EXCLUDED)?.[key] ?? {};
       const providers = ctx.manga.getProviders();
       const items = Object.keys(probes)
-        .filter((pid) => pid !== "local-manga" && excluded[pid] == null)
+        .filter(
+          (pid) => isActiveProvider(pid, providers) && excluded[pid] == null,
+        )
         .map((pid) => ({ pid, p: probes[pid] }))
         .filter((x) => x.p?.matched && unreadChapters(read, x.p.latest) > 0)
         .map((x) => ({
@@ -1586,12 +1782,21 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       const sig = items.length
         ? `${selectedPid ?? ""}|${items.map((i) => `${i.pid}+${i.unread}`).join(",")}`
         : "none";
+      return { items, selectedPid, sig };
+    };
+    const decorateBar = async (container) => {
+      const mediaId = currentMediaId.get();
+      if (!mediaId) return;
       await dm.decorate(container, {
         marker: "msu-bar",
         lockKey: "bar",
-        sig,
+        sig: async () => (await buildBarItems(container, mediaId)).sig,
         scope: container,
         render: async (node) => {
+          const { items, selectedPid } = await buildBarItems(
+            container,
+            mediaId,
+          );
           const headers = await container.query(
             "[data-chapter-list-header-container]",
           );
@@ -1623,29 +1828,38 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       });
     };
     const redecorateCards = async () => {
+      reconcileInactiveProviders();
       try {
         const cards = await ctx.dom.query(
           '[data-media-entry-card-container][data-media-type="manga"]',
         );
-        for (const el of cards ?? []) decorateCard(el);
+        const list = cards ?? [];
+        for (let i = 0; i < list.length; i++) {
+          decorateCard(list[i]);
+          if (i % CARD_REDECORATE_YIELD_EVERY === 0) $sleep(0);
+        }
       } catch {}
     };
     const redecorateBar = async () => {
       try {
-        const cont = await ctx.dom.queryOne("[data-chapter-list-container]");
+        const cont = (
+          await ctx.dom.query("[data-chapter-list-container]")
+        )?.[0];
         if (cont) decorateBar(cont);
       } catch {}
+    };
+    const dialogTitle = async (dialog) => {
+      const titleEl = (await dialog.query(".UI-Modal__title"))[0];
+      return titleEl
+        ? String((await titleEl.getText()) ?? "")
+            .trim()
+            .toLowerCase()
+        : "";
     };
     const hookReloadModal = async (dialog) => {
       if (!currentMediaId.get()) return;
       try {
-        const titleEl = (await dialog.query(".UI-Modal__title"))[0];
-        const title = titleEl
-          ? String((await titleEl.getText()) ?? "")
-              .trim()
-              .toLowerCase()
-          : "";
-        if (title !== "reload sources") return;
+        if ((await dialogTitle(dialog)) !== "reload sources") return;
         const btn = (await dialog.query("button:not(.UI-Modal__close)"))[0];
         if (!btn) return;
         if (await btn.hasAttribute("data-msu-reload-hooked")) return;
@@ -1656,6 +1870,26 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           if (id <= 0) return;
           if (rejectIfBusy()) return;
           probeMangaDetail(id);
+        });
+      } catch {}
+    };
+    const watchManualMatchDialog = async (dialog) => {
+      const mediaId = currentMediaId.get();
+      if (mediaId <= 0) return;
+      try {
+        if ((await dialogTitle(dialog)) !== "manual match") return;
+        const html = String(dialog.innerHTML ?? "");
+        if (isManualMatchConfirmDialog(html)) return;
+        const sig = mappingSigFromHtml(html);
+        if (sig === null) return;
+        const prev = lastMappingSigByMedia[mediaId];
+        lastMappingSigByMedia[mediaId] = sig;
+        if (prev === undefined || prev === sig) return;
+        const provider = await readSelectedProvider(ctx);
+        if (!provider) return;
+        scanOneProvider(mediaId, provider).then(() => {
+          dm.refresh();
+          redecorateBar();
         });
       } catch {}
     };
@@ -1682,20 +1916,12 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         return;
       }
     };
-    const applyProgressFromDom = async () => {
+    const applyProgressFromDom = async (badgeEl) => {
       const id = currentMediaId.get();
       if (!id) return;
-      let read = null;
-      try {
-        const pEl = await ctx.dom.queryOne(
-          "[data-media-page-header-progress-badge-progress]",
-        );
-        if (pEl) {
-          const t = String((await pEl.getText()) ?? "").trim();
-          if (t && !Number.isNaN(Number(t))) read = Number(t);
-        }
-      } catch {}
+      const read = await headerProgress.read(badgeEl);
       if (read == null) return;
+      headerProgress.setCache(read);
       const cur = results.get().find((r) => r.mediaId === id);
       if (!cur || Number(cur.read) === read) return;
       const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
@@ -1726,15 +1952,24 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       },
       { withInnerHTML: true },
     );
-    dm.observe("[role='dialog']", (els) => {
-      for (const el of els ?? []) hookReloadModal(el);
-    });
+    dm.observe(
+      "[role='dialog']",
+      (els) => {
+        for (const el of els ?? []) {
+          hookReloadModal(el);
+          watchManualMatchDialog(el);
+        }
+      },
+      { withInnerHTML: true },
+    );
     dm.observe("[role='menu']", (els) => {
       for (const el of els ?? []) hookRefreshMenu(el);
     });
-    dm.observe("[data-media-page-header-progress-badge-progress]", () => {
-      applyProgressFromDom();
-      redecorateBar();
+    dm.observe("[data-media-page-header-progress-badge-progress]", (els) => {
+      (async () => {
+        await applyProgressFromDom(els?.[0]);
+        await redecorateBar();
+      })();
     });
     dm.pass(redecorateCards);
     dm.pass(redecorateBar);
@@ -1742,9 +1977,10 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     ctx.effect(() => {
       results.get();
       probeCache.get();
+      scanProgress.get();
       currentMediaId.get();
       dm.refresh();
-    }, [results, probeCache, currentMediaId]);
+    }, [results, probeCache, scanProgress, currentMediaId]);
     function renderGlobalConfirm() {
       const head = trayHeader(tray, {
         title: "Refresh all sources?",

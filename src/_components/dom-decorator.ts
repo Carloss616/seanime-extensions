@@ -24,6 +24,8 @@
 // Rebuild covers none, a stale sig, AND duplicates (length !== 1) — which is why
 // a plain `innerHTML.includes(sig)` guard is wrong: it lets a raced duplicate
 // stick forever. Exported for unit testing.
+import { domAttr } from "../_utils/dom-read";
+
 export function decideDecoration(
   existingSigs: string[],
   desiredSig: string,
@@ -42,8 +44,9 @@ export interface DecorateOptions {
   lockKey: string;
   // Desired signature encoding the node's content. Same sig on a re-fire = no-op.
   // For "nothing visible", pass a sig for the empty state and render a hidden
-  // marker so the target isn't re-processed every pass.
-  sig: string;
+  // marker so the target isn't re-processed every pass. A function is resolved
+  // AFTER the per-target lock is acquired so concurrent passes read fresh state.
+  sig: string | (() => string | Promise<string>);
   // Where to search for existing markers (defaults to `el`). Pass the observed
   // container when the injected node is a sibling of an anchor inside it.
   scope?: $ui.DOMElement;
@@ -75,6 +78,7 @@ export interface DomDecorator {
 
 export function createDomDecorator(ctx: $ui.Context): DomDecorator {
   const locks = new Set<string>();
+  const dirty = new Set<string>();
   const observers: {
     selector: string;
     cb: (els: $ui.DOMElement[]) => void;
@@ -120,9 +124,13 @@ export function createDomDecorator(ctx: $ui.Context): DomDecorator {
     o: DecorateOptions,
   ): Promise<void> {
     const lk = `${o.marker}:${o.lockKey}`;
-    if (locks.has(lk)) return; // another pass is decorating this target
+    if (locks.has(lk)) {
+      dirty.add(lk);
+      return;
+    }
     locks.add(lk);
     try {
+      const desiredSig = typeof o.sig === "function" ? await o.sig() : o.sig;
       const scope = o.scope ?? el;
       const sigAttr = `data-${o.marker}-sig`;
       let existing: $ui.DOMElement[] = [];
@@ -133,9 +141,10 @@ export function createDomDecorator(ctx: $ui.Context): DomDecorator {
       }
       const sigs: string[] = [];
       for (const x of existing) {
-        sigs.push(String((await x.getAttribute(sigAttr)) ?? ""));
+        const sig = (await domAttr(x, sigAttr)) ?? "";
+        sigs.push(sig);
       }
-      if (decideDecoration(sigs, o.sig) === "skip") return;
+      if (decideDecoration(sigs, desiredSig) === "skip") return;
       for (const x of existing) {
         try {
           x.remove();
@@ -145,12 +154,13 @@ export function createDomDecorator(ctx: $ui.Context): DomDecorator {
       }
       const node = await ctx.dom.createElement("div");
       node.setAttribute(`data-${o.marker}`, "1");
-      node.setAttribute(sigAttr, o.sig);
+      node.setAttribute(sigAttr, desiredSig);
       await o.render(node);
     } catch {
       /* injection failed for this target — the next pass retries */
     } finally {
       locks.delete(lk);
+      if (dirty.delete(lk)) void decorate(el, o);
     }
   }
 
