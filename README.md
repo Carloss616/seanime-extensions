@@ -130,6 +130,7 @@ A custom-source isn't serialized per-callback, so it can be a single `code.ts` â
 - [x] Cross-provider new-chapter scanning (Manga Source Updates)
 - [ ] Anime support in Local Catalog (`anime` namespace is reserved, not served yet)
 - [ ] Pull-diff UI for MangaUpdates Sync (currently push-only)
+- [ ] Configurable [cron](https://seanime.gitbook.io/seanime-extensions/plugins/ui/cron) auto-scan for Manga Source Updates (scheduled background scans instead of manual only)
 
 ---
 

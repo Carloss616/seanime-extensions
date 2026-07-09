@@ -1052,27 +1052,33 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         rebuildStoredRow(mediaId);
       }
     }
-    function statusFor(r) {
-      const unread = unreadChapters(r.read, r.latest);
-      const m = unread > 0 ? (r.newSources ?? 0) : 0;
-      const nm = unread > 0 ? `+${unread} · ${m}` : "0 · 0";
-      const nmTip = `${unread} unread by ${m} source${m === 1 ? "" : "s"}`;
+    function statusFor(r, thinLabel = false) {
+      const n = unreadChapters(r.read, r.latest);
+      const m = n > 0 ? (r.newSources ?? 0) : 0;
+      const label = thinLabel
+        ? n > 0
+          ? `+${n}`
+          : "0"
+        : n > 0
+          ? `+${n} · ${m}`
+          : "0 · 0";
+      const nmTip = `${n} unread by ${m} source${m === 1 ? "" : "s"}`;
       const MAP = {
-        new: { label: nm, intent: "success", tip: nmTip },
-        "up-to-date": { label: nm, intent: "gray", tip: nmTip },
-        outdated: { label: nm, intent: "warning", tip: nmTip },
+        new: { label, intent: "success", tip: nmTip },
+        "up-to-date": { label, intent: "gray", tip: nmTip },
+        outdated: { label, intent: "warning", tip: nmTip },
         "not-matched": {
-          label: "no match",
+          label: thinLabel ? "−" : "no match",
           intent: "warning",
           tip: "No source matched",
         },
         "all-excluded": {
-          label: "all excluded",
-          intent: "gray",
+          label: thinLabel ? "−" : "all excluded",
+          intent: "warning",
           tip: "All sources excluded",
         },
         "error-found": {
-          label: "error",
+          label: thinLabel ? "X" : "error",
           intent: "alert",
           tip: "Source errored",
         },
@@ -1459,9 +1465,9 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       })();
     });
     const entryButton = ctx.action.newMangaPageButton({
-      label: "MSU",
+      label: "\uD83D\uDCDA",
       intent: "gray-subtle",
-      tooltipText: "Manga Source Updates",
+      tooltipText: "Manage source preferences",
     });
     entryButton.mount();
     entryButton.onClick((e) => {
@@ -1474,35 +1480,16 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         tray.open();
       } catch {}
     });
-    ctx.effect(() => {
-      const id = currentMediaId.get();
-      const row =
-        id > 0 ? results.get().find((r) => r.mediaId === id) : undefined;
-      if (row) {
-        const s = statusFor(row);
-        entryButton.setLabel(`MSU ${s.label}`);
-        entryButton.setIntent(
-          s.intent === "success" ? "success-subtle" : "gray-subtle",
-        );
-        entryButton.setTooltipText(`Manga Source Updates · ${s.tip}`);
-      } else {
-        entryButton.setLabel("MSU");
-        entryButton.setIntent("gray-subtle");
-        entryButton.setTooltipText(
-          "Manga Source Updates — scan to check sources",
-        );
-      }
-    }, [results, currentMediaId]);
-    const cardBadgeColors = (intent) => {
+    const cardBadgeBgClass = (intent) => {
       switch (intent) {
         case "success":
-          return { bg: "#16a34a", fg: "#ffffff" };
+          return "bg-green-500";
         case "warning":
-          return { bg: "#d97706", fg: "#ffffff" };
+          return "bg-orange-500";
         case "alert":
-          return { bg: "#dc2626", fg: "#ffffff" };
+          return "bg-red-500";
         default:
-          return { bg: "rgba(0,0,0,0.65)", fg: "#e5e7eb" };
+          return "bg-gray-500";
       }
     };
     const decorateCard = async (el) => {
@@ -1529,7 +1516,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         if (kind === "new" || kind === "up-to-date" || kind === "outdated") {
           kind = classify(progress, row.latest, row.sources, false, gap);
         }
-        const s = statusFor({ ...row, read: progress, kind });
+        const s = statusFor({ ...row, read: progress, kind }, true);
         label = s.label;
         intent = s.intent;
         tip = s.tip;
@@ -1547,14 +1534,14 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
             el.append(node);
             return;
           }
-          const { bg, fg } = cardBadgeColors(intent);
+          const bgClass = cardBadgeBgClass(intent);
           node.setStyle("position", "absolute");
           node.setStyle("z-index", "16");
-          node.setStyle("left", "0");
-          node.setStyle("top", "0");
+          node.setStyle("left", "0.25rem");
+          node.setStyle("top", "0.5rem");
           node.setStyle("pointer-events", "none");
           node.setInnerHTML(
-            `<span title="${tip}" style="display:inline-flex;align-items:center;height:1.15rem;padding:0 6px;font-size:0.7rem;font-weight:700;letter-spacing:0.02em;border-radius:4px 0 6px 0;background:${bg};color:${fg};box-shadow:0 1px 2px rgba(0,0,0,0.4);">${label}</span>`,
+            `<span title="${tip}" class="UI-Badge__root inline-flex flex-none w-fit overflow-hidden justify-center items-center gap-2 group/badge text-white ${bgClass} h-7 px-1.5 text-xs font-semibold tracking-wide rounded-full shadow-md">${label}</span>`,
           );
           el.append(node);
         },
@@ -1568,6 +1555,9 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     const decorateBar = async (container) => {
       const mediaId = currentMediaId.get();
       if (!mediaId) return;
+      const selectedPid = await container.getAttribute(
+        "data-selected-provider",
+      );
       let read = results.get().find((r) => r.mediaId === mediaId)?.read ?? 0;
       try {
         const pEl = await ctx.dom.queryOne(
@@ -1594,7 +1584,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         }))
         .sort((a, b) => b.latest - a.latest || a.name.localeCompare(b.name));
       const sig = items.length
-        ? items.map((i) => `${i.pid}+${i.unread}`).join(",")
+        ? `${selectedPid ?? ""}|${items.map((i) => `${i.pid}+${i.unread}`).join(",")}`
         : "none";
       await dm.decorate(container, {
         marker: "msu-bar",
@@ -1617,7 +1607,16 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           node.setStyle("gap", "8px");
           node.setStyle("align-items", "center");
           node.setInnerHTML(
-            `<span style="opacity:.55;font-size:.8rem">New on:</span>${items.map((i) => `<span title="${escHtml(i.name)}: ${i.unread} unread chapter${i.unread === 1 ? "" : "s"}" style="display:inline-flex;align-items:center;height:1.5rem;padding:0 8px;font-size:.75rem;font-weight:600;letter-spacing:.02em;border-radius:9999px;background:#16a34a;color:#fff">${escHtml(i.name)} +${i.unread}</span>`).join("")}`,
+            `<span class="text-sm text-[--muted]">New on:</span>${items
+              .map((i) => {
+                const title = `${escHtml(i.name)}: ${i.unread} unread chapter${i.unread === 1 ? "" : "s"}`;
+                const label = `${escHtml(i.name)} +${i.unread}`;
+                const intentClass = selectedPid?.includes(i.pid)
+                  ? "text-green bg-green-50 border-green-500 dark:text-green-300"
+                  : "text-blue bg-blue-50 border-blue-500 dark:text-blue-300";
+                return `<span title="${title}" class="UI-Badge__root inline-flex flex-none w-fit overflow-hidden justify-center items-center gap-2 group/badge ${intentClass} border border-opacity-40 dark:bg-opacity-10 h-6 px-2 text-xs font-semibold tracking-wide rounded-full">${label}</span>`;
+              })
+              .join("")}`,
           );
           anchor.after(node);
         },

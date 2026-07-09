@@ -19,16 +19,12 @@
 
 import { LABEL_STYLE } from "./text";
 
-// Subset of the native tray.badge intents this list uses (the caller maps its
-// domain status → intent; e.g. AniList RELEASING → "success").
-export type EntryListIntent = "success" | "info" | "warning" | "alert" | "gray";
-
 export interface EntryListRow {
   cover?: string;
   title: string;
   year?: number;
   // Rendered as a native tray.badge. `intent` drives the color.
-  status?: { label: string; intent?: EntryListIntent };
+  status?: { label: string; intent?: $ui.BadgeComponentIntent };
   // Rendered as "c.{chapter}".
   chapter?: number | string;
   // "Open ↗" underlined external link (new tab) with an optional tooltip.

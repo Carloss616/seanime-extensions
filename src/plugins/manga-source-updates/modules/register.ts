@@ -1,10 +1,6 @@
 import { joinDividers } from "../../../_components/divider";
 import { createDomDecorator } from "../../../_components/dom-decorator";
-import {
-  type EntryListIntent,
-  type EntryListRow,
-  entryList,
-} from "../../../_components/entry-list";
+import { type EntryListRow, entryList } from "../../../_components/entry-list";
 import { trayHeader } from "../../../_components/tray-header";
 import scanPanelHtml from "../assets/scan-panel.html";
 
@@ -115,7 +111,7 @@ function isBadKind(kind: ResultKind): boolean {
 // read the same, plus manual-only ones. Dropdown order = key order here.
 const REASONS: Record<
   ExcludeReason,
-  { menu: string; badge: string; intent: "alert" | "warning" | "gray" }
+  { menu: string; badge: string; intent: $ui.BadgeComponentIntent }
 > = {
   outdated: { menu: "Behind / outdated", badge: "behind", intent: "warning" },
   // Sources that mangle numbering: fake gaps, invented far-future numbers,
@@ -940,39 +936,53 @@ export const register = (ctx: $ui.Context) => {
     }
   }
 
-  // Reading-list status pill: `+N · M` where N = unread chapters on the best
-  // source, M = how many sources actually have unread chapters. When N is 0
-  // there's nothing new, so drop the "+" and show a plain "0 · 0". Non-matched
-  // states keep a word.
-  function statusFor(r: MangaResult): {
+  // Status pill: `+N · M` where N = unread chapters on the best source, M = how
+  // many sources actually have unread chapters. When N is 0 there's nothing new,
+  // so drop the "+" and show a plain "0 · 0". Non-matched states keep a word.
+  // `thinLabel` is the compact variant for the narrow card badge: just `+N` (no
+  // `· M`) and single glyphs for the word states (− / X) so it fits the cover.
+  function statusFor(
+    r: MangaResult,
+    thinLabel = false,
+  ): {
     label: string;
-    intent: EntryListIntent;
+    intent: $ui.BadgeComponentIntent;
     tip: string;
   } {
-    const unread = unreadChapters(r.read, r.latest);
-    const m = unread > 0 ? (r.newSources ?? 0) : 0;
-    const nm = unread > 0 ? `+${unread} · ${m}` : "0 · 0";
+    const n = unreadChapters(r.read, r.latest);
+    const m = n > 0 ? (r.newSources ?? 0) : 0;
+    const label = thinLabel
+      ? n > 0
+        ? `+${n}`
+        : "0"
+      : n > 0
+        ? `+${n} · ${m}`
+        : "0 · 0";
     // `+N · M` tooltip decodes the compact badge; word states describe themselves.
-    const nmTip = `${unread} unread by ${m} source${m === 1 ? "" : "s"}`;
+    const nmTip = `${n} unread by ${m} source${m === 1 ? "" : "s"}`;
     // The three "+N · M" kinds differ only by color; the rest are self-describing.
     const MAP: Record<
       ResultKind,
-      { label: string; intent: EntryListIntent; tip: string }
+      { label: string; intent: $ui.BadgeComponentIntent; tip: string }
     > = {
-      new: { label: nm, intent: "success", tip: nmTip },
-      "up-to-date": { label: nm, intent: "gray", tip: nmTip },
-      outdated: { label: nm, intent: "warning", tip: nmTip },
+      new: { label, intent: "success", tip: nmTip },
+      "up-to-date": { label, intent: "gray", tip: nmTip },
+      outdated: { label, intent: "warning", tip: nmTip },
       "not-matched": {
-        label: "no match",
+        label: thinLabel ? "−" : "no match",
         intent: "warning",
         tip: "No source matched",
       },
       "all-excluded": {
-        label: "all excluded",
-        intent: "gray",
+        label: thinLabel ? "−" : "all excluded",
+        intent: "warning",
         tip: "All sources excluded",
       },
-      "error-found": { label: "error", intent: "alert", tip: "Source errored" },
+      "error-found": {
+        label: thinLabel ? "X" : "error",
+        intent: "alert",
+        tip: "Source errored",
+      },
     };
     return MAP[r.kind] ?? MAP["error-found"];
   }
@@ -1132,7 +1142,7 @@ export const register = (ctx: $ui.Context) => {
     // source's latest chapter rides the row's separate `c.{chapter}` slot.
     const sourceStatus = (
       p: ProviderProbe | undefined,
-    ): { label: string; intent: EntryListIntent } => {
+    ): { label: string; intent: $ui.BadgeComponentIntent } => {
       if (!p) return { label: "not scanned", intent: "gray" };
       if (!p.matched)
         return p.errored
@@ -1440,11 +1450,12 @@ export const register = (ctx: $ui.Context) => {
 
   // Native quick-access button on every manga entry page. Opens this manga's
   // source detail in the tray (no DOM injection — seanime provides the button
-  // slot via ctx.action). Its label/tooltip reflect the last scan for the manga.
+  // slot via ctx.action). Static 📚 label; the live per-manga status shows on
+  // the card badge and the "New on:" bar, so the button stays a plain opener.
   const entryButton = ctx.action.newMangaPageButton({
-    label: "MSU",
+    label: "📚",
     intent: "gray-subtle",
-    tooltipText: "Manga Source Updates",
+    tooltipText: "Manage source preferences",
   });
   entryButton.mount();
   entryButton.onClick((e) => {
@@ -1461,29 +1472,7 @@ export const register = (ctx: $ui.Context) => {
     }
   });
 
-  // Keep the button's label/tooltip in step with the current manga's scan row:
-  // "MSU +3 · 4" when scanned, plain "MSU" otherwise.
-  ctx.effect(() => {
-    const id = currentMediaId.get();
-    const row =
-      id > 0 ? results.get().find((r) => r.mediaId === id) : undefined;
-    if (row) {
-      const s = statusFor(row);
-      entryButton.setLabel(`MSU ${s.label}`);
-      entryButton.setIntent(
-        s.intent === "success" ? "success-subtle" : "gray-subtle",
-      );
-      entryButton.setTooltipText(`Manga Source Updates · ${s.tip}`);
-    } else {
-      entryButton.setLabel("MSU");
-      entryButton.setIntent("gray-subtle");
-      entryButton.setTooltipText(
-        "Manga Source Updates — scan to check sources",
-      );
-    }
-  }, [results, currentMediaId]);
-
-  // §3: overlay a "+N · M" badge on scanned manga cards in the library grid.
+  // §3: overlay a compact "+N" badge on scanned manga cards in the library grid.
   // Pure DOM (seanime has no card-badge API). The badge lives in the top-left
   // corner of the cover; each carries a data-msu-sig signature encoding its
   // desired content, so a re-fire whose signature already matches does nothing
@@ -1491,18 +1480,16 @@ export const register = (ctx: $ui.Context) => {
   // produces a new signature and re-decorates. Unread is computed from the
   // card's own data-list-data progress, so reading a chapter updates the badge
   // with no gap (seanime re-renders the card → observer re-fires → fresh number).
-  const cardBadgeColors = (
-    intent: EntryListIntent,
-  ): { bg: string; fg: string } => {
+  const cardBadgeBgClass = (intent: $ui.BadgeComponentIntent): string => {
     switch (intent) {
       case "success":
-        return { bg: "#16a34a", fg: "#ffffff" };
+        return "bg-green-500";
       case "warning":
-        return { bg: "#d97706", fg: "#ffffff" };
+        return "bg-orange-500";
       case "alert":
-        return { bg: "#dc2626", fg: "#ffffff" };
+        return "bg-red-500";
       default:
-        return { bg: "rgba(0,0,0,0.65)", fg: "#e5e7eb" };
+        return "bg-gray-500";
     }
   };
 
@@ -1532,7 +1519,7 @@ export const register = (ctx: $ui.Context) => {
     const row = results.get().find((r) => r.mediaId === mediaId);
     let sig: string;
     let label = "";
-    let intent: EntryListIntent = "gray";
+    let intent: $ui.BadgeComponentIntent = "gray";
     let tip = "";
     if (row) {
       const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
@@ -1542,7 +1529,7 @@ export const register = (ctx: $ui.Context) => {
       if (kind === "new" || kind === "up-to-date" || kind === "outdated") {
         kind = classify(progress, row.latest, row.sources, false, gap);
       }
-      const s = statusFor({ ...row, read: progress, kind });
+      const s = statusFor({ ...row, read: progress, kind }, true);
       label = s.label;
       intent = s.intent;
       tip = s.tip;
@@ -1566,14 +1553,14 @@ export const register = (ctx: $ui.Context) => {
         // `isolate` (own stacking context) that traps a child below the hover
         // popup (z-15) at any z-index. As a sibling of the popup with z-16 the
         // badge stays visible; pointer-events:none so it doesn't eat hover/click.
-        const { bg, fg } = cardBadgeColors(intent);
+        const bgClass = cardBadgeBgClass(intent);
         node.setStyle("position", "absolute");
         node.setStyle("z-index", "16");
-        node.setStyle("left", "0");
-        node.setStyle("top", "0");
+        node.setStyle("left", "0.25rem");
+        node.setStyle("top", "0.5rem");
         node.setStyle("pointer-events", "none");
         node.setInnerHTML(
-          `<span title="${tip}" style="display:inline-flex;align-items:center;height:1.15rem;padding:0 6px;font-size:0.7rem;font-weight:700;letter-spacing:0.02em;border-radius:4px 0 6px 0;background:${bg};color:${fg};box-shadow:0 1px 2px rgba(0,0,0,0.4);">${label}</span>`,
+          `<span title="${tip}" class="UI-Badge__root inline-flex flex-none w-fit overflow-hidden justify-center items-center gap-2 group/badge text-white ${bgClass} h-7 px-1.5 text-xs font-semibold tracking-wide rounded-full shadow-md">${label}</span>`,
         );
         el.append(node);
       },
@@ -1582,9 +1569,11 @@ export const register = (ctx: $ui.Context) => {
 
   // §2: a "New on: {source} +N" bar in the chapter-list header of the entry page
   // — ports the fork's data-chapter-list-unread-by-source to vanilla. Lists every
-  // non-excluded, matched source with unread chapters; informational only (a
-  // plugin can't flip the reader's Source dropdown). Progress is read live from
-  // the entry header, so reading a chapter updates the counts with no gap.
+  // non-excluded, matched source with unread chapters; the reader's currently
+  // selected source (data-selected-provider) is highlighted green, the rest blue.
+  // Informational only (a plugin can't flip the reader's Source dropdown).
+  // Progress is read live from the entry header, so reading a chapter updates the
+  // counts with no gap.
   const escHtml = (s: string) =>
     String(s)
       .replace(/&/g, "&amp;")
@@ -1594,6 +1583,7 @@ export const register = (ctx: $ui.Context) => {
   const decorateBar = async (container: $ui.DOMElement) => {
     const mediaId = currentMediaId.get();
     if (!mediaId) return; // not on a manga entry page
+    const selectedPid = await container.getAttribute("data-selected-provider");
 
     // Fresh reader progress from the entry header (no gap on read); fall back to
     // the stored row's read if the badge isn't present.
@@ -1628,8 +1618,11 @@ export const register = (ctx: $ui.Context) => {
       }))
       .sort((a, b) => b.latest - a.latest || a.name.localeCompare(b.name));
 
+    // selectedPid is part of the desired content (it drives which badge is
+    // highlighted), so fold it into the sig — otherwise switching the reader's
+    // source dropdown leaves the sig unchanged and the guard skips the rebuild.
     const sig = items.length
-      ? items.map((i) => `${i.pid}+${i.unread}`).join(",")
+      ? `${selectedPid ?? ""}|${items.map((i) => `${i.pid}+${i.unread}`).join(",")}`
       : "none";
 
     await dm.decorate(container, {
@@ -1654,12 +1647,19 @@ export const register = (ctx: $ui.Context) => {
         node.setStyle("gap", "8px");
         node.setStyle("align-items", "center");
         node.setInnerHTML(
-          `<span style="opacity:.55;font-size:.8rem">New on:</span>` +
+          `<span class="text-sm text-[--muted]">New on:</span>` +
             items
-              .map(
-                (i) =>
-                  `<span title="${escHtml(i.name)}: ${i.unread} unread chapter${i.unread === 1 ? "" : "s"}" style="display:inline-flex;align-items:center;height:1.5rem;padding:0 8px;font-size:.75rem;font-weight:600;letter-spacing:.02em;border-radius:9999px;background:#16a34a;color:#fff">${escHtml(i.name)} +${i.unread}</span>`,
-              )
+              .map((i) => {
+                const title = `${escHtml(i.name)}: ${i.unread} unread chapter${i.unread === 1 ? "" : "s"}`;
+                const label = `${escHtml(i.name)} +${i.unread}`;
+                const intentClass =
+                  // selectedPid is wrapped in quotes, so includes() works for exact match
+                  selectedPid?.includes(i.pid)
+                    ? "text-green bg-green-50 border-green-500 dark:text-green-300"
+                    : "text-blue bg-blue-50 border-blue-500 dark:text-blue-300";
+
+                return `<span title="${title}" class="UI-Badge__root inline-flex flex-none w-fit overflow-hidden justify-center items-center gap-2 group/badge ${intentClass} border border-opacity-40 dark:bg-opacity-10 h-6 px-2 text-xs font-semibold tracking-wide rounded-full">${label}</span>`;
+              })
               .join(""),
         );
         anchor.after(node);

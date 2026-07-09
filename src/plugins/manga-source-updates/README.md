@@ -5,7 +5,7 @@
 # 🔎 Manga Source Updates
 
 ![Type](https://img.shields.io/badge/type-plugin-3b82f6?style=for-the-badge)
-![Version](https://img.shields.io/badge/version-1.2.0-22c55e?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-1.3.0-22c55e?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 
 **Scans your reading list against every installed manga provider and tells you which sources have new chapters.**
@@ -30,7 +30,7 @@
 | Best-source summary | Per manga: `+N · M` — **N** unread chapters on the furthest-ahead source, **M** sources that have it. |
 | New-chapters section | Manga with unread chapters float to the top; the tray-icon badge counts them on every screen. |
 | Per-source detail | A `⚙️` view per manga: every source split into **Available** / **Excluded**, each with rescan + exclude controls. |
-| On-page UI | A native **MSU** button on the manga entry, a **"New on: {source} +N"** bar in the chapter list, and a **`+N · M`** badge on library cards — see [On seanime's pages](#-on-seanimes-pages). |
+| On-page UI | A native **📚** button on the manga entry, a **"New on: {source} +N"** bar in the chapter list, and a **`+N · M`** badge on library cards — see [On seanime's pages](#-on-seanimes-pages). |
 | Live, no-gap updates | Read a chapter and the counts update instantly everywhere (button, bar, card badge, list) — no reopening needed. |
 | Smart auto-exclude | Sources that don't match, error, or sit far behind your progress are remembered and skipped next scan. |
 | Live progress panel | A draggable floating panel shows `X/Y + current title` while a scan runs, on any screen. |
@@ -41,7 +41,7 @@
 ## 🚀 Quick Start
 
 1. Install from the [marketplace](../../../README.md#-quick-start), or paste this extension's `manifest.json` raw URL into seanime → *Add Extension*.
-2. Open the tray (from the navbar, or the **MSU** button on any manga entry page) and hit **↻ Scan**.
+2. Open the tray (from the navbar, or the **📚** button on any manga entry page) and hit **↻ Scan**.
 3. Manga with new chapters land in the **New chapters** section — and the results now show on seanime's own pages too (see below).
 
 > [!NOTE]
@@ -64,7 +64,7 @@ Beyond its own tray, the plugin surfaces scan results in place, updating live as
 
 | Where | What |
 | ----- | ---- |
-| **Manga entry page** | A native **MSU** button (next to seanime's own actions) whose label reflects the manga's status (`MSU +3 · 4`); click it to open the source detail. |
+| **Manga entry page** | A native **📚** button (next to seanime's own actions); click it to open the source detail. |
 | **Chapter list header** | A **"New on: {source} +N"** bar listing every non-excluded source that has unread chapters (informational — you still pick the source in seanime's own dropdown). |
 | **Library cards** | A **`+N · M`** badge in the top-left corner of each scanned manga's cover. |
 
