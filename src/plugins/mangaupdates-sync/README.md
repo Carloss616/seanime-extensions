@@ -5,7 +5,7 @@
 # 🔁 MangaUpdates Sync
 
 ![Type](https://img.shields.io/badge/type-plugin-3b82f6?style=for-the-badge)
-![Version](https://img.shields.io/badge/version-1.2.0-22c55e?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-1.2.1-22c55e?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 
 **Pushes your manga reading state to [MangaUpdates](https://www.mangaupdates.com/) whenever seanime updates an entry.**
@@ -28,7 +28,7 @@
 | ------- | ----------- |
 | Progress + status + score | Mirrored to MangaUpdates on every seanime update. |
 | Zero-config for custom-source | Resolves the MU series automatically for [`mangaupdates`](../../custom-source/mangaupdates/) entries — **no network call**. |
-| Manual linking | A **MU 🔍** button on every other manga page opens the linker tray for that entry. |
+| Manual linking | A **🔓** button on every other manga page opens the linker tray for that entry. |
 | Linker tray | **List** view (all linked entries, local filter, ⚙️ per row) and **detail** view per manga (AniList header, MU link row, search to link or relink). |
 | MU entry icon | Optional MangaUpdates icon injected next to AniList on linked entry pages (`injectEntryIcon`). |
 | Optional auto-match | Title-search fallback for users who'd rather not link manually. |
@@ -101,11 +101,11 @@ If none resolve, the plugin logs a warning and skips the push.
 <details>
 <summary>Linking AniList entries explicitly</summary>
 
-A **MU 🔍** button renders on every manga entry page that isn't from the `mangaupdates` custom-source. Once linked it relabels to **MU ✅**.
+A **🔓** button renders on every manga entry page that isn't from the `mangaupdates` custom-source. Once linked it relabels to **🔗**.
 
 **Opening the linker**
 
-- Click **MU 🔍** on the manga page (seeds the search input; auto-runs MU search only when the entry isn't linked yet).
+- Click **🔓** on the manga page (seeds the search input; auto-runs MU search only when the entry isn't linked yet).
 - Pin the plugin tray icon (top-right of the seanime navbar) and open it — on a manga entry page the tray jumps straight to that entry's **detail** view.
 
 > [!IMPORTANT]

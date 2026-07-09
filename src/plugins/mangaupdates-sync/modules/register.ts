@@ -4,15 +4,19 @@ import { LABEL_STYLE } from "../../../_components/text";
 import { trayHeader } from "../../../_components/tray-header";
 import { statusToPill } from "../../../_utils/anilist-status";
 import muLetterSvg from "../assets/mu-letter.svg";
-import { SHARED_LIB_NAME, SOURCE_PREFIX } from "../utils/constants";
+import { findListData } from "../utils/collection";
+import { SHARED_LIB_NAME } from "../utils/constants";
 import {
   getMULink,
   listMULinkIds,
-  type MULink,
   removeMULink,
   setMULink,
 } from "../utils/link-store";
-import type { MUResult } from "../utils/mu-client";
+import {
+  isMuCustomSourceEntry,
+  resolveLinkedMuInfo,
+} from "../utils/resolve-series-id";
+import type { MULink, MUResult } from "../utils/types";
 import type { sharedLib } from "./shared-lib";
 
 // UI: explicit AniList ↔ MangaUpdates linking.
@@ -55,7 +59,7 @@ export const register = (ctx: $ui.Context) => {
     if (id <= 0) return false;
     const media = getMedia(id);
     if (!media) return false;
-    return !(media.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0);
+    return !isMuCustomSourceEntry(media.siteUrl);
   };
 
   const resolveEntryTitle = (media: $app.AL_BaseManga, id: number): string =>
@@ -65,24 +69,12 @@ export const register = (ctx: $ui.Context) => {
         media.title.romaji)) ||
     `#${id}`;
 
-  // Any navigation carrying an `id` searchParam is treated as a media entry
-  // (no pathname filter). The button click handler also seeds currentMediaId
-  // from event.media.id, in case onNavigate didn't catch the route.
-  ctx.screen.onNavigate((e) => {
-    const id = e.searchParams?.id;
-    if (id) {
-      const parsed = parseInt(id, 10);
-      if (!Number.isNaN(parsed) && parsed > 0) {
-        currentMediaId.set(parsed);
-        return;
-      }
-    }
-    currentMediaId.set(0);
-  });
-  ctx.screen.loadCurrent();
+  // mediaId of the manga entry page the user is viewing (0 = not on one),
+  // tracked via onNavigate — same source of truth as manga-source-updates.
+  // The icon injector reads this instead of parsing data-media off the DOM.
 
   const btn = ctx.action.newMangaPageButton({
-    label: "MU 🔍",
+    label: "🔓",
     intent: "gray-subtle",
     tooltipText: "Link to MangaUpdates",
   });
@@ -103,7 +95,7 @@ export const register = (ctx: $ui.Context) => {
     } catch (_) {
       media = undefined;
     }
-    if (media?.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0) {
+    if (isMuCustomSourceEntry(media?.siteUrl)) {
       btn.unmount();
       tray.updateBadge({ number: 0 });
       return;
@@ -111,13 +103,13 @@ export const register = (ctx: $ui.Context) => {
     btn.mount();
     const link = getMULink(id);
     if (!link) {
-      btn.setLabel("MU 🔍");
-      btn.setIntent("gray-subtle");
+      btn.setLabel("🔓");
       btn.setTooltipText("Link to MangaUpdates");
     } else {
-      btn.setLabel("MU ✅");
-      btn.setIntent("primary-subtle");
-      btn.setTooltipText(`Linked: ${link.title || `#${link.id}`}`);
+      btn.setLabel("🔗");
+      btn.setTooltipText(
+        `Linked to MangaUpdates · ${link.title || `#${link.id}`}`,
+      );
     }
     tray.updateBadge({ number: 0 });
   }, [currentMediaId]);
@@ -127,37 +119,26 @@ export const register = (ctx: $ui.Context) => {
   //   1. ctx.dom.observe (withInnerHTML + identifyChildren) gives a sync
   //      snapshot plus auto-assigned child ids for re-acquiring live handles
   //      via ctx.dom.asElement(id).
-  //   2. LoadDoc parses the snapshot; the AniList button is located via the
-  //      data-manga-meta-section-buttons-container attribute (not a href
-  //      match — robust to AL link changes).
+  //   2. LoadDoc parses the snapshot; the buttons container is located via
+  //      data-manga-meta-section-buttons-container.
   //   3. Idempotency: each injected icon carries data-mu-sync-key="mu". If
-  //      the snapshot already has it we only refresh its href, else insert
-  //      one — no remove/reinsert, no async races (fixes duplicate-icon bug).
+  //      the snapshot already has it in the right slot we only refresh its href;
+  //      if it was nested inside another icon's tooltip (custom-source entries),
+  //      remove and re-insert as a sibling wrapper div.
   const MU_ICON_KEY = "mu";
-  // Letterform is a path SVG, not <text>: <text> depends on the user's font
-  // fallback chain and clips/jags at icon scale. Sized to ~75% of the 24x24
-  // viewBox to match the AL icon height; currentColor inherits the button's
-  // text-[--gray]. Markup is inlined from assets/mu-letter.svg as a string
-  // literal at build time (Bun.build's `text` loader) — used as muLetterSvg.
+  let muIconInjecting = false;
 
-  const resolveMULink = (mediaId: number): { url?: string; title?: string } => {
-    let media: $app.AL_BaseManga | undefined;
-    try {
-      media = $anilist.getManga(mediaId);
-    } catch (_) {
-      media = undefined;
-    }
-    if (!media) return {};
-    // Skip injection for custom-source entries: seanime already renders its
-    // own external-link button pointing at the same series URL, so ours would
-    // just duplicate it.
-    if (media.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0) {
-      return {};
-    }
-    const link = getMULink(mediaId);
-    if (!link) return {};
-    return { url: link.url, title: link.title };
-  };
+  const muIconInnerHtml =
+    '<button type="button" class="UI-Button_root whitespace-nowrap font-semibold rounded-lg inline-flex items-center transition ease-in text-center justify-center focus-visible:outline-none focus-visible:ring-2 ring-offset-1 ring-offset-[--background] focus-visible:ring-[--ring] disabled:opacity-50 disabled:pointer-events-none shadow-none text-[--gray] border border-transparent bg-transparent hover:underline active:text-gray-700 dark:text-gray-300 dark:active:text-gray-200 UI-IconButton_root p-0 flex-none text-xl h-8 w-8 px-0">' +
+    '<span class="md:inline-block">' +
+    muLetterSvg.trim() +
+    "</span>" +
+    "</button>";
+
+  const isMuIconMisplaced = (
+    $doc: ReturnType<typeof LoadDoc>,
+    anchorId: string,
+  ): boolean => $doc(`#${anchorId}`).parent().children("a").length() > 1;
 
   const [, refetchEntryPage] = ctx.dom.observe(
     "[data-manga-entry-page]",
@@ -167,62 +148,85 @@ export const register = (ctx: $ui.Context) => {
       }
       const el = els[0];
       if (!el) return;
+      if (muIconInjecting) return;
+      muIconInjecting = true;
 
-      let mediaId: number | undefined;
       try {
-        const raw = (await el.getDataAttribute("media")) ?? "{}";
-        const data = JSON.parse(raw);
-        if (typeof data.id === "number") mediaId = data.id;
-      } catch (_) {
-        /* ignore */
+        const mediaId = currentMediaId.get();
+        if (!mediaId) return;
+
+        const linkInfo = resolveLinkedMuInfo(mediaId);
+        if (!linkInfo.url) return;
+
+        const $ = LoadDoc(String(el.innerHTML ?? ""));
+        const containerId = $(
+          "[data-manga-meta-section-buttons-container]",
+        ).attr("id");
+        if (!containerId) return;
+
+        const titleAttr = linkInfo.title
+          ? `MangaUpdates: ${linkInfo.title}`
+          : "View on MangaUpdates";
+
+        const containerEl = ctx.dom.asElement(containerId);
+        const liveMarkers =
+          (await containerEl.query(`[data-mu-sync-key="${MU_ICON_KEY}"]`)) ??
+          [];
+
+        // Live DOM is the source of truth — LoadDoc can miss plugin-injected nodes.
+        let keeperId: string | undefined;
+        for (const marker of liveMarkers) {
+          const anchorId = String(marker.id ?? "");
+          if (!anchorId) continue;
+          const misplaced = isMuIconMisplaced($, anchorId);
+          if (!misplaced && !keeperId) {
+            keeperId = anchorId;
+            continue;
+          }
+          try {
+            ctx.dom.asElement(anchorId).remove();
+          } catch {
+            /* already gone */
+          }
+        }
+
+        if (keeperId) {
+          const existing = ctx.dom.asElement(keeperId);
+          existing.setAttribute("href", linkInfo.url);
+          existing.setAttribute("title", titleAttr);
+          return;
+        }
+
+        const a = await ctx.dom.createElement("a");
+        a.setAttribute("href", linkInfo.url);
+        a.setAttribute("target", "_blank");
+        a.setAttribute("rel", "noopener noreferrer");
+        a.setAttribute("data-mu-sync-key", MU_ICON_KEY);
+        a.setAttribute("title", titleAttr);
+        a.setProperty("className", ["cursor-pointer"]);
+        a.setInnerHTML(muIconInnerHtml);
+        const wrap = await ctx.dom.createElement("div");
+        wrap.setAttribute("data-state", "closed");
+        wrap.append(a);
+        containerEl.append(wrap);
+      } catch (err) {
+        log.warn("MU icon injection failed:", err);
+      } finally {
+        muIconInjecting = false;
       }
-      if (!mediaId) return;
-
-      const linkInfo = resolveMULink(mediaId);
-      if (!linkInfo.url) return;
-
-      const $ = LoadDoc(el.innerHTML ?? "");
-      const btnALId = $("[data-manga-meta-section-buttons-container] a").attr(
-        "id",
-      );
-      if (!btnALId) return;
-
-      const existingId = $(
-        `[data-manga-meta-section-buttons-container] [data-mu-sync-key="${MU_ICON_KEY}"]`,
-      ).attr("id");
-      const titleAttr = linkInfo.title
-        ? `MangaUpdates: ${linkInfo.title}`
-        : "View on MangaUpdates";
-
-      if (existingId) {
-        // Refresh href + title in place (handles entry-to-entry navigation
-        // and link changes).
-        const existing = ctx.dom.asElement(existingId);
-        existing.setAttribute("href", linkInfo.url);
-        existing.setAttribute("title", titleAttr);
-        return;
-      }
-
-      const a = await ctx.dom.createElement("a");
-      a.setAttribute("href", linkInfo.url);
-      a.setAttribute("target", "_blank");
-      a.setAttribute("rel", "noopener noreferrer");
-      a.setAttribute("data-mu-sync-key", MU_ICON_KEY);
-      a.setAttribute("title", titleAttr);
-      a.setProperty("className", ["cursor-pointer"]);
-      // Re-uses seanime's own button styles so the icon visually
-      // matches the AniList one (size, hover, focus ring, etc.).
-      a.setInnerHTML(
-        '<button type="button" class="UI-Button_root whitespace-nowrap font-semibold rounded-lg inline-flex items-center transition ease-in text-center justify-center focus-visible:outline-none focus-visible:ring-2 ring-offset-1 ring-offset-[--background] focus-visible:ring-[--ring] disabled:opacity-50 disabled:pointer-events-none shadow-none text-[--gray] border border-transparent bg-transparent hover:underline active:text-gray-700 dark:text-gray-300 dark:active:text-gray-200 UI-IconButton_root p-0 flex-none text-xl h-8 w-8 px-0">' +
-          '<span class="md:inline-block">' +
-          muLetterSvg.trim() +
-          "</span>" +
-          "</button>",
-      );
-      ctx.dom.asElement(btnALId).after(a);
     },
     { withInnerHTML: true, identifyChildren: true },
   );
+
+  ctx.screen.onNavigate((e) => {
+    const isManga = String(e.pathname ?? "").includes("/manga/");
+    const raw = isManga ? e.searchParams?.id : "";
+    const id = raw ? parseInt(String(raw), 10) : 0;
+    const mediaId = Number.isFinite(id) ? id : 0;
+    currentMediaId.set(mediaId);
+    if (mediaId > 0) refetchEntryPage();
+  });
+  ctx.screen.loadCurrent();
 
   // Shared unlink body for both the per-entry "Unlink" button and the per-row
   // ⛔ buttons — they differ only in how the id is bound.
@@ -255,14 +259,7 @@ export const register = (ctx: $ui.Context) => {
     let listData: $app.Manga_EntryListData | undefined;
     try {
       const collection = await ctx.manga.getCollection();
-      outer: for (const list of collection.lists || []) {
-        for (const entry of list.entries || []) {
-          if (entry?.media && entry.media.id === mediaId) {
-            listData = entry.listData;
-            break outer;
-          }
-        }
-      }
+      listData = findListData(collection, mediaId);
     } catch (err) {
       log.warn("getCollection failed:", err);
     }
@@ -716,8 +713,7 @@ export const register = (ctx: $ui.Context) => {
   function renderLinkedList(): unknown {
     const id = currentMediaId.get();
     const media = id ? getMedia(id) : undefined;
-    const isCustomSource =
-      !!media?.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0;
+    const isCustomSource = isMuCustomSourceEntry(media?.siteUrl);
     const blocks: unknown[] = [
       trayHeader(tray, {
         subtitle: "Link AniList entries to MangaUpdates",

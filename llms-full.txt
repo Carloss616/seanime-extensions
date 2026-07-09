@@ -31,11 +31,11 @@ Extension types: `custom-source` (a metadata provider for the collection) and `p
    - Not a reader — MangaUpdates tracks scanlation releases, not pages.
    - Maps the MU `record` onto AL_BaseManga (series_id→id, url→siteUrl, title, image→coverImage, genres, associated→synonyms, bayesian_rating×10→meanScore, year→startDate.year, type→format).
 
-4. MangaUpdates Sync (plugin, v1.2.0)
+4. MangaUpdates Sync (plugin, v1.2.1)
    - Pushes reading state (progress, status, score) to MangaUpdates whenever seanime updates an entry — chapter "+1" bumps and manual edits.
    - Two hook pairs in init(): Pre hook stashes payload in $store, the matching Post hook pushes to MU only after AniList accepts the update (lock-step). Each callback is a self-contained module (goja serializes callbacks via .toString() into a fresh runtime, so helpers must be inlined).
    - Requests: POST /v1/lists/series/update (status + chapter; integer list_id), POST /v1/lists/series (add fallback), PUT /v1/series/{id}/rating (score; the list-update payload drops rating).
-   - Resolves MU series_id by: (1) custom-source fast path — decoded from the synthetic mediaId of `mangaupdates` custom-source entries, no network; (2) explicit user link in $storage via the manga-page **MU 🔍** button (relabeled **MU ✅** when linked); (3) opt-in title-search fallback (off by default, can mismatch).
+   - Resolves MU series_id by: (1) custom-source fast path — decoded from the synthetic mediaId of `mangaupdates` custom-source entries, no network; (2) explicit user link in $storage via the manga-page **🔓** button (relabeled **🔗** when linked); (3) opt-in title-search fallback (off by default, can mismatch).
    - Tray UI: **list view** (filterable LINKED entries, ⚙️ per row) and **detail view** per manga (AniList header with link badge, LINKED WITH MU row + Unlink, LINK TO / RELINK TO MU search). Page button + pinned tray auto-open detail for the current entry; auto-search only when unlinked.
    - Status map: CURRENT→0, PLANNING→1, COMPLETED→2, DROPPED→3, PAUSED→4, REPEATING→0. Score: AniList scoreRaw/10 clamped [0,10].
    - Config: username, password, autoSyncOnProgress, syncScore, autoMatchFallback, injectEntryIcon. Permissions: storage, anilist; networkAccess to api.mangaupdates.com.

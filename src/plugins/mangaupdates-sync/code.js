@@ -1,5 +1,11 @@
 // src/plugins/mangaupdates-sync/modules/on-post-update-entry.ts
 var onPostUpdateEntry = (...args) => {
+  var SHARED_LIB_NAME = "mangaupdates-sync";
+  var SOURCE_PREFIX = "ext_custom_source_mangaupdates|END|";
+  var MU_PENDING_PREFIX = "mu_pending_";
+  function muPendingKey(mediaId) {
+    return `${MU_PENDING_PREFIX}${mediaId}`;
+  }
   var EXT_ID_OFFSET = 2147483648;
   var LOCAL_ID_RANGE = 1099511627776;
   function isCustomSourceId(mediaId) {
@@ -8,8 +14,6 @@ var onPostUpdateEntry = (...args) => {
   function decodeLocalId(mediaId) {
     return (mediaId - EXT_ID_OFFSET) % LOCAL_ID_RANGE;
   }
-  var SHARED_LIB_NAME = "mangaupdates-sync";
-  var SOURCE_PREFIX = "ext_custom_source_mangaupdates|END|";
   var LINK_PREFIX = "mu_link_";
   function getMULink(mediaId) {
     return $storage.get(`${LINK_PREFIX}${mediaId}`);
@@ -42,6 +46,53 @@ var onPostUpdateEntry = (...args) => {
     }
     return bestScore >= minScore ? best : undefined;
   }
+  function isMuCustomSourceEntry(siteUrl) {
+    return !!siteUrl && siteUrl.indexOf(SOURCE_PREFIX) === 0;
+  }
+  async function resolveMuSeriesId(deps) {
+    const { mediaId, manga, mu } = deps;
+    if (isCustomSourceId(mediaId) && isMuCustomSourceEntry(manga?.siteUrl)) {
+      const localId = decodeLocalId(mediaId);
+      if (localId > 0) {
+        return { seriesId: String(localId), via: "custom-source" };
+      }
+    }
+    const link = getMULink(mediaId);
+    if (link?.id) return { seriesId: link.id, via: "link" };
+    if (!deps.autoMatchEnabled) return { via: "unlinked" };
+    const titles = mangaTitles(manga);
+    if (!titles.length) return { via: "unlinked" };
+    const match = pickBestMatch(titles, await mu.search(titles[0], 25));
+    if (match) {
+      setMULink(mediaId, { ...match, linkedAt: Date.now() });
+      return { seriesId: match.id, via: "auto", title: match.title };
+    }
+    return { via: "auto-miss", query: titles[0] };
+  }
+  function logResolveOutcome(log, mediaId, resolved) {
+    if ("seriesId" in resolved) {
+      if (resolved.via === "custom-source") {
+        log.info(
+          `custom-source mangaupdates media ${mediaId} -> series_id=${resolved.seriesId}`,
+        );
+      } else if (resolved.via === "auto") {
+        log.info(
+          `auto-matched media ${mediaId} -> MU ${resolved.seriesId} "${resolved.title}"`,
+        );
+      }
+      return resolved.seriesId;
+    }
+    if (resolved.via === "auto-miss") {
+      log.warn(
+        `auto-match: no MU result cleared the similarity threshold for "${resolved.query}"`,
+      );
+      return;
+    }
+    log.warn(
+      `no MU link for media ${mediaId} — open the entry page and click 'Link to MangaUpdates' to set one. Alternatively enable 'Auto-match fallback' in plugin settings.`,
+    );
+    return;
+  }
   var onPostUpdateEntry2 = (event) => {
     const { MUClient, createLogger } = $shared.use(SHARED_LIB_NAME);
     const log = createLogger();
@@ -51,7 +102,7 @@ var onPostUpdateEntry = (...args) => {
         event.next();
         return;
       }
-      const key = `mu_pending_${mediaId}`;
+      const key = muPendingKey(mediaId);
       const update = $store.get(key);
       if (!update) {
         event.next();
@@ -66,49 +117,15 @@ var onPostUpdateEntry = (...args) => {
           manga = undefined;
         }
         const mu = new MUClient((url, init) => fetch(url, init));
-        let externalId;
-        if (isCustomSourceId(mediaId)) {
-          const siteUrl = manga?.siteUrl;
-          if (siteUrl && siteUrl.indexOf(SOURCE_PREFIX) === 0) {
-            const localId = decodeLocalId(mediaId);
-            if (localId > 0) {
-              externalId = String(localId);
-              log.info(
-                `custom-source mangaupdates media ${mediaId} -> series_id=${externalId}`,
-              );
-            }
-          }
-        }
-        if (!externalId) {
-          const link = getMULink(mediaId);
-          if (link?.id) externalId = link.id;
-        }
-        if (
-          !externalId &&
-          ($getUserPreference("autoMatchFallback") ?? "false") === "true"
-        ) {
-          const titles = mangaTitles(manga);
-          if (titles.length) {
-            const match = pickBestMatch(titles, await mu.search(titles[0], 25));
-            if (match) {
-              externalId = match.id;
-              setMULink(mediaId, { ...match, linkedAt: Date.now() });
-              log.info(
-                `auto-matched media ${mediaId} -> MU ${match.id} "${match.title}"`,
-              );
-            } else {
-              log.warn(
-                `auto-match: no MU result cleared the similarity threshold for "${titles[0]}"`,
-              );
-            }
-          }
-        }
-        if (!externalId) {
-          log.warn(
-            `no MU link for media ${mediaId} — open the entry page and click 'Link to MangaUpdates' to set one. Alternatively enable 'Auto-match fallback' in plugin settings.`,
-          );
-          return;
-        }
+        const resolved = await resolveMuSeriesId({
+          mediaId,
+          manga,
+          mu,
+          autoMatchEnabled:
+            ($getUserPreference("autoMatchFallback") ?? "false") === "true",
+        });
+        const externalId = logResolveOutcome(log, mediaId, resolved);
+        if (!externalId) return;
         const seriesIdNum = Number(externalId);
         await mu.pushListEntry(seriesIdNum, {
           status: update.status,
@@ -136,6 +153,10 @@ var onPostUpdateEntry = (...args) => {
 // src/plugins/mangaupdates-sync/modules/on-pre-update-entry.ts
 var onPreUpdateEntry = (...args) => {
   var SHARED_LIB_NAME = "mangaupdates-sync";
+  var MU_PENDING_PREFIX = "mu_pending_";
+  function muPendingKey(mediaId) {
+    return `${MU_PENDING_PREFIX}${mediaId}`;
+  }
   var onPreUpdateEntry2 = (event) => {
     const { createLogger } = $shared.use(SHARED_LIB_NAME);
     const log = createLogger();
@@ -156,7 +177,7 @@ var onPreUpdateEntry = (...args) => {
         event.next();
         return;
       }
-      $store.set(`mu_pending_${event.mediaId}`, {
+      $store.set(muPendingKey(event.mediaId), {
         status: event.status,
         progress: event.progress,
         ...("scoreRaw" in event ? { scoreRaw: event.scoreRaw } : {}),
@@ -512,6 +533,16 @@ var register = (...args) => {
   }
   var mu_letter_default =
     '<svg stroke="currentColor" fill="currentColor" stroke-width="0" role="img" viewBox="0 0 24 24" class="text-lg" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path d="M0.5,21 L0.5,3 L4.5,3 L7.5,11 L10.5,3 L14.5,3 L14.5,21 L11.5,21 L11.5,11.5 L8.5,17 L6.5,17 L3.5,11.5 L3.5,21 Z M16.5,21 L16.5,3 L18.5,3 L18.5,17 L21.5,17 L21.5,3 L23.5,3 L23.5,21 Z"/></svg>';
+  function findListData(collection, mediaId) {
+    for (const list of collection.lists ?? []) {
+      for (const entry of list.entries ?? []) {
+        if (entry?.media && Number(entry.media.id) === Number(mediaId)) {
+          return entry.listData;
+        }
+      }
+    }
+    return;
+  }
   var SHARED_LIB_NAME = "mangaupdates-sync";
   var SOURCE_PREFIX = "ext_custom_source_mangaupdates|END|";
   var LINK_PREFIX = "mu_link_";
@@ -536,6 +567,21 @@ var register = (...args) => {
       ids.push(parseInt(rest, 10));
     }
     return ids;
+  }
+  function isMuCustomSourceEntry(siteUrl) {
+    return !!siteUrl && siteUrl.indexOf(SOURCE_PREFIX) === 0;
+  }
+  function resolveLinkedMuInfo(mediaId) {
+    let media;
+    try {
+      media = $anilist.getManga(mediaId);
+    } catch (_) {
+      media = undefined;
+    }
+    if (!media || isMuCustomSourceEntry(media.siteUrl)) return {};
+    const link = getMULink(mediaId);
+    if (!link) return {};
+    return { url: link.url, title: link.title };
   }
   var register2 = (ctx) => {
     const { MUClient, createLogger } = $shared.use(SHARED_LIB_NAME);
@@ -565,7 +611,7 @@ var register = (...args) => {
       if (id <= 0) return false;
       const media = getMedia(id);
       if (!media) return false;
-      return !(media.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0);
+      return !isMuCustomSourceEntry(media.siteUrl);
     };
     const resolveEntryTitle = (media, id) =>
       (media.title &&
@@ -573,20 +619,8 @@ var register = (...args) => {
           media.title.userPreferred ||
           media.title.romaji)) ||
       `#${id}`;
-    ctx.screen.onNavigate((e) => {
-      const id = e.searchParams?.id;
-      if (id) {
-        const parsed = parseInt(id, 10);
-        if (!Number.isNaN(parsed) && parsed > 0) {
-          currentMediaId.set(parsed);
-          return;
-        }
-      }
-      currentMediaId.set(0);
-    });
-    ctx.screen.loadCurrent();
     const btn = ctx.action.newMangaPageButton({
-      label: "MU \uD83D\uDD0D",
+      label: "\uD83D\uDD13",
       intent: "gray-subtle",
       tooltipText: "Link to MangaUpdates",
     });
@@ -603,7 +637,7 @@ var register = (...args) => {
       } catch (_) {
         media = undefined;
       }
-      if (media?.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0) {
+      if (isMuCustomSourceEntry(media?.siteUrl)) {
         btn.unmount();
         tray.updateBadge({ number: 0 });
         return;
@@ -611,32 +645,21 @@ var register = (...args) => {
       btn.mount();
       const link = getMULink(id);
       if (!link) {
-        btn.setLabel("MU \uD83D\uDD0D");
-        btn.setIntent("gray-subtle");
+        btn.setLabel("\uD83D\uDD13");
         btn.setTooltipText("Link to MangaUpdates");
       } else {
-        btn.setLabel("MU ✅");
-        btn.setIntent("primary-subtle");
-        btn.setTooltipText(`Linked: ${link.title || `#${link.id}`}`);
+        btn.setLabel("\uD83D\uDD17");
+        btn.setTooltipText(
+          `Linked to MangaUpdates · ${link.title || `#${link.id}`}`,
+        );
       }
       tray.updateBadge({ number: 0 });
     }, [currentMediaId]);
     const MU_ICON_KEY = "mu";
-    const resolveMULink = (mediaId) => {
-      let media;
-      try {
-        media = $anilist.getManga(mediaId);
-      } catch (_) {
-        media = undefined;
-      }
-      if (!media) return {};
-      if (media.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0) {
-        return {};
-      }
-      const link = getMULink(mediaId);
-      if (!link) return {};
-      return { url: link.url, title: link.title };
-    };
+    let muIconInjecting = false;
+    const muIconInnerHtml = `<button type="button" class="UI-Button_root whitespace-nowrap font-semibold rounded-lg inline-flex items-center transition ease-in text-center justify-center focus-visible:outline-none focus-visible:ring-2 ring-offset-1 ring-offset-[--background] focus-visible:ring-[--ring] disabled:opacity-50 disabled:pointer-events-none shadow-none text-[--gray] border border-transparent bg-transparent hover:underline active:text-gray-700 dark:text-gray-300 dark:active:text-gray-200 UI-IconButton_root p-0 flex-none text-xl h-8 w-8 px-0"><span class="md:inline-block">${mu_letter_default.trim()}</span></button>`;
+    const isMuIconMisplaced = ($doc, anchorId) =>
+      $doc(`#${anchorId}`).parent().children("a").length() > 1;
     const [, refetchEntryPage] = ctx.dom.observe(
       "[data-manga-entry-page]",
       async (els) => {
@@ -645,46 +668,73 @@ var register = (...args) => {
         }
         const el = els[0];
         if (!el) return;
-        let mediaId;
+        if (muIconInjecting) return;
+        muIconInjecting = true;
         try {
-          const raw = (await el.getDataAttribute("media")) ?? "{}";
-          const data = JSON.parse(raw);
-          if (typeof data.id === "number") mediaId = data.id;
-        } catch (_) {}
-        if (!mediaId) return;
-        const linkInfo = resolveMULink(mediaId);
-        if (!linkInfo.url) return;
-        const $ = LoadDoc(el.innerHTML ?? "");
-        const btnALId = $("[data-manga-meta-section-buttons-container] a").attr(
-          "id",
-        );
-        if (!btnALId) return;
-        const existingId = $(
-          `[data-manga-meta-section-buttons-container] [data-mu-sync-key="${MU_ICON_KEY}"]`,
-        ).attr("id");
-        const titleAttr = linkInfo.title
-          ? `MangaUpdates: ${linkInfo.title}`
-          : "View on MangaUpdates";
-        if (existingId) {
-          const existing = ctx.dom.asElement(existingId);
-          existing.setAttribute("href", linkInfo.url);
-          existing.setAttribute("title", titleAttr);
-          return;
+          const mediaId = currentMediaId.get();
+          if (!mediaId) return;
+          const linkInfo = resolveLinkedMuInfo(mediaId);
+          if (!linkInfo.url) return;
+          const $ = LoadDoc(String(el.innerHTML ?? ""));
+          const containerId = $(
+            "[data-manga-meta-section-buttons-container]",
+          ).attr("id");
+          if (!containerId) return;
+          const titleAttr = linkInfo.title
+            ? `MangaUpdates: ${linkInfo.title}`
+            : "View on MangaUpdates";
+          const containerEl = ctx.dom.asElement(containerId);
+          const liveMarkers =
+            (await containerEl.query(`[data-mu-sync-key="${MU_ICON_KEY}"]`)) ??
+            [];
+          let keeperId;
+          for (const marker of liveMarkers) {
+            const anchorId = String(marker.id ?? "");
+            if (!anchorId) continue;
+            const misplaced = isMuIconMisplaced($, anchorId);
+            if (!misplaced && !keeperId) {
+              keeperId = anchorId;
+              continue;
+            }
+            try {
+              ctx.dom.asElement(anchorId).remove();
+            } catch {}
+          }
+          if (keeperId) {
+            const existing = ctx.dom.asElement(keeperId);
+            existing.setAttribute("href", linkInfo.url);
+            existing.setAttribute("title", titleAttr);
+            return;
+          }
+          const a = await ctx.dom.createElement("a");
+          a.setAttribute("href", linkInfo.url);
+          a.setAttribute("target", "_blank");
+          a.setAttribute("rel", "noopener noreferrer");
+          a.setAttribute("data-mu-sync-key", MU_ICON_KEY);
+          a.setAttribute("title", titleAttr);
+          a.setProperty("className", ["cursor-pointer"]);
+          a.setInnerHTML(muIconInnerHtml);
+          const wrap = await ctx.dom.createElement("div");
+          wrap.setAttribute("data-state", "closed");
+          wrap.append(a);
+          containerEl.append(wrap);
+        } catch (err) {
+          log.warn("MU icon injection failed:", err);
+        } finally {
+          muIconInjecting = false;
         }
-        const a = await ctx.dom.createElement("a");
-        a.setAttribute("href", linkInfo.url);
-        a.setAttribute("target", "_blank");
-        a.setAttribute("rel", "noopener noreferrer");
-        a.setAttribute("data-mu-sync-key", MU_ICON_KEY);
-        a.setAttribute("title", titleAttr);
-        a.setProperty("className", ["cursor-pointer"]);
-        a.setInnerHTML(
-          `<button type="button" class="UI-Button_root whitespace-nowrap font-semibold rounded-lg inline-flex items-center transition ease-in text-center justify-center focus-visible:outline-none focus-visible:ring-2 ring-offset-1 ring-offset-[--background] focus-visible:ring-[--ring] disabled:opacity-50 disabled:pointer-events-none shadow-none text-[--gray] border border-transparent bg-transparent hover:underline active:text-gray-700 dark:text-gray-300 dark:active:text-gray-200 UI-IconButton_root p-0 flex-none text-xl h-8 w-8 px-0"><span class="md:inline-block">${mu_letter_default.trim()}</span></button>`,
-        );
-        ctx.dom.asElement(btnALId).after(a);
       },
       { withInnerHTML: true, identifyChildren: true },
     );
+    ctx.screen.onNavigate((e) => {
+      const isManga = String(e.pathname ?? "").includes("/manga/");
+      const raw = isManga ? e.searchParams?.id : "";
+      const id = raw ? parseInt(String(raw), 10) : 0;
+      const mediaId = Number.isFinite(id) ? id : 0;
+      currentMediaId.set(mediaId);
+      if (mediaId > 0) refetchEntryPage();
+    });
+    ctx.screen.loadCurrent();
     const unlinkMedia = (id) => {
       removeMULink(id);
       ctx.toast.info("Link cleared");
@@ -702,14 +752,7 @@ var register = (...args) => {
       let listData;
       try {
         const collection = await ctx.manga.getCollection();
-        outer: for (const list of collection.lists || []) {
-          for (const entry of list.entries || []) {
-            if (entry?.media && entry.media.id === mediaId) {
-              listData = entry.listData;
-              break outer;
-            }
-          }
-        }
+        listData = findListData(collection, mediaId);
       } catch (err) {
         log.warn("getCollection failed:", err);
       }
@@ -1100,8 +1143,7 @@ var register = (...args) => {
     function renderLinkedList() {
       const id = currentMediaId.get();
       const media = id ? getMedia(id) : undefined;
-      const isCustomSource =
-        !!media?.siteUrl && media.siteUrl.indexOf(SOURCE_PREFIX) === 0;
+      const isCustomSource = isMuCustomSourceEntry(media?.siteUrl);
       const blocks = [
         trayHeader(tray, {
           subtitle: "Link AniList entries to MangaUpdates",

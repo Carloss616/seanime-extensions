@@ -14,7 +14,10 @@ export function muRecordYear(record: MURecord): number | undefined {
 }
 
 // Canonical series URL, falling back to the public site link derived from the
-// numeric series_id when the record carries no `url`.
+// numeric series_id when the record carries no `url`. The legacy
+// `series.html?id=<num>` endpoint 308-redirects to the base36 slug page
+// server-side; `/series/<num>` only resolves client-side via MU's SPA (bare
+// server response is 404), so the legacy form is the robust fallback.
 export function muRecordUrl(record: MURecord): string {
   return (
     record.url ||

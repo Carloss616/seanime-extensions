@@ -11,14 +11,9 @@
 // listMULinkIds() below matches only top-level `mu_link_<digits>` keys, which
 // both skips the sub-keys and dedupes them back to the parent id.
 
-import type { MUResult } from "./mu-client";
+import type { MULink } from "./types";
 
-// A persisted link IS a MangaUpdates series (MUResult) plus when it was linked.
-// Sharing the MUResult shape means a search result can be stored verbatim:
-// setMULink(id, { ...result, linkedAt: Date.now() }).
-export interface MULink extends MUResult {
-  linkedAt: number;
-}
+export type { MULink, MUResult } from "./types";
 
 const LINK_PREFIX = "mu_link_";
 

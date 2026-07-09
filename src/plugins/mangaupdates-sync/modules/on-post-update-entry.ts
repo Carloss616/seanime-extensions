@@ -1,11 +1,42 @@
+import { muPendingKey, SHARED_LIB_NAME } from "../utils/constants";
 import {
-  decodeLocalId,
-  isCustomSourceId,
-} from "../../../_utils/custom-source-id";
-import { SHARED_LIB_NAME, SOURCE_PREFIX } from "../utils/constants";
-import { getMULink, setMULink } from "../utils/link-store";
-import { mangaTitles, pickBestMatch } from "../utils/match";
+  type MuSeriesIdResolve,
+  resolveMuSeriesId,
+} from "../utils/resolve-series-id";
+import type { MuPendingUpdate } from "../utils/types";
 import type { sharedLib } from "./shared-lib";
+
+function logResolveOutcome(
+  log: Console,
+  mediaId: number,
+  resolved: MuSeriesIdResolve,
+): string | undefined {
+  if ("seriesId" in resolved) {
+    if (resolved.via === "custom-source") {
+      log.info(
+        `custom-source mangaupdates media ${mediaId} -> series_id=${resolved.seriesId}`,
+      );
+    } else if (resolved.via === "auto") {
+      log.info(
+        `auto-matched media ${mediaId} -> MU ${resolved.seriesId} "${resolved.title}"`,
+      );
+    }
+    return resolved.seriesId;
+  }
+  if (resolved.via === "auto-miss") {
+    log.warn(
+      `auto-match: no MU result cleared the similarity threshold for "${resolved.query}"`,
+    );
+    return undefined;
+  }
+  log.warn(
+    "no MU link for media " +
+      mediaId +
+      " — open the entry page and click 'Link to MangaUpdates' to set one." +
+      " Alternatively enable 'Auto-match fallback' in plugin settings.",
+  );
+  return undefined;
+}
 
 export const onPostUpdateEntry = (
   event: $app.PostUpdateEntryProgressEvent | $app.PostUpdateEntryEvent,
@@ -20,12 +51,8 @@ export const onPostUpdateEntry = (
       event.next();
       return;
     }
-    const key = `mu_pending_${mediaId}`;
-    const update = $store.get<{
-      status?: $app.AL_MediaListStatus;
-      progress?: number;
-      scoreRaw?: number;
-    }>(key);
+    const key = muPendingKey(mediaId);
+    const update = $store.get<MuPendingUpdate>(key);
     if (!update) {
       event.next();
       return;
@@ -42,70 +69,15 @@ export const onPostUpdateEntry = (
 
       const mu = new MUClient((url, init) => fetch(url, init));
 
-      // Resolve MU series_id.
-      let externalId: string | undefined;
-
-      // 1. Custom-source MU — decode local id from the synthetic mediaId.
-      if (isCustomSourceId(mediaId)) {
-        const siteUrl = manga?.siteUrl;
-        if (siteUrl && siteUrl.indexOf(SOURCE_PREFIX) === 0) {
-          const localId = decodeLocalId(mediaId);
-          if (localId > 0) {
-            externalId = String(localId);
-            log.info(
-              "custom-source mangaupdates media " +
-                mediaId +
-                " -> series_id=" +
-                externalId,
-            );
-          }
-        }
-      }
-
-      // 2. Explicit link in $storage (set manually via the "Link to
-      //    MangaUpdates" button on the entry page). NOT $store, which
-      //    is the cross-runtime in-memory channel used to pass Pre→Post
-      //    payloads.
-      if (!externalId) {
-        const link = getMULink(mediaId);
-        if (link?.id) externalId = link.id;
-      }
-
-      // 3. Opt-in title-search fallback. Default OFF for new installs (safer).
-      //    Verifies the candidate against ALL known AniList titles with
-      //    seanime's native scanner matcher and only auto-links above a
-      //    similarity threshold — the bare top hit matches badly (spin-offs,
-      //    adaptations, partial-name series) and a wrong link gets cached.
-      if (
-        !externalId &&
-        ($getUserPreference("autoMatchFallback") ?? "false") === "true"
-      ) {
-        const titles = mangaTitles(manga);
-        if (titles.length) {
-          const match = pickBestMatch(titles, await mu.search(titles[0], 25));
-          if (match) {
-            externalId = match.id;
-            setMULink(mediaId, { ...match, linkedAt: Date.now() });
-            log.info(
-              `auto-matched media ${mediaId} -> MU ${match.id} "${match.title}"`,
-            );
-          } else {
-            log.warn(
-              `auto-match: no MU result cleared the similarity threshold for "${titles[0]}"`,
-            );
-          }
-        }
-      }
-
-      if (!externalId) {
-        log.warn(
-          "no MU link for media " +
-            mediaId +
-            " — open the entry page and click 'Link to MangaUpdates' to set one." +
-            " Alternatively enable 'Auto-match fallback' in plugin settings.",
-        );
-        return;
-      }
+      const resolved = await resolveMuSeriesId({
+        mediaId,
+        manga,
+        mu,
+        autoMatchEnabled:
+          ($getUserPreference("autoMatchFallback") ?? "false") === "true",
+      });
+      const externalId = logResolveOutcome(log, mediaId, resolved);
+      if (!externalId) return;
 
       const seriesIdNum = Number(externalId);
       await mu.pushListEntry(seriesIdNum, {

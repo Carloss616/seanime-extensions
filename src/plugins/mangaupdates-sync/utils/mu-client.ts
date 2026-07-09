@@ -19,16 +19,9 @@ export function toBaseResult(record: MUSearch.Record): MUResult {
   };
 }
 
-// A normalized MangaUpdates series — the shape the UI and the link store both
-// consume. Produced by `MUClient.searchSeries` from the raw MUSearch.Response.
-// `MULink` (utils/link-store.ts) extends this with `linkedAt`.
-export interface MUResult {
-  id: string;
-  title: string;
-  year?: number;
-  cover?: string;
-  url: string;
-}
+import type { MUResult } from "./types";
+
+export type { MUResult } from "./types";
 
 export class MUClient extends MUClientBase {
   private declare tokenKey: string;

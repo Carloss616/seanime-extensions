@@ -1,4 +1,5 @@
-import { SHARED_LIB_NAME } from "../utils/constants";
+import { muPendingKey, SHARED_LIB_NAME } from "../utils/constants";
+import type { MuPendingUpdate } from "../utils/types";
 import type { sharedLib } from "./shared-lib";
 
 export const onPreUpdateEntry = (
@@ -25,11 +26,11 @@ export const onPreUpdateEntry = (
       event.next();
       return;
     }
-    $store.set(`mu_pending_${event.mediaId}`, {
+    $store.set(muPendingKey(event.mediaId), {
       status: event.status,
       progress: event.progress,
       ...("scoreRaw" in event ? { scoreRaw: event.scoreRaw } : {}),
-    });
+    } satisfies MuPendingUpdate);
   } catch (e) {
     log.error("pre-edit error:", e);
   }

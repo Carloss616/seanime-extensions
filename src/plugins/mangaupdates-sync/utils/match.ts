@@ -1,4 +1,4 @@
-import type { MUResult } from "./mu-client";
+import type { MUResult } from "./types";
 
 // De-duped, non-empty AniList titles to score a MU candidate against.
 // Skips `native` (CJK) — MU titles are latin/english, so it never matches.
