@@ -22,3 +22,19 @@ export function isBadKind(kind: ResultKind): boolean {
     kind === "not-matched" || kind === "error-found" || kind === "outdated"
   );
 }
+
+// seanime's getChapterContainer THROWS both when a provider searched fine but
+// found no matching series ("not found") AND on a genuine fetch failure
+// (network / HTTP / parse). The message is the only signal that tells them
+// apart — without it every no-match reads as "error". A match here means "no
+// series found" (→ treat as no-match, matched:false), anything else is a real
+// error.
+// SPIKE: exact strings unconfirmed against a live seanime run — readContainer
+// console.warns unmatched (treated-as-error) messages so this pattern can be
+// widened from real output.
+const NO_MATCH_RX =
+  /no results|not found|no chapters|no manga|could ?n'?o?t find|not matched|no search result|0 result/i;
+
+export function isNoMatchError(message: string): boolean {
+  return NO_MATCH_RX.test(String(message));
+}

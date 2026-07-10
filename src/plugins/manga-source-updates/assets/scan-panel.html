@@ -1,25 +1,136 @@
 <!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><style>
+<html lang="en"><head><meta charset="UTF-8"><title>MSU scan</title><style>
+/* seanime's Tailwind + theme tokens are NOT loaded inside a webview iframe
+   (it's a blank, transparent sandbox — see the webview docs). So mirror the
+   native look here: reuse seanime's class-name vocabulary (UI-Modal card,
+   UI-Badge__root, UI-Button_root) but define the tokens + component styles
+   locally. Dark is the default; prefers-color-scheme swaps to light. */
+:root{
+  color-scheme:dark light;
+  --paper:#0d0d0f;
+  --foreground:#e4e4e7;
+  --muted:#8b8b93;
+  --border:rgb(255 255 255 / 6%);
+  --subtle:rgb(255 255 255 / 6%);
+  --track:rgb(255 255 255 / 10%);
+  --red:#ef4444;
+  --red-subtle:rgb(239 68 68 / 12%);
+  --red-subtle-hover:rgb(239 68 68 / 20%);
+  --brand:#3b82f6;
+  --radius-md:.5rem;
+  --radius-2xl:1rem;
+}
+@media (prefers-color-scheme:light){
+  :root{
+    --paper:#ffffff;
+    --foreground:#18181b;
+    --muted:#71717a;
+    --border:rgb(0 0 0 / 8%);
+    --subtle:rgb(0 0 0 / 5%);
+    --track:rgb(0 0 0 / 8%);
+    --red-subtle:rgb(239 68 68 / 10%);
+    --red-subtle-hover:rgb(239 68 68 / 18%);
+  }
+}
 *{box-sizing:border-box}
-html,body{margin:0;width:100%;height:100%;overflow:hidden;color-scheme:dark}
+html,body{margin:0;width:100%;height:100%;overflow:hidden}
 body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
-.card{width:100%;height:100%;background:#10161f;color:#e2e8f0;border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:12px 14px;box-shadow:0 6px 18px rgba(0,0,0,.35);display:flex;flex-direction:column;justify-content:center}
-.row{display:flex;align-items:center;justify-content:space-between;gap:12px}
-.count{font-size:.8rem;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
-.title{font-size:.75rem;opacity:.6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.bar{height:6px;border-radius:3px;background:rgba(255,255,255,.1);margin-top:9px;overflow:hidden}
-.fill{height:100%;background:#3b82f6;width:0%;transition:width .25s ease}
+
+/* UI-Modal-like floating card (bg-[--paper] + subtle border + rounded-2xl + shadow-xl).
+   Row layout: full-height cover on the left, a content column on the right whose
+   body sits on top and an action footer at the bottom — the footer keeps the
+   Cancel button clear of the top drag zone. */
+.UI-Modal__content{
+  width:100%;height:100%;display:flex;align-items:stretch;gap:10px;
+  padding:10px 12px;color:var(--foreground);
+  background:var(--paper);border:1px solid var(--border);
+  border-radius:var(--radius-2xl);box-shadow:0 10px 30px rgb(0 0 0 / 35%);
+}
+/* cover box: spans the full card height, rounded-[--radius-md], object-cover —
+   clickable (opens the entry). */
+.cover{
+  flex:0 0 auto;width:40px;height:100%;border-radius:var(--radius-md);
+  object-fit:cover;background:var(--subtle);display:none;cursor:pointer;
+  transition:opacity .15s ease;
+}
+.cover:hover{opacity:.82}
+/* right column: body (grows) + footer */
+.content{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:8px}
+/* body: count/title/progress. This is the top → drag zone. */
+.body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:5px}
+.top{display:flex;flex-direction:column;gap:1px;min-width:0}
+
+/* UI-Badge__root (neutral / gray variant from seanime) */
+.UI-Badge__root{
+  display:inline-flex;align-items:center;align-self:flex-start;height:1.5rem;padding:0 .5rem;
+  font-size:.72rem;font-weight:600;letter-spacing:.02em;line-height:1;
+  border-radius:9999px;background:var(--subtle);color:var(--foreground);
+  border:1px solid var(--border);font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+.title{font-size:.72rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.bar{width:100%;height:6px;border-radius:3px;background:var(--track);overflow:hidden}
+.fill{height:100%;background:var(--brand);width:0%;transition:width .25s ease}
+
+/* footer: right-aligned action row, like the dialog's `flex gap-2` button bar */
+.footer{display:flex;align-items:center;justify-content:flex-end;gap:8px}
+
+/* UI-Button_root — alert/red subtle variant (text-[--red] bg-red-50 dark:bg-opacity-10) */
+.UI-Button_root{
+  cursor:pointer;display:inline-flex;align-items:center;gap:.25rem;flex:0 0 auto;
+  font-size:.75rem;font-weight:500;line-height:1;height:2rem;padding:0 .75rem;
+  border-radius:var(--radius-md);border:1px solid transparent;
+  transition:all .15s cubic-bezier(.25,1,.5,1);
+}
+.UI-Button_root--alert{color:var(--red);background:var(--red-subtle)}
+.UI-Button_root--alert:hover{background:var(--red-subtle-hover)}
+.UI-Button_root--alert:active{transform:scale(.98)}
 </style></head><body>
-<div class="card">
-  <div class="row"><span class="count" id="count">Scanning…</span><span class="title" id="title"></span></div>
-  <div class="bar"><div class="fill" id="fill"></div></div>
+<div class="UI-Modal__content">
+  <img class="cover" id="cover" alt="cover">
+  <div class="content">
+    <div class="body">
+      <div class="top">
+        <span class="UI-Badge__root" id="count">Scanning…</span>
+        <div class="title" id="title"></div>
+      </div>
+      <div class="bar"><div class="fill" id="fill"></div></div>
+    </div>
+    <div class="footer">
+      <button class="UI-Button_root UI-Button_root--alert" id="cancel" type="button">⌫ Cancel</button>
+    </div>
+  </div>
 </div>
 <script>
+  var cancelBtn = document.getElementById("cancel");
+  var cover = document.getElementById("cover");
+  var lastMediaId = 0;
+  // Stop the drag from starting on an interactive element (seanime's drag handler
+  // listens inside the iframe), otherwise a mousedown begins a window drag and the
+  // click never fires.
+  ["mousedown","pointerdown","touchstart"].forEach((evt) => {
+    cancelBtn.addEventListener(evt, (e) => e.stopPropagation());
+    cover.addEventListener(evt, (e) => e.stopPropagation());
+  });
+  cancelBtn.addEventListener("click", () => {
+    window.webview.send("panel-cancel", {});
+  });
+  cover.addEventListener("click", () => {
+    if (lastMediaId) window.webview.send("panel-open", lastMediaId);
+  });
   window.webview.on("scan", (s)=> {
     if(!s) return;
+    lastMediaId = s.mediaId || 0;
     var word = s.kind === "sources" ? "Checking sources" : "Scanning manga";
-    document.getElementById("count").textContent = `${word} ${s.done}/${s.total}`;
+    document.getElementById("count").textContent =
+      s.cancelling ? "Cancelling…" : `${word} ${s.done}/${s.total}`;
     document.getElementById("title").textContent = s.title || "";
+    // Once cancelling, the request is in — freeze the button so it can't re-fire
+    // (disabled already blocks the click; opacity just dims it).
+    cancelBtn.disabled = !!s.cancelling;
+    cancelBtn.style.opacity = s.cancelling ? "0.5" : "1";
+    if (s.cover) { cover.src = s.cover; cover.style.display = "block"; }
+    else { cover.removeAttribute("src"); cover.style.display = "none"; }
     var pct = s.total ? Math.round(s.done / s.total * 100) : 0;
     document.getElementById("fill").style.width = `${pct}%`;
   });

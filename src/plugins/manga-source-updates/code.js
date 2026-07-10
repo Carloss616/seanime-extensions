@@ -422,28 +422,149 @@ var register = (...args) => {
     }
     return tray.flex(row, { gap: 3, style: { alignItems: "center" } });
   }
+  function createLogger() {
+    const prefix = `[${"manga-source-updates"}]`;
+    return {
+      log: (...args2) => console.log(prefix, ...args2),
+      info: (...args2) => console.info(prefix, ...args2),
+      warn: (...args2) => console.warn(prefix, ...args2),
+      error: (...args2) => console.error(prefix, ...args2),
+      debug: (...args2) => console.debug(prefix, ...args2),
+    };
+  }
   var scan_panel_default = `<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><style>
+<html lang="en"><head><meta charset="UTF-8"><title>MSU scan</title><style>
+/* seanime's Tailwind + theme tokens are NOT loaded inside a webview iframe
+   (it's a blank, transparent sandbox — see the webview docs). So mirror the
+   native look here: reuse seanime's class-name vocabulary (UI-Modal card,
+   UI-Badge__root, UI-Button_root) but define the tokens + component styles
+   locally. Dark is the default; prefers-color-scheme swaps to light. */
+:root{
+  color-scheme:dark light;
+  --paper:#0d0d0f;
+  --foreground:#e4e4e7;
+  --muted:#8b8b93;
+  --border:rgb(255 255 255 / 6%);
+  --subtle:rgb(255 255 255 / 6%);
+  --track:rgb(255 255 255 / 10%);
+  --red:#ef4444;
+  --red-subtle:rgb(239 68 68 / 12%);
+  --red-subtle-hover:rgb(239 68 68 / 20%);
+  --brand:#3b82f6;
+  --radius-md:.5rem;
+  --radius-2xl:1rem;
+}
+@media (prefers-color-scheme:light){
+  :root{
+    --paper:#ffffff;
+    --foreground:#18181b;
+    --muted:#71717a;
+    --border:rgb(0 0 0 / 8%);
+    --subtle:rgb(0 0 0 / 5%);
+    --track:rgb(0 0 0 / 8%);
+    --red-subtle:rgb(239 68 68 / 10%);
+    --red-subtle-hover:rgb(239 68 68 / 18%);
+  }
+}
 *{box-sizing:border-box}
-html,body{margin:0;width:100%;height:100%;overflow:hidden;color-scheme:dark}
+html,body{margin:0;width:100%;height:100%;overflow:hidden}
 body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
-.card{width:100%;height:100%;background:#10161f;color:#e2e8f0;border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:12px 14px;box-shadow:0 6px 18px rgba(0,0,0,.35);display:flex;flex-direction:column;justify-content:center}
-.row{display:flex;align-items:center;justify-content:space-between;gap:12px}
-.count{font-size:.8rem;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
-.title{font-size:.75rem;opacity:.6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.bar{height:6px;border-radius:3px;background:rgba(255,255,255,.1);margin-top:9px;overflow:hidden}
-.fill{height:100%;background:#3b82f6;width:0%;transition:width .25s ease}
+
+/* UI-Modal-like floating card (bg-[--paper] + subtle border + rounded-2xl + shadow-xl).
+   Row layout: full-height cover on the left, a content column on the right whose
+   body sits on top and an action footer at the bottom — the footer keeps the
+   Cancel button clear of the top drag zone. */
+.UI-Modal__content{
+  width:100%;height:100%;display:flex;align-items:stretch;gap:10px;
+  padding:10px 12px;color:var(--foreground);
+  background:var(--paper);border:1px solid var(--border);
+  border-radius:var(--radius-2xl);box-shadow:0 10px 30px rgb(0 0 0 / 35%);
+}
+/* cover box: spans the full card height, rounded-[--radius-md], object-cover —
+   clickable (opens the entry). */
+.cover{
+  flex:0 0 auto;width:40px;height:100%;border-radius:var(--radius-md);
+  object-fit:cover;background:var(--subtle);display:none;cursor:pointer;
+  transition:opacity .15s ease;
+}
+.cover:hover{opacity:.82}
+/* right column: body (grows) + footer */
+.content{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:8px}
+/* body: count/title/progress. This is the top → drag zone. */
+.body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:5px}
+.top{display:flex;flex-direction:column;gap:1px;min-width:0}
+
+/* UI-Badge__root (neutral / gray variant from seanime) */
+.UI-Badge__root{
+  display:inline-flex;align-items:center;align-self:flex-start;height:1.5rem;padding:0 .5rem;
+  font-size:.72rem;font-weight:600;letter-spacing:.02em;line-height:1;
+  border-radius:9999px;background:var(--subtle);color:var(--foreground);
+  border:1px solid var(--border);font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+.title{font-size:.72rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.bar{width:100%;height:6px;border-radius:3px;background:var(--track);overflow:hidden}
+.fill{height:100%;background:var(--brand);width:0%;transition:width .25s ease}
+
+/* footer: right-aligned action row, like the dialog's \`flex gap-2\` button bar */
+.footer{display:flex;align-items:center;justify-content:flex-end;gap:8px}
+
+/* UI-Button_root — alert/red subtle variant (text-[--red] bg-red-50 dark:bg-opacity-10) */
+.UI-Button_root{
+  cursor:pointer;display:inline-flex;align-items:center;gap:.25rem;flex:0 0 auto;
+  font-size:.75rem;font-weight:500;line-height:1;height:2rem;padding:0 .75rem;
+  border-radius:var(--radius-md);border:1px solid transparent;
+  transition:all .15s cubic-bezier(.25,1,.5,1);
+}
+.UI-Button_root--alert{color:var(--red);background:var(--red-subtle)}
+.UI-Button_root--alert:hover{background:var(--red-subtle-hover)}
+.UI-Button_root--alert:active{transform:scale(.98)}
 </style></head><body>
-<div class="card">
-  <div class="row"><span class="count" id="count">Scanning…</span><span class="title" id="title"></span></div>
-  <div class="bar"><div class="fill" id="fill"></div></div>
+<div class="UI-Modal__content">
+  <img class="cover" id="cover" alt="cover">
+  <div class="content">
+    <div class="body">
+      <div class="top">
+        <span class="UI-Badge__root" id="count">Scanning…</span>
+        <div class="title" id="title"></div>
+      </div>
+      <div class="bar"><div class="fill" id="fill"></div></div>
+    </div>
+    <div class="footer">
+      <button class="UI-Button_root UI-Button_root--alert" id="cancel" type="button">⌫ Cancel</button>
+    </div>
+  </div>
 </div>
 <script>
+  var cancelBtn = document.getElementById("cancel");
+  var cover = document.getElementById("cover");
+  var lastMediaId = 0;
+  // Stop the drag from starting on an interactive element (seanime's drag handler
+  // listens inside the iframe), otherwise a mousedown begins a window drag and the
+  // click never fires.
+  ["mousedown","pointerdown","touchstart"].forEach((evt) => {
+    cancelBtn.addEventListener(evt, (e) => e.stopPropagation());
+    cover.addEventListener(evt, (e) => e.stopPropagation());
+  });
+  cancelBtn.addEventListener("click", () => {
+    window.webview.send("panel-cancel", {});
+  });
+  cover.addEventListener("click", () => {
+    if (lastMediaId) window.webview.send("panel-open", lastMediaId);
+  });
   window.webview.on("scan", (s)=> {
     if(!s) return;
+    lastMediaId = s.mediaId || 0;
     var word = s.kind === "sources" ? "Checking sources" : "Scanning manga";
-    document.getElementById("count").textContent = \`\${word} \${s.done}/\${s.total}\`;
+    document.getElementById("count").textContent =
+      s.cancelling ? "Cancelling…" : \`\${word} \${s.done}/\${s.total}\`;
     document.getElementById("title").textContent = s.title || "";
+    // Once cancelling, the request is in — freeze the button so it can't re-fire
+    // (disabled already blocks the click; opacity just dims it).
+    cancelBtn.disabled = !!s.cancelling;
+    cancelBtn.style.opacity = s.cancelling ? "0.5" : "1";
+    if (s.cover) { cover.src = s.cover; cover.style.display = "block"; }
+    else { cover.removeAttribute("src"); cover.style.display = "none"; }
     var pct = s.total ? Math.round(s.done / s.total * 100) : 0;
     document.getElementById("fill").style.width = \`\${pct}%\`;
   });
@@ -498,6 +619,11 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       kind === "not-matched" || kind === "error-found" || kind === "outdated"
     );
   }
+  var NO_MATCH_RX =
+    /no results|not found|no chapters|no manga|could ?n'?o?t find|not matched|no search result|0 result/i;
+  function isNoMatchError(message) {
+    return NO_MATCH_RX.test(String(message));
+  }
   function readingEntries(col) {
     const out = [];
     for (const list of col.lists ?? []) {
@@ -525,6 +651,15 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   };
   var reasonLabel = (key) => REASONS[key].badge;
   var reasonIntent = (key) => REASONS[key].intent;
+  function clearedExclusions(excluded, pinned, mediaId) {
+    if (mediaId == null) return { excluded: {}, pinned: {} };
+    const key = String(mediaId);
+    const nextExcluded = { ...excluded };
+    const nextPinned = { ...pinned };
+    delete nextExcluded[key];
+    delete nextPinned[key];
+    return { excluded: nextExcluded, pinned: nextPinned };
+  }
   function createHeaderProgressReader(ctx) {
     let cache = null;
     const read = async (badgeEl) => {
@@ -678,11 +813,13 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     return String(t.userPreferred ?? t.english ?? t.romaji ?? "Unknown");
   }
   var register2 = (ctx) => {
+    const log = createLogger();
     const tray = ctx.newTray({
       iconUrl:
         "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/manga-source-updates/assets/icon.png",
       withContent: true,
     });
+    let trayIsOpen = false;
     const noSearchRef = ctx.fieldRef("");
     const scanning = ctx.state(false);
     const cancelRequested = ctx.state(false);
@@ -698,6 +835,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     const probingId = ctx.state(null);
     const scanningProvider = ctx.state("");
     const scanProgress = ctx.state(null);
+    const scanningProviders = ctx.state(null);
     const scanStatus = ctx.state(null);
     const probeCache = ctx.state(hydrateProbes());
     function setProbes(mediaId, probes) {
@@ -785,7 +923,10 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           year,
         });
         return c?.chapters ?? [];
-      } catch {
+      } catch (e) {
+        const msg = String(e?.message ?? e);
+        if (isNoMatchError(msg)) return [];
+        log.warn(`fetch error (${provider}): ${msg}`);
         return null;
       }
     }
@@ -844,15 +985,22 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         Math.floor(Number($getUserPreference("parallelBatch") ?? "10")) || 10,
       );
       scanProgress.set({ mediaId, done: 0, total: toScan.length });
+      const inflight = new Set();
+      const publishInflight = () =>
+        scanningProviders.set({ mediaId, pids: [...inflight] });
       let done = 0;
       for (let i = 0; i < toScan.length; i += BATCH) {
         if (cancelRequested.get()) break;
         const batch = toScan.slice(i, i + BATCH);
+        for (const pid of batch) inflight.add(pid);
+        publishInflight();
         const fetched = await Promise.all(
           batch.map(async (pid) => {
             const chs = await readContainer(mediaId, pid, titles, year, true);
             done++;
+            inflight.delete(pid);
             scanProgress.set({ mediaId, done, total: toScan.length });
+            publishInflight();
             return { pid, chs };
           }),
         );
@@ -876,6 +1024,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         }
         onProgress?.(probes);
       }
+      scanningProviders.set(null);
       $storage.set(K_EXCLUDED, excluded);
       const result = buildResult(
         mediaId,
@@ -928,7 +1077,14 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           const key = String(mediaId);
           const read = Number(entry.listData?.progress ?? 0);
           const title = resolveTitle(media);
-          scanStatus.set({ done: i + 1, total: entries.length, title });
+          const cover = media.coverImage?.large ?? media.coverImage?.extraLarge;
+          scanStatus.set({
+            done: i + 1,
+            total: entries.length,
+            title,
+            cover,
+            mediaId,
+          });
           const prior = stored[key];
           if (
             !force &&
@@ -1013,6 +1169,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       } finally {
         scanning.set(false);
         scanProgress.set(null);
+        scanningProviders.set(null);
         scanStatus.set(null);
       }
     }
@@ -1058,11 +1215,20 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       cancelRequested.set(true);
       status.set("Cancelling…");
     });
+    function clearExclusions(mediaId) {
+      const next = clearedExclusions(
+        $storage.get(K_EXCLUDED) ?? {},
+        $storage.get(K_PINNED) ?? {},
+        mediaId,
+      );
+      $storage.set(K_EXCLUDED, next.excluded);
+      $storage.set(K_PINNED, next.pinned);
+    }
     ctx.registerEventHandler("msu-clear-excl", () => {
-      if (scanning.get()) return;
-      $storage.set(K_EXCLUDED, {});
-      status.set("Exclusions cleared — Force rescan to re-check every source");
-      ctx.toast.success("Exclusions cleared");
+      if (rejectIfBusy()) return;
+      clearExclusions();
+      ctx.toast.success("Exclusions cleared — rediscovering from scratch");
+      runScan(true);
     });
     ctx.registerEventHandler("msu-back", () => {
       const id = detailId.get();
@@ -1186,11 +1352,14 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       } finally {
         if (probingId.get() === mediaId) probingId.set(null);
         scanProgress.set(null);
+        scanningProviders.set(null);
       }
     }
     async function scanOneProvider(mediaId, provider) {
       if (scanning.get() || individualScanRunning()) return;
       scanningProvider.set(provider);
+      cancelRequested.set(false);
+      scanProgress.set({ mediaId, done: 0, total: 1 });
       try {
         const found = await findEntry(mediaId);
         if (!found) return;
@@ -1199,6 +1368,8 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         const year = found.media.startDate?.year;
         await ctx.manga.emptyCache(mediaId);
         const chs = await readContainer(mediaId, provider, titles, year, true);
+        scanProgress.set({ mediaId, done: 1, total: 1 });
+        if (cancelRequested.get()) return;
         const probe = makeProbe(provider, providers[provider] ?? provider, chs);
         const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
         const merged = {
@@ -1225,6 +1396,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         ctx.toast.error("Failed to scan source");
       } finally {
         scanningProvider.set("");
+        scanProgress.set(null);
       }
     }
     async function loadDetailMeta(mediaId) {
@@ -1355,7 +1527,12 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       const prog = scanProgress.get();
       const hasProg = prog != null && prog.mediaId === id;
       const scanningThis = probingId.get() === id || hasProg;
-      const busy = scanningThis || scanningProvider.get() !== "";
+      const busy =
+        scanningThis || scanningProvider.get() !== "" || scanning.get();
+      const inflight = scanningProviders.get();
+      const isPidScanning = (pid) =>
+        scanningProvider.get() === pid ||
+        (inflight?.mediaId === id && inflight.pids.includes(pid));
       const title = cur?.title || detailTitle.get() || "Manga";
       const read = cur?.read ?? detailRead.get();
       const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
@@ -1373,6 +1550,26 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       });
       const actionRow = tray.flex(
         [
+          ...(Object.keys(excludedForManga).length > 0
+            ? [
+                tray.button("Clear exclusions", {
+                  onClick: ctx.eventHandler(`msu-clr-${id}`, () => {
+                    if (scanning.get() || individualScanRunning()) {
+                      ctx.toast.info("A scan is already running");
+                      return;
+                    }
+                    clearExclusions(id);
+                    ctx.toast.success(
+                      "Exclusions cleared — rescanning sources",
+                    );
+                    probeMangaDetail(id);
+                  }),
+                  size: "sm",
+                  intent: "alert-subtle",
+                  disabled: busy,
+                }),
+              ]
+            : []),
           tray.button(
             scanningThis
               ? hasProg
@@ -1421,7 +1618,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           chapter: p?.matched ? p.latest : undefined,
           actions: [
             tray.tooltip(
-              tray.button(scanningProvider.get() === pid ? "⏳" : "↻", {
+              tray.button(isPidScanning(pid) ? "⏳" : "↻", {
                 onClick: ctx.eventHandler(`msu-rescan1-${id}-${pid}`, () =>
                   scanOneProvider(id, pid),
                 ),
@@ -1528,35 +1725,56 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }, [results, scanning]);
     const panelStatus = ctx.state(null);
     ctx.effect(() => {
+      const cancelling = cancelRequested.get();
       const g = scanStatus.get();
       if (g) {
-        panelStatus.set({ ...g, kind: "library" });
+        panelStatus.set({ ...g, cancelling, kind: "library" });
         return;
       }
       const p = scanProgress.get();
       if (p) {
-        const title =
-          detailTitle.get() ||
-          results.get().find((r) => r.mediaId === p.mediaId)?.title ||
-          "";
+        const row = results.get().find((r) => r.mediaId === p.mediaId);
+        const title = detailTitle.get() || row?.title || "";
+        const cover = String(detailCover.get() || "") || row?.cover;
         panelStatus.set({
           done: p.done,
           total: p.total,
           title,
+          cover,
+          mediaId: p.mediaId,
+          cancelling,
           kind: "sources",
         });
         return;
       }
       panelStatus.set(null);
-    }, [scanStatus, scanProgress, detailTitle]);
+    }, [scanStatus, scanProgress, detailTitle, detailCover, cancelRequested]);
     const scanPanel = ctx.newWebview({
       slot: "fixed",
       width: "320px",
-      height: "60px",
+      height: "108px",
       hidden: true,
       window: { draggable: true, defaultPosition: "bottom-right" },
     });
     scanPanel.channel.sync("scan", panelStatus);
+    scanPanel.channel.on("panel-cancel", () => {
+      if (!scanning.get() && !individualScanRunning()) return;
+      cancelRequested.set(true);
+      status.set("Cancelling…");
+    });
+    scanPanel.channel.on("panel-open", (mediaId) => {
+      const id = Number(mediaId ?? 0);
+      if (!Number.isFinite(id) || id <= 0) return;
+      if (currentMediaId.get() === id) {
+        openDetail(id);
+        try {
+          tray.open();
+        } catch {}
+        return;
+      }
+      ctx.screen.navigateTo("/manga/entry", { id: String(id) });
+      if (trayIsOpen) openDetail(id);
+    });
     scanPanel.setContent(() => scan_panel_default);
     let panelVisible = false;
     ctx.effect(() => {
@@ -1649,7 +1867,11 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       dm.arm();
     });
     ctx.screen.loadCurrent();
+    tray.onClose(() => {
+      trayIsOpen = false;
+    });
     tray.onOpen(() => {
+      trayIsOpen = true;
       (async () => {
         const id = currentMediaId.get();
         reconcileInactiveProviders();

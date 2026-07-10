@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { classify, isBadKind } from "./classify";
+import { classify, isBadKind, isNoMatchError } from "./classify";
 
 describe("classify", () => {
   const gap = 10;
@@ -36,5 +36,33 @@ describe("isBadKind", () => {
     expect(isBadKind("new")).toBe(false);
     expect(isBadKind("up-to-date")).toBe(false);
     expect(isBadKind("all-excluded")).toBe(false);
+  });
+});
+
+describe("isNoMatchError", () => {
+  test("no-match messages → true", () => {
+    for (const m of [
+      "no results found",
+      "manga not found",
+      "no chapters available",
+      "couldn't find manga",
+      "could not find manga",
+      "no search results",
+      "0 results",
+    ]) {
+      expect(isNoMatchError(m)).toBe(true);
+    }
+  });
+
+  test("genuine fetch errors → false", () => {
+    for (const m of [
+      "dial tcp: connection refused",
+      "context deadline exceeded",
+      "unexpected status 503",
+      "EOF",
+      "invalid character '<' looking for beginning of value",
+    ]) {
+      expect(isNoMatchError(m)).toBe(false);
+    }
   });
 });

@@ -128,6 +128,8 @@ Cross-extension helpers belong in `src/_utils/` or `src/_components/`, not dupli
 
 **Do NOT** split into extra `modules/*.ts` files just to shorten a register callback unless the callback must be an isolated serialized hook — file moves within the same `$ui.register` runtime are purely organizational; prefer `utils/` first.
 
+**On every change to an extension, re-check this split before finishing.** A register module grows fast (`local-catalog-manager`'s [register.ts](src/plugins/local-catalog-manager/modules/register.ts) is the largest in the repo at ~2800 lines, `manga-source-updates`' [register.ts](src/plugins/manga-source-updates/modules/register.ts) next at ~1900 — both overdue for extraction), so whenever you add or edit logic, ask "is the pure part of what I just wrote extractable?" — if a new function has no `ctx`/`tray`/state, lift it to a co-located `utils/*.ts` with a `*.test.ts` rather than growing the module. The goal is a register that reads as **wiring** (state, tray render, event handlers, DOM/observer registration) delegating to named `utils/` for the actual transforms — not a 1000-line file where behavior is buried in inline closures. When a `utils/` file itself gets crowded, split it by concern (one domain per file), don't append. Keep it legible for the next session.
+
 ## Adding an extension
 
 Create `src/<type>/<id>/` by hand:

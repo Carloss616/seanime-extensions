@@ -2,10 +2,11 @@ import { joinDividers } from "../../../_components/divider";
 import { createDomDecorator } from "../../../_components/dom-decorator";
 import { type EntryListRow, entryList } from "../../../_components/entry-list";
 import { trayHeader } from "../../../_components/tray-header";
+import { createLogger } from "../../../_utils/logger";
 import scanPanelHtml from "../assets/scan-panel.html";
 import { readCardAttrs } from "../utils/card-dom";
 import { makeProbe, unreadChapters } from "../utils/chapters";
-import { classify, isBadKind } from "../utils/classify";
+import { classify, isBadKind, isNoMatchError } from "../utils/classify";
 import { readingEntries } from "../utils/collection";
 import {
   K_EXCLUDED,
@@ -16,6 +17,11 @@ import {
   reasonIntent,
   reasonLabel,
 } from "../utils/constants";
+import {
+  clearedExclusions,
+  type ExcludedMap,
+  type PinnedMap,
+} from "../utils/exclusions";
 import { createHeaderProgressReader } from "../utils/header-progress";
 import { hydrateProbes, hydrateResults } from "../utils/hydrate";
 import {
@@ -44,7 +50,11 @@ import type {
 // selection, so we just report the best (most unread) across the user's sources.
 
 export const register = (ctx: $ui.Context) => {
+  const log = createLogger();
   const tray = ctx.newTray({ iconUrl: __MANIFEST_ICON__, withContent: true });
+  // Track tray open state (no isOpen() in the API) so the panel-cover click can
+  // reflect the detail into an already-open tray.
+  let trayIsOpen = false;
 
   // The list sections have no search; entryList still requires a fieldRef, so
   // hand it an unused one and keep showSearchRow off.
@@ -77,12 +87,21 @@ export const register = (ctx: $ui.Context) => {
     done: number;
     total: number;
   } | null>(null);
+  // Providers currently being fetched in the active per-manga scan (global or
+  // detail). Drives the live ⏳ on each source's rescan button. Keyed by mediaId
+  // so a global scan on a DIFFERENT manga doesn't light up the open detail rows.
+  const scanningProviders = ctx.state<{
+    mediaId: number;
+    pids: string[];
+  } | null>(null);
   // Global (whole-list) scan progress, synced to the floating webview panel so
   // "X/Y + current title" shows on every screen. null = no scan running.
   const scanStatus = ctx.state<{
     done: number;
     total: number;
     title: string;
+    cover?: string;
+    mediaId: number;
   } | null>(null);
   // Per-manga source detail (keyed by provider id — one probe per provider),
   // seeded from $storage so a scanned manga shows its last per-source result
@@ -197,8 +216,16 @@ export const register = (ctx: $ui.Context) => {
         year,
       });
       return c?.chapters ?? [];
-    } catch {
-      return null; // thrown -> treat as provider error
+    } catch (e) {
+      // seanime throws for BOTH "no series matched" and a genuine fetch error.
+      // Only the message tells them apart — a no-match returns [] (matched:false,
+      // errored:false → "no match" pill) so it isn't mislabeled "error".
+      const msg = String((e as { message?: unknown })?.message ?? e);
+      if (isNoMatchError(msg)) return [];
+      // SPIKE: log unmatched messages so NO_MATCH_RX can be widened from real
+      // seanime output. Remove once the pattern is confirmed complete.
+      log.warn(`fetch error (${provider}): ${msg}`);
+      return null; // genuine provider error
     }
   }
 
@@ -289,6 +316,10 @@ export const register = (ctx: $ui.Context) => {
       Math.floor(Number($getUserPreference("parallelBatch") ?? "10")) || 10,
     );
     scanProgress.set({ mediaId, done: 0, total: toScan.length });
+    // Track which providers are in-flight so the detail rows can show a live ⏳.
+    const inflight = new Set<string>();
+    const publishInflight = () =>
+      scanningProviders.set({ mediaId, pids: [...inflight] });
     // Bump the counter the moment EACH source resolves, not after the whole
     // batch — otherwise the panel jumps 0→10→20 (by BATCH) and sits idle in
     // between. goja runs these continuations single-threaded, so `done++` needs
@@ -297,11 +328,15 @@ export const register = (ctx: $ui.Context) => {
     for (let i = 0; i < toScan.length; i += BATCH) {
       if (cancelRequested.get()) break;
       const batch = toScan.slice(i, i + BATCH);
+      for (const pid of batch) inflight.add(pid);
+      publishInflight();
       const fetched = await Promise.all(
         batch.map(async (pid) => {
           const chs = await readContainer(mediaId, pid, titles, year, true);
           done++;
+          inflight.delete(pid);
           scanProgress.set({ mediaId, done, total: toScan.length });
+          publishInflight();
           return { pid, chs };
         }),
       );
@@ -326,6 +361,7 @@ export const register = (ctx: $ui.Context) => {
       }
       onProgress?.(probes); // once per batch
     }
+    scanningProviders.set(null);
     $storage.set(K_EXCLUDED, excluded);
 
     const result = buildResult(
@@ -393,8 +429,15 @@ export const register = (ctx: $ui.Context) => {
         const key = String(mediaId);
         const read = Number(entry.listData?.progress ?? 0);
         const title = resolveTitle(media);
+        const cover = media.coverImage?.large ?? media.coverImage?.extraLarge;
         // Advance the global progress (also counts TTL-cached manga below).
-        scanStatus.set({ done: i + 1, total: entries.length, title });
+        scanStatus.set({
+          done: i + 1,
+          total: entries.length,
+          title,
+          cover,
+          mediaId,
+        });
 
         // TTL skip: a good, fresh prior result is reused without any network.
         const prior = stored[key];
@@ -491,6 +534,7 @@ export const register = (ctx: $ui.Context) => {
     } finally {
       scanning.set(false);
       scanProgress.set(null);
+      scanningProviders.set(null);
       scanStatus.set(null);
     }
   }
@@ -558,11 +602,26 @@ export const register = (ctx: $ui.Context) => {
     status.set("Cancelling…");
   });
 
+  // Clear exclusions + pins for a scope so the next scan re-discovers every
+  // source from 0 (pure map logic lives in utils/exclusions; this just does the
+  // $storage I/O around it). Pass a mediaId for one manga, omit for all.
+  function clearExclusions(mediaId?: number) {
+    const next = clearedExclusions(
+      $storage.get<ExcludedMap>(K_EXCLUDED) ?? {},
+      $storage.get<PinnedMap>(K_PINNED) ?? {},
+      mediaId,
+    );
+    $storage.set(K_EXCLUDED, next.excluded);
+    $storage.set(K_PINNED, next.pinned);
+  }
+
+  // Global clear: wipe every exclusion + pin, then force-rescan the whole list
+  // so it rediscovers from 0 (cancellable via the panel).
   ctx.registerEventHandler("msu-clear-excl", () => {
-    if (scanning.get()) return;
-    $storage.set(K_EXCLUDED, {});
-    status.set("Exclusions cleared — Force rescan to re-check every source");
-    ctx.toast.success("Exclusions cleared");
+    if (rejectIfBusy()) return;
+    clearExclusions();
+    ctx.toast.success("Exclusions cleared — rediscovering from scratch");
+    void runScan(true);
   });
 
   ctx.registerEventHandler("msu-back", () => {
@@ -729,6 +788,7 @@ export const register = (ctx: $ui.Context) => {
     } finally {
       if (probingId.get() === mediaId) probingId.set(null);
       scanProgress.set(null);
+      scanningProviders.set(null);
     }
   }
 
@@ -737,6 +797,11 @@ export const register = (ctx: $ui.Context) => {
   async function scanOneProvider(mediaId: number, provider: string) {
     if (scanning.get() || individualScanRunning()) return;
     scanningProvider.set(provider);
+    cancelRequested.set(false); // don't inherit a stale cancel from a prior scan
+    // Single-source fetch — drive the floating panel with a 1-step progress so a
+    // "Checking sources" indicator shows (this path also fires from the
+    // manual-match hook / re-include, outside the detail view's own ⏳ button).
+    scanProgress.set({ mediaId, done: 0, total: 1 });
     try {
       const found = await findEntry(mediaId);
       if (!found) return;
@@ -745,6 +810,8 @@ export const register = (ctx: $ui.Context) => {
       const year = found.media.startDate?.year;
       await ctx.manga.emptyCache(mediaId);
       const chs = await readContainer(mediaId, provider, titles, year, true);
+      scanProgress.set({ mediaId, done: 1, total: 1 });
+      if (cancelRequested.get()) return; // cancelled mid-fetch — drop the result
       const probe = makeProbe(provider, providers[provider] ?? provider, chs);
       const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
       const merged = {
@@ -771,6 +838,7 @@ export const register = (ctx: $ui.Context) => {
       ctx.toast.error("Failed to scan source");
     } finally {
       scanningProvider.set("");
+      scanProgress.set(null);
     }
   }
 
@@ -944,7 +1012,17 @@ export const register = (ctx: $ui.Context) => {
     const prog = scanProgress.get();
     const hasProg = prog != null && prog.mediaId === id;
     const scanningThis = probingId.get() === id || hasProg;
-    const busy = scanningThis || scanningProvider.get() !== "";
+    // Disable the scan controls whenever ANY scan is running — including a global
+    // scan on another manga (scanning.get()) — since only one scan runs at a time
+    // and a click would just be rejected with a toast.
+    const busy =
+      scanningThis || scanningProvider.get() !== "" || scanning.get();
+    // A source is loading if it's the single-provider rescan target OR it's
+    // in-flight in the active per-manga scan for THIS manga.
+    const inflight = scanningProviders.get();
+    const isPidScanning = (pid: string): boolean =>
+      scanningProvider.get() === pid ||
+      (inflight?.mediaId === id && inflight.pids.includes(pid));
     const title = cur?.title || detailTitle.get() || "Manga";
     const read = cur?.read ?? detailRead.get();
     const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
@@ -968,6 +1046,26 @@ export const register = (ctx: $ui.Context) => {
 
     const actionRow = tray.flex(
       [
+        // Only when this manga has exclusions: wipe them + pins and re-discover
+        // from 0 (probeMangaDetail re-fetches every source and re-runs auto-exclude).
+        ...(Object.keys(excludedForManga).length > 0
+          ? [
+              tray.button("Clear exclusions", {
+                onClick: ctx.eventHandler(`msu-clr-${id}`, () => {
+                  if (scanning.get() || individualScanRunning()) {
+                    ctx.toast.info("A scan is already running");
+                    return;
+                  }
+                  clearExclusions(id);
+                  ctx.toast.success("Exclusions cleared — rescanning sources");
+                  void probeMangaDetail(id);
+                }),
+                size: "sm",
+                intent: "alert-subtle",
+                disabled: busy,
+              }),
+            ]
+          : []),
         tray.button(
           scanningThis
             ? hasProg
@@ -1026,7 +1124,7 @@ export const register = (ctx: $ui.Context) => {
         chapter: p?.matched ? p.latest : undefined,
         actions: [
           tray.tooltip(
-            tray.button(scanningProvider.get() === pid ? "⏳" : "↻", {
+            tray.button(isPidScanning(pid) ? "⏳" : "↻", {
               onClick: ctx.eventHandler(`msu-rescan1-${id}-${pid}`, () =>
                 scanOneProvider(id, pid),
               ),
@@ -1163,25 +1261,36 @@ export const register = (ctx: $ui.Context) => {
     done: number;
     total: number;
     title: string;
+    cover?: string;
+    mediaId: number;
+    cancelling: boolean;
     kind: "library" | "sources";
   } | null>(null);
   ctx.effect(() => {
+    const cancelling = cancelRequested.get();
     const g = scanStatus.get();
     if (g) {
-      panelStatus.set({ ...g, kind: "library" });
+      panelStatus.set({ ...g, cancelling, kind: "library" });
       return;
     }
     const p = scanProgress.get();
     if (p) {
-      const title =
-        detailTitle.get() ||
-        results.get().find((r) => r.mediaId === p.mediaId)?.title ||
-        "";
-      panelStatus.set({ done: p.done, total: p.total, title, kind: "sources" });
+      const row = results.get().find((r) => r.mediaId === p.mediaId);
+      const title = detailTitle.get() || row?.title || "";
+      const cover = String(detailCover.get() || "") || row?.cover;
+      panelStatus.set({
+        done: p.done,
+        total: p.total,
+        title,
+        cover,
+        mediaId: p.mediaId,
+        cancelling,
+        kind: "sources",
+      });
       return;
     }
     panelStatus.set(null);
-  }, [scanStatus, scanProgress, detailTitle]);
+  }, [scanStatus, scanProgress, detailTitle, detailCover, cancelRequested]);
 
   // Floating scan panel (slot "fixed" → global, draggable) showing live "X/Y +
   // current title + progress bar" on every screen. Only visible while a scan
@@ -1190,11 +1299,39 @@ export const register = (ctx: $ui.Context) => {
   const scanPanel = ctx.newWebview({
     slot: "fixed",
     width: "320px",
-    height: "60px",
+    height: "108px",
     hidden: true,
     window: { draggable: true, defaultPosition: "bottom-right" },
   });
   scanPanel.channel.sync("scan", panelStatus);
+  // Cancel button inside the floating panel — one flag covers every scan path:
+  // the global loop (runScan) and the per-manga loop (scanOneManga) break on it,
+  // and scanOneProvider drops its result. Only meaningful while a scan runs.
+  scanPanel.channel.on("panel-cancel", () => {
+    if (!scanning.get() && !individualScanRunning()) return;
+    cancelRequested.set(true);
+    status.set("Cancelling…");
+  });
+  // Click the panel cover → jump to that manga. If already on its entry page,
+  // open the tray to its source detail; otherwise navigate to the entry.
+  scanPanel.channel.on("panel-open", (mediaId: unknown) => {
+    const id = Number(mediaId ?? 0);
+    if (!Number.isFinite(id) || id <= 0) return;
+    // Already on this entry → just surface the detail in the tray.
+    if (currentMediaId.get() === id) {
+      openDetail(id);
+      try {
+        tray.open();
+      } catch {
+        /* tray unavailable (not pinned) */
+      }
+      return;
+    }
+    // Different manga → navigate to its entry. If the tray is already open, also
+    // switch it to that manga's detail so it doesn't keep showing the old view.
+    ctx.screen.navigateTo("/manga/entry", { id: String(id) });
+    if (trayIsOpen) openDetail(id);
+  });
   scanPanel.setContent(() => scanPanelHtml);
   // Toggle show/hide ONLY on the visibility transition, not on every counter
   // tick — calling show() each tick re-mounts the iframe (resetting it to the
@@ -1304,7 +1441,11 @@ export const register = (ctx: $ui.Context) => {
   });
   ctx.screen.loadCurrent();
 
+  tray.onClose(() => {
+    trayIsOpen = false;
+  });
   tray.onOpen(() => {
+    trayIsOpen = true;
     void (async () => {
       const id = currentMediaId.get();
       reconcileInactiveProviders();
