@@ -3981,6 +3981,35 @@ var sharedLib = (...args) => {
         throw new Error(`updateGist failed: ${res.status} ${res.text()}`);
       }
     }
+    async getGistFiles(id, filenames) {
+      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+        method: "GET",
+        headers: this.headers(),
+      });
+      if (!res.ok) {
+        throw new Error(`getGist failed: ${res.status} ${res.text()}`);
+      }
+      const data = res.json();
+      const out = {};
+      for (const name of filenames) {
+        out[name] = data.files?.[name]?.content ?? "";
+      }
+      return out;
+    }
+    async updateGistFiles(id, files) {
+      const body = { files: {} };
+      for (const [name, content] of Object.entries(files)) {
+        body.files[name] = { content };
+      }
+      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+        method: "PATCH",
+        headers: this.headers(),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        throw new Error(`updateGist failed: ${res.status} ${res.text()}`);
+      }
+    }
     async deleteGist(id) {
       const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
         method: "DELETE",

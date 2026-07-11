@@ -1,4 +1,12 @@
 import type { GistClient } from "../../../_utils/gist/client";
+import {
+  SYNC_FILE_EXCLUSIONS,
+  SYNC_FILE_MATCHES,
+  SYNC_FILE_PINS,
+  SYNC_FILE_PROBES,
+  SYNC_FILE_SUMMARIES,
+  SYNC_HEAD_FILE,
+} from "./constants";
 import type { ManualMatch } from "./matches";
 import type { SourceMap } from "./sources";
 import { fromWireKey, toWireKey } from "./sync-keys";
@@ -10,43 +18,42 @@ import type {
   TimestampMeta,
 } from "./types";
 
-export const SYNC_VERSION = 1;
-
-// mediaId-keyed local maps (as held in $storage) — the sync seam's input/output.
+// The five sync maps. Field names match the K_* $storage keys
+// (summaries/exclusions/pins/probes/matches) so the wire layout, the storage
+// layer, and the gist file names all read the same. `summaries` is one-level
+// (mediaId → row); the rest are two-level (mediaId → providerId → record).
+//
+// LocalMaps is keyed by this instance's mediaId (as held in $storage); WireMaps
+// is the same shape with keys translated to universal wire keys (native →
+// number-string, custom-source → cs:manifestId:localId). Distinct aliases keep
+// the push/pull boundary legible even though the shapes are identical.
 export interface LocalMaps {
-  excluded: Record<string, Record<string, ExcludedRecord>>;
-  pinned: Record<string, Record<string, PinRecord>>;
-  results: Record<string, StoredResult>;
+  summaries: Record<string, StoredResult>;
+  exclusions: Record<string, Record<string, ExcludedRecord>>;
+  pins: Record<string, Record<string, PinRecord>>;
   probes: Record<string, Record<string, ProviderProbe>>;
   matches: Record<string, Record<string, ManualMatch>>;
 }
-
-// Wire-keyed sync document — the single gist file. Same maps, keys translated to
-// universal wire keys (native → number-string, custom-source → cs:manifest:localId).
-export interface WireDoc {
-  version: number;
-  updatedAt: number;
-  excluded: Record<string, Record<string, ExcludedRecord>>;
-  pinned: Record<string, Record<string, PinRecord>>;
-  results: Record<string, StoredResult>;
-  probes: Record<string, Record<string, ProviderProbe>>;
-  matches: Record<string, Record<string, ManualMatch>>;
-}
+export type WireMaps = LocalMaps;
 
 export function emptyLocalMaps(): LocalMaps {
-  return { excluded: {}, pinned: {}, results: {}, probes: {}, matches: {} };
+  return { summaries: {}, exclusions: {}, pins: {}, probes: {}, matches: {} };
 }
-function emptyWire(): WireDoc {
-  return {
-    version: SYNC_VERSION,
-    updatedAt: 0,
-    excluded: {},
-    pinned: {},
-    results: {},
-    probes: {},
-    matches: {},
-  };
-}
+
+// Sync gist layout: ONE gist, one file per map (so no single file grows huge).
+// SUMMARIES is listed FIRST (the head/discovery file). `level` = key depth.
+export const SYNC_FILES: Array<{
+  section: keyof LocalMaps;
+  file: string;
+  level: 1 | 2;
+}> = [
+  { section: "summaries", file: SYNC_FILE_SUMMARIES, level: 1 },
+  { section: "exclusions", file: SYNC_FILE_EXCLUSIONS, level: 2 },
+  { section: "pins", file: SYNC_FILE_PINS, level: 2 },
+  { section: "probes", file: SYNC_FILE_PROBES, level: 2 },
+  { section: "matches", file: SYNC_FILE_MATCHES, level: 2 },
+];
+export const ALL_SYNC_FILES = SYNC_FILES.map((s) => s.file);
 
 // A record's effective merge timestamp: the later of its edit and its tombstone.
 // So a delete newer than an edit wins, and an edit newer than a tombstone
@@ -86,23 +93,17 @@ function mergeTwoLevel<T extends TimestampMeta>(
   return out;
 }
 
-export function mergeWireDocs(
-  local: WireDoc,
-  remote: WireDoc,
-  now: number,
-): WireDoc {
+export function mergeMaps(local: WireMaps, remote: WireMaps): WireMaps {
   return {
-    version: SYNC_VERSION,
-    updatedAt: now,
-    excluded: mergeTwoLevel(local.excluded, remote.excluded),
-    pinned: mergeTwoLevel(local.pinned, remote.pinned),
-    results: mergeOneLevel(local.results, remote.results),
+    summaries: mergeOneLevel(local.summaries, remote.summaries),
+    exclusions: mergeTwoLevel(local.exclusions, remote.exclusions),
+    pins: mergeTwoLevel(local.pins, remote.pins),
     probes: mergeTwoLevel(local.probes, remote.probes),
     matches: mergeTwoLevel(local.matches, remote.matches),
   };
 }
 
-// --- parse / serialize (stable byte output so redundant pushes no-op) --------
+// --- per-file serialize / parse (stable byte output so redundant pushes no-op) -
 
 function sortObj(o: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -117,17 +118,6 @@ function sortObj(o: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
-// The map sections only, canonicalized — the unit both push-equality and
-// serialization build on (envelope updatedAt excluded).
-function canonMaps(doc: WireDoc): Record<string, unknown> {
-  return {
-    excluded: sortMap(doc.excluded),
-    matches: sortMap(doc.matches),
-    pinned: sortMap(doc.pinned),
-    probes: sortMap(doc.probes),
-    results: sortObj(doc.results as unknown as Record<string, unknown>),
-  };
-}
 function sortMap(
   m: Record<string, Record<string, unknown>>,
 ): Record<string, unknown> {
@@ -140,21 +130,23 @@ function sortMap(
   return out;
 }
 
-export function serializeWireDoc(doc: WireDoc): string {
-  return JSON.stringify(
-    {
-      version: doc.version ?? SYNC_VERSION,
-      updatedAt: doc.updatedAt ?? 0,
-      ...canonMaps(doc),
-    },
-    null,
-    2,
-  );
+function serializeSection(map: unknown, level: 1 | 2): string {
+  const canon =
+    level === 2
+      ? sortMap(map as Record<string, Record<string, unknown>>)
+      : sortObj(map as Record<string, unknown>);
+  // Indented for readability in the GitHub gist UI; canonical key order keeps
+  // byte-equal pushes no-op on GitHub.
+  return JSON.stringify(canon, null, 2);
 }
 
-// Content equality on the maps only (ignores envelope updatedAt) — gates the push.
-export function wireMapsEqual(a: WireDoc, b: WireDoc): boolean {
-  return JSON.stringify(canonMaps(a)) === JSON.stringify(canonMaps(b));
+// Each map → its own canonical gist-file content. summaries first.
+export function wireMapsToFiles(maps: WireMaps): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const { section, file, level } of SYNC_FILES) {
+    out[file] = serializeSection(maps[section], level);
+  }
+  return out;
 }
 
 function parseMap(src: unknown): Record<string, Record<string, TimestampMeta>> {
@@ -179,6 +171,7 @@ function parseMap(src: unknown): Record<string, Record<string, TimestampMeta>> {
   }
   return out;
 }
+
 function parseResults(src: unknown): Record<string, StoredResult> {
   const out: Record<string, StoredResult> = {};
   if (!src || typeof src !== "object") return out;
@@ -197,28 +190,31 @@ function parseResults(src: unknown): Record<string, StoredResult> {
   return out;
 }
 
-export function parseWireDoc(raw: unknown, log: Console): WireDoc {
-  if (raw == null || raw === "") return emptyWire();
-  let data: Partial<WireDoc> = raw as Partial<WireDoc>;
-  if (typeof raw === "string") {
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      return emptyWire();
-    }
+function parseJsonObj(raw: string): unknown {
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
   }
-  if (!data || typeof data !== "object") return emptyWire();
-  if (typeof data.version === "number" && data.version !== SYNC_VERSION) {
-    log.warn(`msu-sync.json version ${data.version} unknown, keeping records`);
-  }
+}
+
+// Remote gist files → in-memory wire maps (tolerant of empty/malformed files).
+export function filesToWireMaps(files: Record<string, string>): WireMaps {
   return {
-    version: typeof data.version === "number" ? data.version : SYNC_VERSION,
-    updatedAt: typeof data.updatedAt === "number" ? data.updatedAt : 0,
-    excluded: parseMap(data.excluded) as WireDoc["excluded"],
-    pinned: parseMap(data.pinned) as WireDoc["pinned"],
-    results: parseResults(data.results),
-    probes: parseMap(data.probes) as WireDoc["probes"],
-    matches: parseMap(data.matches) as WireDoc["matches"],
+    summaries: parseResults(parseJsonObj(files[SYNC_FILE_SUMMARIES] ?? "")),
+    exclusions: parseMap(
+      parseJsonObj(files[SYNC_FILE_EXCLUSIONS] ?? ""),
+    ) as WireMaps["exclusions"],
+    pins: parseMap(
+      parseJsonObj(files[SYNC_FILE_PINS] ?? ""),
+    ) as WireMaps["pins"],
+    probes: parseMap(
+      parseJsonObj(files[SYNC_FILE_PROBES] ?? ""),
+    ) as WireMaps["probes"],
+    matches: parseMap(
+      parseJsonObj(files[SYNC_FILE_MATCHES] ?? ""),
+    ) as WireMaps["matches"],
   };
 }
 
@@ -240,6 +236,7 @@ function translateTwoLevel<T>(
   }
   return out;
 }
+
 function translateOneLevel<T>(
   m: Record<string, T>,
   key: (mediaId: number) => string | null,
@@ -257,28 +254,25 @@ function translateOneLevel<T>(
   return out;
 }
 
-export function toWireDoc(
+export function toWireMaps(
   local: LocalMaps,
   sources: SourceMap,
-  now: number,
-): { doc: WireDoc; dropped: number[] } {
+): { maps: WireMaps; dropped: number[] } {
   const dropped = new Set<number>();
   const key = (mediaId: number) => toWireKey(mediaId, sources);
-  const doc: WireDoc = {
-    version: SYNC_VERSION,
-    updatedAt: now,
-    excluded: translateTwoLevel(local.excluded, key, dropped),
-    pinned: translateTwoLevel(local.pinned, key, dropped),
-    results: translateOneLevel(local.results, key, dropped),
+  const maps: WireMaps = {
+    summaries: translateOneLevel(local.summaries, key, dropped),
+    exclusions: translateTwoLevel(local.exclusions, key, dropped),
+    pins: translateTwoLevel(local.pins, key, dropped),
     probes: translateTwoLevel(local.probes, key, dropped),
     matches: translateTwoLevel(local.matches, key, dropped),
   };
-  return { doc, dropped: [...dropped] };
+  return { maps, dropped: [...dropped] };
 }
 
-export function localizeWireDoc(
-  doc: WireDoc,
-  extIdForManifest: (manifestId: string) => number | null,
+export function localizeWireMaps(
+  maps: WireMaps,
+  extIdForManifest: (manifestId: string, seedLocalId: number) => number | null,
 ): { maps: LocalMaps; unresolved: string[] } {
   const unresolved = new Set<string>();
   const key = (wireKey: string) => {
@@ -305,18 +299,18 @@ export function localizeWireDoc(
     }
     return out;
   };
-  const maps: LocalMaps = {
-    excluded: relTwo(doc.excluded),
-    pinned: relTwo(doc.pinned),
-    results: relOne(doc.results),
-    probes: relTwo(doc.probes),
-    matches: relTwo(doc.matches),
+  const out: LocalMaps = {
+    summaries: relOne(maps.summaries),
+    exclusions: relTwo(maps.exclusions),
+    pins: relTwo(maps.pins),
+    probes: relTwo(maps.probes),
+    matches: relTwo(maps.matches),
   };
-  return { maps, unresolved: [...unresolved] };
+  return { maps: out, unresolved: [...unresolved] };
 }
 
 // Write-back: the localized merged maps are the source of truth for every
-// translatable mediaId; local mediaIds that never made it into the wire doc
+// translatable mediaId; local mediaIds that never made it into the wire maps
 // (custom-source with no ref) are absent from `localized` and kept as-is. So a
 // per-map key union where `localized` wins is correct and lossless.
 export function mergeLocalBack(
@@ -332,9 +326,9 @@ export function mergeLocalBack(
     return out;
   };
   return {
-    excluded: mergeMap(existing.excluded, localized.excluded),
-    pinned: mergeMap(existing.pinned, localized.pinned),
-    results: mergeMap(existing.results, localized.results),
+    summaries: mergeMap(existing.summaries, localized.summaries),
+    exclusions: mergeMap(existing.exclusions, localized.exclusions),
+    pins: mergeMap(existing.pins, localized.pins),
     probes: mergeMap(existing.probes, localized.probes),
     matches: mergeMap(existing.matches, localized.matches),
   };
@@ -344,7 +338,6 @@ export function mergeLocalBack(
 
 export interface EnsureGistDeps {
   client: GistClient;
-  filename: string;
   getGistId: () => string | undefined;
   setGistId: (id: string) => void;
 }
@@ -352,81 +345,76 @@ export interface EnsureGistDeps {
 export async function ensureGist(deps: EnsureGistDeps): Promise<string> {
   const existing = deps.getGistId();
   if (existing) return existing;
-  const found = await deps.client.findGistByFilename(deps.filename);
+  const found = await deps.client.findGistByFilename(SYNC_HEAD_FILE);
   if (found) {
     deps.setGistId(found);
     return found;
   }
+  // Seed the gist with just the head (summaries) file as an empty map; the
+  // remaining files are created on the first push (updateGistFiles).
   const info = await deps.client.createGist(
-    deps.filename,
-    serializeWireDoc({
-      version: SYNC_VERSION,
-      updatedAt: 0,
-      excluded: {},
-      pinned: {},
-      results: {},
-      probes: {},
-      matches: {},
-    }),
+    SYNC_HEAD_FILE,
+    "{}",
     "Seanime manga source updates sync",
   );
   deps.setGistId(info.id);
   return info.id;
 }
 
-// --- round-trip: pull → merge → push-if-changed → localize -------------------
+// --- round-trip: pull → merge → push-changed-files → localize ----------------
 
 export interface SyncDeps {
   client: GistClient;
   gistId: string;
-  filename: string;
   local: LocalMaps; // snapshot from $storage (RAW, tombstones included)
   sources: SourceMap;
-  // Resolves this instance's extId for a manifest (index + probe). Sync so the
-  // pure localize step can run after the caller pre-resolves every needed extId.
-  extIdForManifest: (manifestId: string) => number | null;
-  now: number;
+  // Resolves this instance's extId for a manifest (local index → probe seeded by
+  // the record's own localId). Sync so the pure localize step can run inline.
+  extIdForManifest: (manifestId: string, seedLocalId: number) => number | null;
   log: Console;
 }
 
 export interface SyncResult {
   pushed: boolean;
+  changedFiles: string[]; // gist files actually PATCHed
   writeBack: LocalMaps;
   dropped: number[]; // local custom-source mediaIds with no ref (not pushed)
   unresolved: string[]; // remote wire keys we couldn't localize (not written back)
 }
 
 export async function syncMsu(deps: SyncDeps): Promise<SyncResult> {
-  const { doc: wireLocal, dropped } = toWireDoc(
-    deps.local,
-    deps.sources,
-    deps.now,
-  );
+  const { maps: wireLocal, dropped } = toWireMaps(deps.local, deps.sources);
   if (dropped.length > 0) {
     deps.log.warn(
       `msu-sync: skipped ${dropped.length} custom-source id(s) with no source ref from push`,
     );
   }
 
-  let remoteStr = "";
+  // One GET pulls every file's content.
+  let remoteFiles: Record<string, string> = {};
   try {
-    remoteStr = await deps.client.getGistFile(deps.gistId, deps.filename);
+    remoteFiles = await deps.client.getGistFiles(deps.gistId, ALL_SYNC_FILES);
   } catch (_) {
-    remoteStr = "";
+    remoteFiles = {};
   }
-  const remote = parseWireDoc(remoteStr, deps.log);
-  const merged = mergeWireDocs(wireLocal, remote, deps.now);
+  const remote = filesToWireMaps(remoteFiles);
+  const merged = mergeMaps(wireLocal, remote);
 
-  const pushed = !wireMapsEqual(merged, remote);
+  // Push only the files whose canonical content actually changed vs. remote.
+  const mergedFiles = wireMapsToFiles(merged);
+  const remoteCanon = wireMapsToFiles(remote);
+  const changed: Record<string, string> = {};
+  for (const { file } of SYNC_FILES) {
+    if (mergedFiles[file] !== remoteCanon[file])
+      changed[file] = mergedFiles[file];
+  }
+  const changedFiles = Object.keys(changed);
+  const pushed = changedFiles.length > 0;
   if (pushed) {
-    await deps.client.updateGistFile(
-      deps.gistId,
-      deps.filename,
-      serializeWireDoc(merged),
-    );
+    await deps.client.updateGistFiles(deps.gistId, changed);
   }
 
-  const { maps: localized, unresolved } = localizeWireDoc(
+  const { maps: localized, unresolved } = localizeWireMaps(
     merged,
     deps.extIdForManifest,
   );
@@ -436,5 +424,5 @@ export async function syncMsu(deps: SyncDeps): Promise<SyncResult> {
     );
   }
   const writeBack = mergeLocalBack(deps.local, localized);
-  return { pushed, writeBack, dropped, unresolved };
+  return { pushed, changedFiles, writeBack, dropped, unresolved };
 }

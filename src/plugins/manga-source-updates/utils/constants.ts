@@ -15,8 +15,17 @@ export const K_OAUTH_TOKEN = "oauthToken"; // device-flow access token
 export const K_GIST_ID = "gistId"; // the shared sync gist's id (auto-discovered)
 export const K_SYNCED_AT = "syncedAt"; // ms epoch of the last successful sync
 
-// The single file in the sync gist. All maps live here, wire-keyed.
-export const SYNC_FILENAME = "msu-sync.json";
+// Sync gist layout: ONE gist, one file per map (so no single file grows huge
+// as the reading list scales). All wire-keyed, all prefixed `seanime-msu-`.
+// SUMMARIES is the head file: it's the discovery anchor (findGistByFilename)
+// and is listed first in the gist. See utils/sync.ts SYNC_FILES for the order.
+export const SYNC_FILE_SUMMARIES = "seanime-msu-summaries.json";
+export const SYNC_FILE_EXCLUSIONS = "seanime-msu-exclusions.json";
+export const SYNC_FILE_PINS = "seanime-msu-pins.json";
+export const SYNC_FILE_PROBES = "seanime-msu-probes.json";
+export const SYNC_FILE_MATCHES = "seanime-msu-matches.json";
+// The file used to discover/create the gist (summaries = head).
+export const SYNC_HEAD_FILE = SYNC_FILE_SUMMARIES;
 
 // GitHub OAuth App client_id for the Device Flow. PUBLIC (device flow needs no
 // secret) — safe to commit. ponytail: PLACEHOLDER — device-flow login is dead

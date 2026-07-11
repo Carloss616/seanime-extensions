@@ -123,4 +123,37 @@ describe("GistClient", () => {
     const c = new GistClient("tok", fn as unknown as typeof fetch);
     expect(await c.findGistByFilename("msu-sync.json")).toBeNull();
   });
+
+  test("getGistFiles returns content for each requested file, '' when absent", async () => {
+    const { fn, calls } = fakeFetch({
+      files: {
+        "a.json": { content: "AA" },
+        "b.json": { content: "BB" },
+      },
+    });
+    const c = new GistClient("tok", fn as unknown as typeof fetch);
+    const files = await c.getGistFiles("gid", [
+      "a.json",
+      "b.json",
+      "missing.json",
+    ]);
+    expect(calls[0].url).toBe("https://api.github.com/gists/gid");
+    expect(calls[0].init.method).toBe("GET");
+    expect(files).toEqual({
+      "a.json": "AA",
+      "b.json": "BB",
+      "missing.json": "",
+    });
+  });
+
+  test("updateGistFiles PATCHes every file in one request", async () => {
+    const { fn, calls } = fakeFetch({ id: "gid" });
+    const c = new GistClient("tok", fn as unknown as typeof fetch);
+    await c.updateGistFiles("gid", { "a.json": "AA", "b.json": "BB" });
+    expect(calls[0].url).toBe("https://api.github.com/gists/gid");
+    expect(calls[0].init.method).toBe("PATCH");
+    const files = JSON.parse(calls[0].init.body).files;
+    expect(files["a.json"].content).toBe("AA");
+    expect(files["b.json"].content).toBe("BB");
+  });
 });

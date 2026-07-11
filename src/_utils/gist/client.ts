@@ -107,6 +107,48 @@ export class GistClient {
     }
   }
 
+  /** Read several files from ONE gist in a single GET (the gist GET returns
+   *  every file's content). Returns filename → content, "" for any requested
+   *  file the gist doesn't have. Lets a multi-file payload pull in one request. */
+  async getGistFiles(
+    id: string,
+    filenames: string[],
+  ): Promise<Record<string, string>> {
+    const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+      method: "GET",
+      headers: this.headers(),
+    });
+    if (!res.ok) {
+      throw new Error(`getGist failed: ${res.status} ${res.text()}`);
+    }
+    const data = res.json<{ files?: Record<string, { content?: string }> }>();
+    const out: Record<string, string> = {};
+    for (const name of filenames) {
+      out[name] = data.files?.[name]?.content ?? "";
+    }
+    return out;
+  }
+
+  /** Create/update several files in ONE PATCH (a filename absent from the gist
+   *  is created). Only pass the files that actually changed. */
+  async updateGistFiles(
+    id: string,
+    files: Record<string, string>,
+  ): Promise<void> {
+    const body: { files: Record<string, { content: string }> } = { files: {} };
+    for (const [name, content] of Object.entries(files)) {
+      body.files[name] = { content };
+    }
+    const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+      method: "PATCH",
+      headers: this.headers(),
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      throw new Error(`updateGist failed: ${res.status} ${res.text()}`);
+    }
+  }
+
   async deleteGist(id: string): Promise<void> {
     const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
       method: "DELETE",

@@ -500,6 +500,35 @@ var register = (...args) => {
         throw new Error(`updateGist failed: ${res.status} ${res.text()}`);
       }
     }
+    async getGistFiles(id, filenames) {
+      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+        method: "GET",
+        headers: this.headers(),
+      });
+      if (!res.ok) {
+        throw new Error(`getGist failed: ${res.status} ${res.text()}`);
+      }
+      const data = res.json();
+      const out = {};
+      for (const name of filenames) {
+        out[name] = data.files?.[name]?.content ?? "";
+      }
+      return out;
+    }
+    async updateGistFiles(id, files) {
+      const body = { files: {} };
+      for (const [name, content] of Object.entries(files)) {
+        body.files[name] = { content };
+      }
+      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+        method: "PATCH",
+        headers: this.headers(),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        throw new Error(`updateGist failed: ${res.status} ${res.text()}`);
+      }
+    }
     async deleteGist(id) {
       const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
         method: "DELETE",
@@ -790,7 +819,12 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   var K_OAUTH_TOKEN = "oauthToken";
   var K_GIST_ID = "gistId";
   var K_SYNCED_AT = "syncedAt";
-  var SYNC_FILENAME = "msu-sync.json";
+  var SYNC_FILE_SUMMARIES = "seanime-msu-summaries.json";
+  var SYNC_FILE_EXCLUSIONS = "seanime-msu-exclusions.json";
+  var SYNC_FILE_PINS = "seanime-msu-pins.json";
+  var SYNC_FILE_PROBES = "seanime-msu-probes.json";
+  var SYNC_FILE_MATCHES = "seanime-msu-matches.json";
+  var SYNC_HEAD_FILE = SYNC_FILE_SUMMARIES;
   var GITHUB_CLIENT_ID = "REPLACE_WITH_OAUTH_APP_CLIENT_ID";
   var REASONS = {
     outdated: { menu: "Behind / outdated", badge: "behind", intent: "warning" },
@@ -1011,17 +1045,17 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   }
   function snapshotLocalMaps() {
     return {
-      excluded: getExcluded(),
-      pinned: getPinned(),
-      results: getResults(),
+      summaries: getResults(),
+      exclusions: getExcluded(),
+      pins: getPinned(),
       probes: getProbes(),
       matches: getMatches(),
     };
   }
   function writeLocalMaps(maps) {
-    setExcluded(maps.excluded);
-    setPinned(maps.pinned);
-    setResults(maps.results);
+    setResults(maps.summaries);
+    setExcluded(maps.exclusions);
+    setPinned(maps.pins);
     setProbes(maps.probes);
     setMatches(maps.matches);
   }
@@ -1187,22 +1221,18 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     const manifestId = rest.slice(0, sep);
     const localId = Number(rest.slice(sep + 1));
     if (!Number.isFinite(localId)) return null;
-    const extId = extIdForManifest(manifestId);
+    const extId = extIdForManifest(manifestId, localId);
     if (extId == null) return null;
     return encodeMediaId(extId, localId);
   }
-  var SYNC_VERSION = 1;
-  function emptyWire() {
-    return {
-      version: SYNC_VERSION,
-      updatedAt: 0,
-      excluded: {},
-      pinned: {},
-      results: {},
-      probes: {},
-      matches: {},
-    };
-  }
+  var SYNC_FILES = [
+    { section: "summaries", file: SYNC_FILE_SUMMARIES, level: 1 },
+    { section: "exclusions", file: SYNC_FILE_EXCLUSIONS, level: 2 },
+    { section: "pins", file: SYNC_FILE_PINS, level: 2 },
+    { section: "probes", file: SYNC_FILE_PROBES, level: 2 },
+    { section: "matches", file: SYNC_FILE_MATCHES, level: 2 },
+  ];
+  var ALL_SYNC_FILES = SYNC_FILES.map((s) => s.file);
   function effTs(rec) {
     return Math.max(rec.updatedAt ?? 0, rec.deletedAt ?? 0);
   }
@@ -1225,13 +1255,11 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     return out;
   }
-  function mergeWireDocs(local, remote, now) {
+  function mergeMaps(local, remote) {
     return {
-      version: SYNC_VERSION,
-      updatedAt: now,
-      excluded: mergeTwoLevel(local.excluded, remote.excluded),
-      pinned: mergeTwoLevel(local.pinned, remote.pinned),
-      results: mergeOneLevel(local.results, remote.results),
+      summaries: mergeOneLevel(local.summaries, remote.summaries),
+      exclusions: mergeTwoLevel(local.exclusions, remote.exclusions),
+      pins: mergeTwoLevel(local.pins, remote.pins),
       probes: mergeTwoLevel(local.probes, remote.probes),
       matches: mergeTwoLevel(local.matches, remote.matches),
     };
@@ -1245,15 +1273,6 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     return out;
   }
-  function canonMaps(doc) {
-    return {
-      excluded: sortMap(doc.excluded),
-      matches: sortMap(doc.matches),
-      pinned: sortMap(doc.pinned),
-      probes: sortMap(doc.probes),
-      results: sortObj(doc.results),
-    };
-  }
   function sortMap(m) {
     const out = {};
     for (const k of Object.keys(m).sort()) {
@@ -1263,19 +1282,16 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     return out;
   }
-  function serializeWireDoc(doc) {
-    return JSON.stringify(
-      {
-        version: doc.version ?? SYNC_VERSION,
-        updatedAt: doc.updatedAt ?? 0,
-        ...canonMaps(doc),
-      },
-      null,
-      2,
-    );
+  function serializeSection(map, level) {
+    const canon = level === 2 ? sortMap(map) : sortObj(map);
+    return JSON.stringify(canon, null, 2);
   }
-  function wireMapsEqual(a, b) {
-    return JSON.stringify(canonMaps(a)) === JSON.stringify(canonMaps(b));
+  function wireMapsToFiles(maps) {
+    const out = {};
+    for (const { section, file, level } of SYNC_FILES) {
+      out[file] = serializeSection(maps[section], level);
+    }
+    return out;
   }
   function parseMap(src) {
     const out = {};
@@ -1316,30 +1332,21 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     return out;
   }
-  function parseWireDoc(raw, log) {
-    if (raw == null || raw === "") return emptyWire();
-    let data = raw;
-    if (typeof raw === "string") {
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        return emptyWire();
-      }
+  function parseJsonObj(raw) {
+    if (!raw) return {};
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return {};
     }
-    if (!data || typeof data !== "object") return emptyWire();
-    if (typeof data.version === "number" && data.version !== SYNC_VERSION) {
-      log.warn(
-        `msu-sync.json version ${data.version} unknown, keeping records`,
-      );
-    }
+  }
+  function filesToWireMaps(files) {
     return {
-      version: typeof data.version === "number" ? data.version : SYNC_VERSION,
-      updatedAt: typeof data.updatedAt === "number" ? data.updatedAt : 0,
-      excluded: parseMap(data.excluded),
-      pinned: parseMap(data.pinned),
-      results: parseResults(data.results),
-      probes: parseMap(data.probes),
-      matches: parseMap(data.matches),
+      summaries: parseResults(parseJsonObj(files[SYNC_FILE_SUMMARIES] ?? "")),
+      exclusions: parseMap(parseJsonObj(files[SYNC_FILE_EXCLUSIONS] ?? "")),
+      pins: parseMap(parseJsonObj(files[SYNC_FILE_PINS] ?? "")),
+      probes: parseMap(parseJsonObj(files[SYNC_FILE_PROBES] ?? "")),
+      matches: parseMap(parseJsonObj(files[SYNC_FILE_MATCHES] ?? "")),
     };
   }
   function translateTwoLevel(m, key, dropped) {
@@ -1366,21 +1373,19 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     return out;
   }
-  function toWireDoc(local, sources, now) {
+  function toWireMaps(local, sources) {
     const dropped = new Set();
     const key = (mediaId) => toWireKey(mediaId, sources);
-    const doc = {
-      version: SYNC_VERSION,
-      updatedAt: now,
-      excluded: translateTwoLevel(local.excluded, key, dropped),
-      pinned: translateTwoLevel(local.pinned, key, dropped),
-      results: translateOneLevel(local.results, key, dropped),
+    const maps = {
+      summaries: translateOneLevel(local.summaries, key, dropped),
+      exclusions: translateTwoLevel(local.exclusions, key, dropped),
+      pins: translateTwoLevel(local.pins, key, dropped),
       probes: translateTwoLevel(local.probes, key, dropped),
       matches: translateTwoLevel(local.matches, key, dropped),
     };
-    return { doc, dropped: [...dropped] };
+    return { maps, dropped: [...dropped] };
   }
-  function localizeWireDoc(doc, extIdForManifest) {
+  function localizeWireMaps(maps, extIdForManifest) {
     const unresolved = new Set();
     const key = (wireKey) => {
       const mediaId = fromWireKey(wireKey, extIdForManifest);
@@ -1391,29 +1396,29 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       return String(mediaId);
     };
     const relTwo = (m) => {
-      const out = {};
+      const out2 = {};
       for (const [wk, inner] of Object.entries(m)) {
         const lk = key(wk);
-        if (lk != null) out[lk] = inner;
+        if (lk != null) out2[lk] = inner;
       }
-      return out;
+      return out2;
     };
     const relOne = (m) => {
-      const out = {};
+      const out2 = {};
       for (const [wk, rec] of Object.entries(m)) {
         const lk = key(wk);
-        if (lk != null) out[lk] = rec;
+        if (lk != null) out2[lk] = rec;
       }
-      return out;
+      return out2;
     };
-    const maps = {
-      excluded: relTwo(doc.excluded),
-      pinned: relTwo(doc.pinned),
-      results: relOne(doc.results),
-      probes: relTwo(doc.probes),
-      matches: relTwo(doc.matches),
+    const out = {
+      summaries: relOne(maps.summaries),
+      exclusions: relTwo(maps.exclusions),
+      pins: relTwo(maps.pins),
+      probes: relTwo(maps.probes),
+      matches: relTwo(maps.matches),
     };
-    return { maps, unresolved: [...unresolved] };
+    return { maps: out, unresolved: [...unresolved] };
   }
   function mergeLocalBack(existing, localized) {
     const mergeMap = (e, l) => {
@@ -1422,9 +1427,9 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       return out;
     };
     return {
-      excluded: mergeMap(existing.excluded, localized.excluded),
-      pinned: mergeMap(existing.pinned, localized.pinned),
-      results: mergeMap(existing.results, localized.results),
+      summaries: mergeMap(existing.summaries, localized.summaries),
+      exclusions: mergeMap(existing.exclusions, localized.exclusions),
+      pins: mergeMap(existing.pins, localized.pins),
       probes: mergeMap(existing.probes, localized.probes),
       matches: mergeMap(existing.matches, localized.matches),
     };
@@ -1432,55 +1437,47 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   async function ensureGist(deps) {
     const existing = deps.getGistId();
     if (existing) return existing;
-    const found = await deps.client.findGistByFilename(deps.filename);
+    const found = await deps.client.findGistByFilename(SYNC_HEAD_FILE);
     if (found) {
       deps.setGistId(found);
       return found;
     }
     const info = await deps.client.createGist(
-      deps.filename,
-      serializeWireDoc({
-        version: SYNC_VERSION,
-        updatedAt: 0,
-        excluded: {},
-        pinned: {},
-        results: {},
-        probes: {},
-        matches: {},
-      }),
-      "Seanime manga-source-updates cross-device sync",
+      SYNC_HEAD_FILE,
+      "{}",
+      "Seanime manga source updates sync",
     );
     deps.setGistId(info.id);
     return info.id;
   }
   async function syncMsu(deps) {
-    const { doc: wireLocal, dropped } = toWireDoc(
-      deps.local,
-      deps.sources,
-      deps.now,
-    );
+    const { maps: wireLocal, dropped } = toWireMaps(deps.local, deps.sources);
     if (dropped.length > 0) {
       deps.log.warn(
         `msu-sync: skipped ${dropped.length} custom-source id(s) with no source ref from push`,
       );
     }
-    let remoteStr = "";
+    let remoteFiles = {};
     try {
-      remoteStr = await deps.client.getGistFile(deps.gistId, deps.filename);
+      remoteFiles = await deps.client.getGistFiles(deps.gistId, ALL_SYNC_FILES);
     } catch (_) {
-      remoteStr = "";
+      remoteFiles = {};
     }
-    const remote = parseWireDoc(remoteStr, deps.log);
-    const merged = mergeWireDocs(wireLocal, remote, deps.now);
-    const pushed = !wireMapsEqual(merged, remote);
+    const remote = filesToWireMaps(remoteFiles);
+    const merged = mergeMaps(wireLocal, remote);
+    const mergedFiles = wireMapsToFiles(merged);
+    const remoteCanon = wireMapsToFiles(remote);
+    const changed = {};
+    for (const { file } of SYNC_FILES) {
+      if (mergedFiles[file] !== remoteCanon[file])
+        changed[file] = mergedFiles[file];
+    }
+    const changedFiles = Object.keys(changed);
+    const pushed = changedFiles.length > 0;
     if (pushed) {
-      await deps.client.updateGistFile(
-        deps.gistId,
-        deps.filename,
-        serializeWireDoc(merged),
-      );
+      await deps.client.updateGistFiles(deps.gistId, changed);
     }
-    const { maps: localized, unresolved } = localizeWireDoc(
+    const { maps: localized, unresolved } = localizeWireMaps(
       merged,
       deps.extIdForManifest,
     );
@@ -1490,7 +1487,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       );
     }
     const writeBack = mergeLocalBack(deps.local, localized);
-    return { pushed, writeBack, dropped, unresolved };
+    return { pushed, changedFiles, writeBack, dropped, unresolved };
   }
   function collectTitles(media) {
     const t = media.title ?? {};
@@ -1563,19 +1560,15 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     const syncedAt = ctx.state($storage.get(K_SYNCED_AT) ?? 0);
     const connecting = ctx.state(false);
     const deviceStart = ctx.state(null);
-    function makeExtIdResolver(neededLocalIdByManifest) {
+    function makeExtIdResolver() {
       const index = buildManifestExtIdIndex(getSources());
       const cache = { ...index };
-      return (manifestId) => {
+      return (manifestId, seedLocalId) => {
         if (manifestId in cache) return cache[manifestId];
-        const seed = neededLocalIdByManifest[manifestId];
-        const extId =
-          seed == null
-            ? null
-            : probeExtId(manifestId, seed, {
-                getManga: (mediaId) => $anilist.getManga(mediaId),
-                sleep: (ms) => $sleep(ms),
-              });
+        const extId = probeExtId(manifestId, seedLocalId, {
+          getManga: (mediaId) => $anilist.getManga(mediaId),
+          sleep: (ms) => $sleep(ms),
+        });
         cache[manifestId] = extId;
         return extId;
       };
@@ -1598,49 +1591,17 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         const client = syncClient();
         const gistId = await ensureGist({
           client,
-          filename: SYNC_FILENAME,
           getGistId: () => $storage.get(K_GIST_ID) ?? undefined,
           setGistId: (id) => $storage.set(K_GIST_ID, id),
         });
         const local = snapshotLocalMaps();
         const sources = getSources();
-        const neededLocalIdByManifest = {};
-        try {
-          const remoteStr = await client.getGistFile(gistId, SYNC_FILENAME);
-          const remote = JSON.parse(remoteStr || "{}");
-          for (const section of [
-            "excluded",
-            "pinned",
-            "results",
-            "probes",
-            "matches",
-          ]) {
-            for (const wk of Object.keys(remote?.[section] ?? {})) {
-              if (typeof wk === "string" && wk.indexOf("cs:") === 0) {
-                const rest = wk.slice(3);
-                const sep = rest.indexOf(":");
-                if (sep > 0) {
-                  const manifestId = rest.slice(0, sep);
-                  const lid = Number(rest.slice(sep + 1));
-                  if (
-                    Number.isFinite(lid) &&
-                    neededLocalIdByManifest[manifestId] == null
-                  ) {
-                    neededLocalIdByManifest[manifestId] = lid;
-                  }
-                }
-              }
-            }
-          }
-        } catch (_) {}
         const res = await syncMsu({
           client,
           gistId,
-          filename: SYNC_FILENAME,
           local,
           sources,
-          extIdForManifest: makeExtIdResolver(neededLocalIdByManifest),
-          now: Date.now(),
+          extIdForManifest: makeExtIdResolver(),
           log,
         });
         writeLocalMaps(res.writeBack);

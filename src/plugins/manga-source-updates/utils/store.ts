@@ -121,18 +121,18 @@ export function setProbes(
 // included — the merge needs them) and one write of the merged-back result.
 export function snapshotLocalMaps(): LocalMaps {
   return {
-    excluded: getExcluded(),
-    pinned: getPinned(),
-    results: getResults(),
+    summaries: getResults(),
+    exclusions: getExcluded(),
+    pins: getPinned(),
     probes: getProbes(),
     matches: getMatches(),
   };
 }
 
 export function writeLocalMaps(maps: LocalMaps): void {
-  setExcluded(maps.excluded);
-  setPinned(maps.pinned);
-  setResults(maps.results);
+  setResults(maps.summaries);
+  setExcluded(maps.exclusions);
+  setPinned(maps.pins);
   setProbes(maps.probes);
   setMatches(maps.matches);
 }

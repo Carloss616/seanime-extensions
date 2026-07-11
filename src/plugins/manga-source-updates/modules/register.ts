@@ -23,7 +23,6 @@ import {
   REASONS,
   reasonIntent,
   reasonLabel,
-  SYNC_FILENAME,
 } from "../utils/constants";
 import { clearedExclusions } from "../utils/exclusions";
 import { buildManifestExtIdIndex, probeExtId } from "../utils/ext-id";
@@ -180,23 +179,21 @@ export const register = (ctx: $ui.Context) => {
   const deviceStart = ctx.state<DeviceCodeStart | null>(null);
 
   // Resolve this instance's extId for a manifest: local K_SOURCES index first
-  // (free), then a probe seeded with a known localId from the remote records.
-  // Cached per sync run so the ≤1023-call probe runs at most once per manifest.
-  function makeExtIdResolver(
-    neededLocalIdByManifest: Record<string, number>,
-  ): (manifestId: string) => number | null {
+  // (free), then a probe seeded with the localId of the very record being
+  // localized. Cached per sync run so the ≤1023-call probe runs at most once
+  // per manifest.
+  function makeExtIdResolver(): (
+    manifestId: string,
+    seedLocalId: number,
+  ) => number | null {
     const index = buildManifestExtIdIndex(getSources());
     const cache: Record<string, number | null> = { ...index };
-    return (manifestId: string) => {
+    return (manifestId: string, seedLocalId: number) => {
       if (manifestId in cache) return cache[manifestId];
-      const seed = neededLocalIdByManifest[manifestId];
-      const extId =
-        seed == null
-          ? null
-          : probeExtId(manifestId, seed, {
-              getManga: (mediaId) => $anilist.getManga(mediaId),
-              sleep: (ms) => $sleep(ms),
-            });
+      const extId = probeExtId(manifestId, seedLocalId, {
+        getManga: (mediaId) => $anilist.getManga(mediaId),
+        sleep: (ms) => $sleep(ms),
+      });
       cache[manifestId] = extId;
       return extId;
     };
@@ -223,7 +220,6 @@ export const register = (ctx: $ui.Context) => {
       const client = syncClient();
       const gistId = await ensureGist({
         client,
-        filename: SYNC_FILENAME,
         getGistId: () => $storage.get<string>(K_GIST_ID) ?? undefined,
         setGistId: (id) => $storage.set(K_GIST_ID, id),
       });
@@ -231,49 +227,14 @@ export const register = (ctx: $ui.Context) => {
       const local = snapshotLocalMaps();
       const sources = getSources();
 
-      // Pre-collect a known localId per manifest present in the remote so the
-      // extId resolver can probe manifests with zero local manga. Cheap: read
-      // remote once here only to seed; syncMsu re-reads inside (its own try).
-      const neededLocalIdByManifest: Record<string, number> = {};
-      try {
-        const remoteStr = await client.getGistFile(gistId, SYNC_FILENAME);
-        const remote = JSON.parse(remoteStr || "{}");
-        for (const section of [
-          "excluded",
-          "pinned",
-          "results",
-          "probes",
-          "matches",
-        ]) {
-          for (const wk of Object.keys(remote?.[section] ?? {})) {
-            if (typeof wk === "string" && wk.indexOf("cs:") === 0) {
-              const rest = wk.slice(3);
-              const sep = rest.indexOf(":");
-              if (sep > 0) {
-                const manifestId = rest.slice(0, sep);
-                const lid = Number(rest.slice(sep + 1));
-                if (
-                  Number.isFinite(lid) &&
-                  neededLocalIdByManifest[manifestId] == null
-                ) {
-                  neededLocalIdByManifest[manifestId] = lid;
-                }
-              }
-            }
-          }
-        }
-      } catch (_) {
-        // best-effort seed; index-only resolution still works
-      }
-
       const res = await syncMsu({
         client,
         gistId,
-        filename: SYNC_FILENAME,
         local,
         sources,
-        extIdForManifest: makeExtIdResolver(neededLocalIdByManifest),
-        now: Date.now(),
+        // The resolver probes using the localId of the record being localized,
+        // so no separate remote pre-read is needed to seed it.
+        extIdForManifest: makeExtIdResolver(),
         log,
       });
 

@@ -27,12 +27,15 @@ export function toWireKey(mediaId: number, sources: SourceMap): string | null {
 // PULL direction. Plain number → that mediaId. cs:manifest:localId → this
 // instance's mediaId via encodeMediaId(thisExtId, localId), where thisExtId is
 // resolved by the caller (from the local manifest→extId index, or a probe).
+// The key's own localId is handed to `extIdForManifest` as a probe seed, so a
+// manifest with zero local manga can still be resolved from the very record
+// being localized — no separate remote pre-read needed.
 // Returns null when the manifest's extId can't be resolved on this instance
 // (source not installed / zero local manga and probe failed) or the key is
 // malformed — the caller drops it from the local write-back.
 export function fromWireKey(
   key: string,
-  extIdForManifest: (manifestId: string) => number | null,
+  extIdForManifest: (manifestId: string, seedLocalId: number) => number | null,
 ): number | null {
   if (key.indexOf(WIRE_CS_PREFIX) !== 0) {
     const n = Number(key);
@@ -44,7 +47,7 @@ export function fromWireKey(
   const manifestId = rest.slice(0, sep);
   const localId = Number(rest.slice(sep + 1));
   if (!Number.isFinite(localId)) return null;
-  const extId = extIdForManifest(manifestId);
+  const extId = extIdForManifest(manifestId, localId);
   if (extId == null) return null;
   return encodeMediaId(extId, localId);
 }
