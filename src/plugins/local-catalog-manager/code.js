@@ -3898,6 +3898,107 @@ var sharedLib = (...args) => {
   function encodeMediaId(extId, localId) {
     return EXT_ID_OFFSET + extId * LOCAL_ID_RANGE + localId;
   }
+
+  class GistClient {
+    constructor(token, fetchFn) {
+      this.token = token;
+      this.fetchFn = fetchFn;
+    }
+    headers() {
+      return {
+        Authorization: `Bearer ${this.token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+      };
+    }
+    rawUrl(owner, id, filename) {
+      return `https://gist.githubusercontent.com/${owner}/${id}/raw/${filename}`;
+    }
+    async createGist(filename, content) {
+      const res = await this.fetchFn("https://api.github.com/gists", {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({
+          public: false,
+          description: "Seanime local catalog and progress sync",
+          files: { [filename]: { content } },
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`createGist failed: ${res.status} ${res.text()}`);
+      }
+      const data = res.json();
+      const owner = data.owner?.login ?? "";
+      return {
+        id: data.id,
+        owner,
+        rawUrl: this.rawUrl(owner, data.id, filename),
+      };
+    }
+    async getGistFile(id, filename) {
+      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+        method: "GET",
+        headers: this.headers(),
+      });
+      if (!res.ok) {
+        throw new Error(`getGist failed: ${res.status} ${res.text()}`);
+      }
+      const data = res.json();
+      return data.files?.[filename]?.content ?? "";
+    }
+    async getGistFileWithInfo(id, filename) {
+      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+        method: "GET",
+        headers: this.headers(),
+      });
+      if (!res.ok) {
+        throw new Error(`getGist failed: ${res.status} ${res.text()}`);
+      }
+      const data = res.json();
+      const owner = data.owner?.login ?? "";
+      return {
+        owner,
+        rawUrl: this.rawUrl(owner, id, filename),
+        content: data.files?.[filename]?.content ?? "",
+      };
+    }
+    async updateGistFile(id, filename, content) {
+      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+        method: "PATCH",
+        headers: this.headers(),
+        body: JSON.stringify({ files: { [filename]: { content } } }),
+      });
+      if (!res.ok) {
+        throw new Error(`updateGist failed: ${res.status} ${res.text()}`);
+      }
+    }
+    async deleteGist(id) {
+      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+        method: "DELETE",
+        headers: this.headers(),
+      });
+      if (!res.ok && res.status !== 404) {
+        throw new Error(`deleteGist failed: ${res.status} ${res.text()}`);
+      }
+    }
+    async findGistByFilename(filename) {
+      const res = await this.fetchFn(
+        "https://api.github.com/gists?per_page=100",
+        {
+          method: "GET",
+          headers: this.headers(),
+        },
+      );
+      if (!res.ok) {
+        throw new Error(`listGists failed: ${res.status} ${res.text()}`);
+      }
+      const data = res.json();
+      for (const g of data) {
+        if (g.files && filename in g.files) return g.id;
+      }
+      return null;
+    }
+  }
   function resolveUserPreferred(title) {
     if (typeof title === "string") {
       return title.trim() || undefined;
@@ -4214,90 +4315,6 @@ var sharedLib = (...args) => {
       return "title is required";
     }
     return null;
-  }
-
-  class GistClient {
-    constructor(token, fetchFn) {
-      this.token = token;
-      this.fetchFn = fetchFn;
-    }
-    headers() {
-      return {
-        Authorization: `Bearer ${this.token}`,
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
-      };
-    }
-    rawUrl(owner, id, filename) {
-      return `https://gist.githubusercontent.com/${owner}/${id}/raw/${filename}`;
-    }
-    async createGist(filename, content) {
-      const res = await this.fetchFn("https://api.github.com/gists", {
-        method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({
-          public: false,
-          description: "Seanime local catalog and progress sync",
-          files: { [filename]: { content } },
-        }),
-      });
-      if (!res.ok) {
-        throw new Error(`createGist failed: ${res.status} ${res.text()}`);
-      }
-      const data = res.json();
-      const owner = data.owner?.login ?? "";
-      return {
-        id: data.id,
-        owner,
-        rawUrl: this.rawUrl(owner, data.id, filename),
-      };
-    }
-    async getGistFile(id, filename) {
-      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
-        method: "GET",
-        headers: this.headers(),
-      });
-      if (!res.ok) {
-        throw new Error(`getGist failed: ${res.status} ${res.text()}`);
-      }
-      const data = res.json();
-      return data.files?.[filename]?.content ?? "";
-    }
-    async getGistFileWithInfo(id, filename) {
-      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
-        method: "GET",
-        headers: this.headers(),
-      });
-      if (!res.ok) {
-        throw new Error(`getGist failed: ${res.status} ${res.text()}`);
-      }
-      const data = res.json();
-      const owner = data.owner?.login ?? "";
-      return {
-        owner,
-        rawUrl: this.rawUrl(owner, id, filename),
-        content: data.files?.[filename]?.content ?? "",
-      };
-    }
-    async updateGistFile(id, filename, content) {
-      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
-        method: "PATCH",
-        headers: this.headers(),
-        body: JSON.stringify({ files: { [filename]: { content } } }),
-      });
-      if (!res.ok) {
-        throw new Error(`updateGist failed: ${res.status} ${res.text()}`);
-      }
-    }
-    async deleteGist(id) {
-      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
-        method: "DELETE",
-        headers: this.headers(),
-      });
-      if (!res.ok && res.status !== 404) {
-        throw new Error(`deleteGist failed: ${res.status} ${res.text()}`);
-      }
-    }
   }
   var log = createLogger();
   function applyRemote(merged, local, deps) {
