@@ -4,19 +4,18 @@ import { type EntryListRow, entryList } from "../../../_components/entry-list";
 import { CAPTION_STYLE, LABEL_STYLE } from "../../../_components/text";
 import { trayHeader } from "../../../_components/tray-header";
 import { GistClient } from "../../../_utils/gist/client";
-import { createLogger } from "../../../_utils/logger";
-import scanPanelHtml from "../assets/scan-panel.html";
+import { GITHUB_CLIENT_ID } from "../../../_utils/gist/constants";
 import {
   type DeviceCodeStart,
-  interpretDeviceCode,
-  interpretTokenResponse,
-} from "../utils/auth";
+  DeviceFlowClient,
+} from "../../../_utils/gist/device-flow";
+import { createLogger } from "../../../_utils/logger";
+import scanPanelHtml from "../assets/scan-panel.html";
 import { readCardAttrs } from "../utils/card-dom";
 import { makeProbe, unreadChapters } from "../utils/chapters";
 import { classify, isBadKind, isNoMatchError } from "../utils/classify";
 import { readingEntries } from "../utils/collection";
 import {
-  GITHUB_CLIENT_ID,
   K_GIST_ID,
   K_OAUTH_TOKEN,
   K_SYNCED_AT,
@@ -272,78 +271,41 @@ export const register = (ctx: $ui.Context) => {
     }
   }
 
-  // GitHub OAuth Device Flow. POST device/code → show user_code + link → poll
-  // access_token at `interval` until granted/expired. All fetches carry
-  // `Accept: application/json` so GitHub returns JSON (not form-encoded).
+  // GitHub OAuth Device Flow: ask DeviceFlowClient for a code → show user_code +
+  // link → poll for the token at `interval` until granted/expired. The HTTP
+  // POSTs live in DeviceFlowClient; this owns the poll cadence + UI state.
   // ponytail: the poll loop BLOCKS the UI runtime via $sleep between polls
   // (there is no setTimeout). Bounded by expires_in so it can't hang forever;
   // acceptable for a user-initiated one-time connect. Upgrade path: drive the
   // poll from cron ticks if the block ever bothers a user.
   async function connectGitHub(): Promise<void> {
     if (connecting.get()) return;
-    if (GITHUB_CLIENT_ID.indexOf("REPLACE_WITH") === 0) {
-      ctx.toast.error(
-        "Browser login isn't configured yet — paste a GitHub PAT (gist scope) in the plugin config instead.",
-      );
-      return;
-    }
     connecting.set(true);
     try {
-      const startRes = await ctx.fetch("https://github.com/login/device/code", {
-        method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ client_id: GITHUB_CLIENT_ID, scope: "gist" }),
-      });
-      const parsed = interpretDeviceCode(startRes.json());
+      const auth = new DeviceFlowClient(GITHUB_CLIENT_ID, (u, i) =>
+        ctx.fetch(u, i),
+      );
+      const parsed = await auth.requestDeviceCode("gist");
       if (!parsed.ok) {
         ctx.toast.error(`GitHub login failed: ${parsed.message}`);
         return;
       }
-      const start = parsed.start;
-      deviceStart.set(start);
+      deviceStart.set(parsed.start);
 
-      let interval = Math.max(1, start.interval);
-      const deadline = Date.now() + start.expiresIn * 1000;
-      while (Date.now() < deadline) {
-        $sleep(interval * 1000);
-        const pollRes = await ctx.fetch(
-          "https://github.com/login/oauth/access_token",
-          {
-            method: "POST",
-            headers: {
-              Accept: "application/json",
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              client_id: GITHUB_CLIENT_ID,
-              device_code: start.deviceCode,
-              grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-            }),
-          },
-        );
-        const result = interpretTokenResponse(pollRes.json());
-        if (result.type === "token") {
-          $storage.set(K_OAUTH_TOKEN, result.token);
-          deviceStart.set(null);
-          ctx.toast.success("Connected to GitHub");
-          void syncNow("connected", true);
-          return;
-        }
-        if (result.type === "slow_down") {
-          interval = Math.max(interval + 5, result.interval);
-          continue;
-        }
-        if (result.type === "error") {
-          ctx.toast.error(`GitHub login failed: ${result.message}`);
-          deviceStart.set(null);
-          return;
-        }
-        // pending → keep polling
+      // The client runs the whole blocking poll loop; we just act on the
+      // terminal outcome.
+      const result = await auth.pollUntilToken(parsed.start, {
+        sleep: (ms) => $sleep(ms),
+      });
+      if (result.type === "token") {
+        $storage.set(K_OAUTH_TOKEN, result.token);
+        ctx.toast.success("Connected to GitHub");
+        void syncNow("connected", true);
+      } else if (result.type === "error") {
+        ctx.toast.error(`GitHub login failed: ${result.message}`);
+      } else {
+        ctx.toast.error("GitHub login timed out — try again");
       }
-      ctx.toast.error("GitHub login timed out — try again");
       deviceStart.set(null);
     } catch (e) {
       log.warn("connectGitHub failed:", e);

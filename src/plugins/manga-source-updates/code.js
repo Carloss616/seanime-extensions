@@ -556,6 +556,97 @@ var register = (...args) => {
       return null;
     }
   }
+  var GITHUB_CLIENT_ID = "Ov23li6KslJmP3EaLxXj";
+  function interpretDeviceCode(json) {
+    const j = json ?? {};
+    const deviceCode = typeof j.device_code === "string" ? j.device_code : "";
+    const userCode = typeof j.user_code === "string" ? j.user_code : "";
+    const verificationUri =
+      typeof j.verification_uri === "string" ? j.verification_uri : "";
+    if (!deviceCode || !userCode || !verificationUri) {
+      const msg =
+        typeof j.error === "string"
+          ? j.error
+          : "malformed device-code response";
+      return { ok: false, message: msg };
+    }
+    return {
+      ok: true,
+      start: {
+        deviceCode,
+        userCode,
+        verificationUri,
+        interval: typeof j.interval === "number" ? j.interval : 5,
+        expiresIn: typeof j.expires_in === "number" ? j.expires_in : 900,
+      },
+    };
+  }
+  function interpretTokenResponse(json) {
+    const j = json ?? {};
+    if (typeof j.access_token === "string" && j.access_token.length > 0) {
+      return { type: "token", token: j.access_token };
+    }
+    const err = typeof j.error === "string" ? j.error : "";
+    if (err === "authorization_pending") return { type: "pending" };
+    if (err === "slow_down") {
+      return {
+        type: "slow_down",
+        interval: typeof j.interval === "number" ? j.interval : 5,
+      };
+    }
+    if (err) return { type: "error", message: err };
+    return { type: "error", message: "unexpected token response" };
+  }
+
+  class DeviceFlowClient {
+    constructor(clientId, fetchFn) {
+      this.clientId = clientId;
+      this.fetchFn = fetchFn;
+    }
+    headers() {
+      return { Accept: "application/json", "Content-Type": "application/json" };
+    }
+    async requestDeviceCode(scope) {
+      const res = await this.fetchFn("https://github.com/login/device/code", {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ client_id: this.clientId, scope }),
+      });
+      return interpretDeviceCode(res.json());
+    }
+    async pollAccessToken(deviceCode) {
+      const res = await this.fetchFn(
+        "https://github.com/login/oauth/access_token",
+        {
+          method: "POST",
+          headers: this.headers(),
+          body: JSON.stringify({
+            client_id: this.clientId,
+            device_code: deviceCode,
+            grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+          }),
+        },
+      );
+      return interpretTokenResponse(res.json());
+    }
+    async pollUntilToken(start, deps) {
+      let interval = Math.max(1, start.interval);
+      const deadline = Date.now() + start.expiresIn * 1000;
+      while (Date.now() < deadline) {
+        deps.sleep(interval * 1000);
+        const result = await this.pollAccessToken(start.deviceCode);
+        if (result.type === "token")
+          return { type: "token", token: result.token };
+        if (result.type === "error") {
+          return { type: "error", message: result.message };
+        }
+        if (result.type === "slow_down") {
+          interval = Math.max(interval + 5, result.interval);
+        }
+      }
+      return { type: "timeout" };
+    }
+  }
   function createLogger() {
     const prefix = `[${"manga-source-updates"}]`;
     return {
@@ -705,46 +796,6 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
 </script>
 </body></html>
 `;
-  function interpretDeviceCode(json) {
-    const j = json ?? {};
-    const deviceCode = typeof j.device_code === "string" ? j.device_code : "";
-    const userCode = typeof j.user_code === "string" ? j.user_code : "";
-    const verificationUri =
-      typeof j.verification_uri === "string" ? j.verification_uri : "";
-    if (!deviceCode || !userCode || !verificationUri) {
-      const msg =
-        typeof j.error === "string"
-          ? j.error
-          : "malformed device-code response";
-      return { ok: false, message: msg };
-    }
-    return {
-      ok: true,
-      start: {
-        deviceCode,
-        userCode,
-        verificationUri,
-        interval: typeof j.interval === "number" ? j.interval : 5,
-        expiresIn: typeof j.expires_in === "number" ? j.expires_in : 900,
-      },
-    };
-  }
-  function interpretTokenResponse(json) {
-    const j = json ?? {};
-    if (typeof j.access_token === "string" && j.access_token.length > 0) {
-      return { type: "token", token: j.access_token };
-    }
-    const err = typeof j.error === "string" ? j.error : "";
-    if (err === "authorization_pending") return { type: "pending" };
-    if (err === "slow_down") {
-      return {
-        type: "slow_down",
-        interval: typeof j.interval === "number" ? j.interval : 5,
-      };
-    }
-    if (err) return { type: "error", message: err };
-    return { type: "error", message: "unexpected token response" };
-  }
   async function readCardAttrs(el) {
     const fromAttr = Number((await domAttr(el, "data-media-id")) ?? 0);
     let progress = 0;
@@ -825,7 +876,6 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   var SYNC_FILE_PROBES = "seanime-msu-probes.json";
   var SYNC_FILE_MATCHES = "seanime-msu-matches.json";
   var SYNC_HEAD_FILE = SYNC_FILE_SUMMARIES;
-  var GITHUB_CLIENT_ID = "REPLACE_WITH_OAUTH_APP_CLIENT_ID";
   var REASONS = {
     outdated: { menu: "Behind / outdated", badge: "behind", intent: "warning" },
     "bad-numbering": {
@@ -1633,73 +1683,29 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     async function connectGitHub() {
       if (connecting.get()) return;
-      if (GITHUB_CLIENT_ID.indexOf("REPLACE_WITH") === 0) {
-        ctx.toast.error(
-          "Browser login isn't configured yet — paste a GitHub PAT (gist scope) in the plugin config instead.",
-        );
-        return;
-      }
       connecting.set(true);
       try {
-        const startRes = await ctx.fetch(
-          "https://github.com/login/device/code",
-          {
-            method: "POST",
-            headers: {
-              Accept: "application/json",
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              client_id: GITHUB_CLIENT_ID,
-              scope: "gist",
-            }),
-          },
+        const auth = new DeviceFlowClient(GITHUB_CLIENT_ID, (u, i) =>
+          ctx.fetch(u, i),
         );
-        const parsed = interpretDeviceCode(startRes.json());
+        const parsed = await auth.requestDeviceCode("gist");
         if (!parsed.ok) {
           ctx.toast.error(`GitHub login failed: ${parsed.message}`);
           return;
         }
-        const start = parsed.start;
-        deviceStart.set(start);
-        let interval = Math.max(1, start.interval);
-        const deadline = Date.now() + start.expiresIn * 1000;
-        while (Date.now() < deadline) {
-          $sleep(interval * 1000);
-          const pollRes = await ctx.fetch(
-            "https://github.com/login/oauth/access_token",
-            {
-              method: "POST",
-              headers: {
-                Accept: "application/json",
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                client_id: GITHUB_CLIENT_ID,
-                device_code: start.deviceCode,
-                grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-              }),
-            },
-          );
-          const result = interpretTokenResponse(pollRes.json());
-          if (result.type === "token") {
-            $storage.set(K_OAUTH_TOKEN, result.token);
-            deviceStart.set(null);
-            ctx.toast.success("Connected to GitHub");
-            syncNow("connected", true);
-            return;
-          }
-          if (result.type === "slow_down") {
-            interval = Math.max(interval + 5, result.interval);
-            continue;
-          }
-          if (result.type === "error") {
-            ctx.toast.error(`GitHub login failed: ${result.message}`);
-            deviceStart.set(null);
-            return;
-          }
+        deviceStart.set(parsed.start);
+        const result = await auth.pollUntilToken(parsed.start, {
+          sleep: (ms) => $sleep(ms),
+        });
+        if (result.type === "token") {
+          $storage.set(K_OAUTH_TOKEN, result.token);
+          ctx.toast.success("Connected to GitHub");
+          syncNow("connected", true);
+        } else if (result.type === "error") {
+          ctx.toast.error(`GitHub login failed: ${result.message}`);
+        } else {
+          ctx.toast.error("GitHub login timed out — try again");
         }
-        ctx.toast.error("GitHub login timed out — try again");
         deviceStart.set(null);
       } catch (e) {
         log.warn("connectGitHub failed:", e);

@@ -27,13 +27,6 @@ export const SYNC_FILE_MATCHES = "seanime-msu-matches.json";
 // The file used to discover/create the gist (summaries = head).
 export const SYNC_HEAD_FILE = SYNC_FILE_SUMMARIES;
 
-// GitHub OAuth App client_id for the Device Flow. PUBLIC (device flow needs no
-// secret) — safe to commit. ponytail: PLACEHOLDER — device-flow login is dead
-// until the extension author registers a GitHub OAuth App (device flow enabled,
-// `gist` scope) and pastes its client_id here. The PAT fallback (config field)
-// is the working auth path until then.
-export const GITHUB_CLIENT_ID = "REPLACE_WITH_OAUTH_APP_CLIENT_ID";
-
 // One table per exclusion reason: `menu` = dropdown label, `badge` = short label
 // on the EXCLUDED row, `intent` = badge color. Keys match the automatic
 // auto-exclude reasons (not-matched / error-found / outdated) so manual + auto
