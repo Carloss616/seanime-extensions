@@ -131,7 +131,11 @@ function sortMap(
   m: Record<string, Record<string, unknown>>,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const k of Object.keys(m).sort()) out[k] = sortObj(m[k]);
+  for (const k of Object.keys(m).sort()) {
+    const sorted = sortObj(m[k]);
+    if (Object.keys(sorted).length === 0) continue; // drop empty inner map so it doesn't look "changed" vs. an absent key
+    out[k] = sorted;
+  }
   return out;
 }
 
@@ -160,11 +164,15 @@ function parseMap(src: unknown): Record<string, Record<string, TimestampMeta>> {
     const innerOut: Record<string, TimestampMeta> = {};
     for (const [pid, rec] of Object.entries(inner as Record<string, unknown>)) {
       if (!rec || typeof rec !== "object") continue;
-      const r = rec as { updatedAt?: unknown };
-      innerOut[pid] = {
+      const r = rec as { updatedAt?: unknown; deletedAt?: unknown };
+      const parsed: TimestampMeta = {
         ...(rec as object),
         updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
       } as TimestampMeta;
+      if (r.deletedAt !== undefined && typeof r.deletedAt !== "number") {
+        delete parsed.deletedAt; // untrusted gist content — drop so it reads as live, not NaN
+      }
+      innerOut[pid] = parsed;
     }
     out[k] = innerOut;
   }
@@ -175,16 +183,20 @@ function parseResults(src: unknown): Record<string, StoredResult> {
   if (!src || typeof src !== "object") return out;
   for (const [k, rec] of Object.entries(src as Record<string, unknown>)) {
     if (!rec || typeof rec !== "object") continue;
-    const r = rec as { updatedAt?: unknown };
-    out[k] = {
+    const r = rec as { updatedAt?: unknown; deletedAt?: unknown };
+    const parsed: StoredResult = {
       ...(rec as object),
       updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
     } as StoredResult;
+    if (r.deletedAt !== undefined && typeof r.deletedAt !== "number") {
+      delete parsed.deletedAt; // untrusted gist content — drop so it reads as live, not NaN
+    }
+    out[k] = parsed;
   }
   return out;
 }
 
-export function parseWireDoc(raw: string | unknown, log: Console): WireDoc {
+export function parseWireDoc(raw: unknown, log: Console): WireDoc {
   if (raw == null || raw === "") return emptyWire();
   let data: Partial<WireDoc> = raw as Partial<WireDoc>;
   if (typeof raw === "string") {

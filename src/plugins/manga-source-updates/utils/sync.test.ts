@@ -184,6 +184,27 @@ describe("serialize / parse round-trip + equality", () => {
       ).results["1"].updatedAt,
     ).toBe(3);
   });
+
+  test("wireMapsEqual treats an empty inner map as equivalent to an absent key", () => {
+    const a: WireDoc = { ...emptyWire(), pinned: { "5": {} } };
+    const b: WireDoc = { ...emptyWire(), pinned: {} };
+    expect(wireMapsEqual(a, b)).toBe(true);
+  });
+
+  test("serializeWireDoc drops an outer key whose inner map is empty", () => {
+    const doc: WireDoc = { ...emptyWire(), pinned: { "5": {} } };
+    expect(serializeWireDoc(doc)).not.toContain('"5"');
+  });
+
+  test("parseWireDoc drops a non-numeric deletedAt instead of corrupting the merge", () => {
+    const raw = JSON.stringify({
+      ...emptyWire(),
+      pinned: { "1": { p: { updatedAt: 5, deletedAt: "oops" } } },
+    });
+    const parsed = parseWireDoc(raw, log);
+    expect(parsed.pinned["1"].p.deletedAt).toBeUndefined();
+    expect(effTs(parsed.pinned["1"].p)).toBe(5);
+  });
 });
 
 describe("toWireDoc / localizeWireDoc / mergeLocalBack", () => {
