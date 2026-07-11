@@ -5,12 +5,12 @@
 # 🔎 Manga Source Updates
 
 ![Type](https://img.shields.io/badge/type-plugin-3b82f6?style=for-the-badge)
-![Version](https://img.shields.io/badge/version-1.6.0-22c55e?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-1.7.0-22c55e?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 
-**Scans your reading list against every installed manga provider and tells you which sources have new chapters.**
+**Scans your reading list against every installed manga provider and tells you which sources have new chapters — now synced across your devices.**
 
-[Features](#-features) · [Quick Start](#-quick-start) · [On seanime's pages](#-on-seanimes-pages) · [How it works](#-how-it-works) · [Source detail view](#-source-detail-view) · [Permissions](#-permissions)
+[Features](#-features) · [Quick Start](#-quick-start) · [On seanime's pages](#-on-seanimes-pages) · [How it works](#-how-it-works) · [Sync](#-sync) · [Source detail view](#-source-detail-view) · [Permissions](#-permissions)
 
 </div>
 
@@ -18,7 +18,7 @@
 
 ## 💡 Concept
 
-> seanime lets one manga come from many providers, but only shows the one you're reading. This plugin refreshes each manga on your **CURRENT** list across *all* your installed providers and surfaces the source that's furthest ahead — so you never miss a release just because your usual source is behind. It shows the results both in its own tray and **directly on seanime's manga pages** (a button, a per-source bar, and card badges). UI-only: no hooks, no external network.
+> seanime lets one manga come from many providers, but only shows the one you're reading. This plugin refreshes each manga on your **CURRENT** list across *all* your installed providers and surfaces the source that's furthest ahead — so you never miss a release just because your usual source is behind. It shows the results both in its own tray and **directly on seanime's manga pages** (a button, a per-source bar, and card badges). UI-only, no update hooks — and now optionally syncs its exclusions, pins, scan results, and manual matches across your devices via a private GitHub Gist.
 
 ---
 
@@ -37,6 +37,7 @@
 | Smart auto-exclude | Sources that don't match, error, or sit far behind your progress are remembered and skipped next scan. |
 | Live progress panel | A draggable floating panel shows `X/Y + current title` while a scan runs, on any screen. |
 | Cheap rescans | TTL skips manga checked within *N* minutes; parallel batches keep a full-list scan fast. |
+| Cross-device sync | Exclusions, pins, scan results, per-source probes, and manual matches sync across your seanime instances via a private GitHub Gist — see [Sync](#-sync). |
 
 ---
 
@@ -47,7 +48,7 @@
 3. Manga with new chapters land in the **New chapters** section — and the results now show on seanime's own pages too (see below).
 
 > [!NOTE]
-> Uses only your **already-installed manga providers** through documented APIs (`$ui.register`, `ctx.newTray`, `ctx.newWebview`, `ctx.manga.*`, `ctx.state`, `$storage`, `$anilist`). It makes **no external HTTP calls of its own** — hence an empty `networkAccess` allow-list.
+> Scanning uses only your **already-installed manga providers** through documented APIs (`$ui.register`, `ctx.newTray`, `ctx.newWebview`, `ctx.manga.*`, `ctx.state`, `$storage`, `$anilist`) and makes **no external HTTP calls of its own**. Sync is opt-in and the only source of outbound network traffic — see [Sync](#-sync) — hence the `networkAccess` allow-list is scoped to GitHub's API/gist hosts only.
 
 ### Configuration
 
@@ -57,6 +58,9 @@
 | `farBehindGap` | `10` | Auto-exclude a source this many chapters *behind* your progress (likely a wrong match). |
 | `parallelBatch` | `10` | How many providers to probe at once per manga. |
 | `syncNativeButtons` | `true` | Also run a scan when you click seanime's own **Reload sources** (entry page → scans that manga) / **Refresh sources** (library → confirms, then scans the whole list). |
+| `githubPat` | *(empty)* | A GitHub PAT with the `gist` scope — optional fallback auth for [Sync](#-sync) if you'd rather not use the in-app "Connect GitHub" browser login. |
+| `autoSync` | `false` | Periodically pull + merge + push your MSU data via the Gist (needs a connected GitHub account or PAT). |
+| `syncIntervalMinutes` | `30` | How often auto-sync runs, in minutes (minimum enforced: 5). |
 
 ---
 
@@ -101,6 +105,23 @@ Results, per-source probes, exclusions and pins all live in `$storage`, so a rel
 
 ---
 
+## 🔄 Sync
+
+Every field the plugin stores locally — **scan summaries**, **exclusions**, **pins**, **per-source probes**, and **manual matches** — can sync across every seanime instance you run the plugin on, via one private GitHub Gist. Each map is its own file in that gist (`seanime-msu-summaries.json`, `-exclusions`, `-pins`, `-probes`, `-matches`) so no single file grows huge as your reading list scales; summaries is the head file. There's no separate push/pull: **↻ Sync now** is always a full round-trip (pull → merge → push only the files that changed).
+
+- **Conflict handling is automatic.** Every synced record carries an `updatedAt`/`deletedAt` timestamp; when two devices disagree, the newer timestamp wins per-record (last-writer-wins), and a delete newer than an edit sticks (tombstone-aware). **There is no manual conflict UI** — you never have to pick a side.
+- **Custom-source entries sync too**, even though their in-app `mediaId` is randomized per install: each is identified across devices by a stable `manifestId:localId` key instead, so an entry from e.g. the `mangaupdates` custom-source lines up correctly on every instance.
+- **Auth — two options:**
+  - **Connect GitHub** — a button in the tray's Sync section starts a browser-based GitHub OAuth **Device Flow** login (enter a short code at `github.com/login/device`). No token is ever typed into seanime.
+  - **`githubPat` config field** — paste a GitHub [Personal Access Token](https://github.com/settings/tokens) with the `gist` scope instead. Works standalone or alongside device-flow; a device-flow token takes priority if both are present.
+- **The gist is auto-discovered, not manually linked.** On first sync, the plugin looks for a private gist containing `seanime-msu-summaries.json` (the head file) under your account; if none exists, it creates one. There's no create/link/unlink UI — every instance signed in as the same GitHub user finds the same gist automatically.
+- **When it runs:** on demand (**↻ Sync now**), silently whenever the tray opens (rate-limited to at most once every 10s), and — if `autoSync` is on — on a schedule every `syncIntervalMinutes` minutes via a cron job.
+
+> [!IMPORTANT]
+> **Note:** the "Connect GitHub" button uses the shared *Seanime Extensions Sync* GitHub OAuth App (public `GITHUB_CLIENT_ID` in [`_utils/gist/constants.ts`](../../_utils/gist/constants.ts); device flow needs no client secret). While it polls GitHub for your authorization it blocks the plugin UI (bounded by GitHub's ~15-minute code expiry) — fine for a one-time connect. Prefer the **`githubPat`** config field if you'd rather not use the browser flow.
+
+---
+
 ## 🗂 Source detail view
 
 Click **⚙️** on any manga row (or open the tray while viewing a manga entry page) for the per-source breakdown.
@@ -128,9 +149,10 @@ Manually excluding **or** including a source **pins** it for that manga, so a la
 
 ## 🔐 Permissions
 
-- `storage` — last scan results, per-source probes, exclusions, and manual pins.
+- `storage` — last scan results, per-source probes, exclusions, manual pins, and (locally only — never synced) the device-flow token / gist id / last-synced timestamp.
 - `anilist` — resolve title / cover / progress for a manga not in the collection lookup, without an extra request.
-- **No `networkAccess`** — the plugin never calls an external host; it reads chapters through seanime's own installed providers.
+- `cron` — schedules the optional `autoSync` sync job.
+- `networkAccess` — scoped to `api.github.com`, `github.com`, and `gist.githubusercontent.com` only, used exclusively by [Sync](#-sync) (device-flow login + reading/writing the private sync gist). Scanning itself reads chapters through seanime's own installed providers and makes no external calls.
 
 ---
 

@@ -5,6 +5,18 @@ All notable changes to this extension are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-07-11
+
+### Added
+- Cross-device sync: your exclusions, pins, scan summaries, per-source probes, and manual matches sync across every seanime instance where you run the plugin, through one private GitHub Gist. Each map is its own file in the gist (`seanime-msu-summaries.json`, `-exclusions`, `-pins`, `-probes`, `-matches`) so no single file grows huge; the gist is auto-discovered by filename, so a second device finds it with no manual linking.
+- Automatic conflict resolution: when two devices disagree, the newer per-record timestamp wins (last-writer-wins), and a delete newer than an edit sticks. There is no manual conflict prompt, ever. Custom-source entries sync correctly even though seanime assigns them a different local id per install — they're matched across devices by a stable `manifestId:localId` identity.
+- GitHub sign-in, two ways: a **Connect GitHub** button in the tray's new Sync section (browser device-flow login — enter a short code at github.com/login/device, no token typed into seanime), or a `githubPat` config field for a Personal Access Token with the `gist` scope.
+- Sync section in the tray with a **↻ Sync now** button (a single pull → merge → push round-trip) and last-synced status.
+- Optional auto-sync: a silent sync when the tray opens (rate-limited), plus a scheduled background sync every `syncIntervalMinutes` when `autoSync` is on.
+
+### Changed
+- New config fields: `githubPat`, `autoSync` (default off), and `syncIntervalMinutes` (default 30). Added the `cron` permission scope and a GitHub network allow-list for the sync.
+
 ## [1.6.0] - 2026-07-11
 
 ### Added

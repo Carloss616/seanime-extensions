@@ -1,6 +1,6 @@
 # seanime-extensions
 
-> A personal collection of seanime custom-sources and plugins (manga-focused): track manga not on AniList, mirror reads to MangaUpdates, and tune the library grid.
+> A personal collection of seanime custom-sources and plugins (manga-focused): track manga not on AniList, mirror reads to MangaUpdates, surface new chapters across every installed source with cross-device Gist sync, and tune the library grid.
 
 ## About
 
