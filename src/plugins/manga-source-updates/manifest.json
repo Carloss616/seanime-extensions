@@ -1,7 +1,7 @@
 {
   "id": "manga-source-updates",
   "name": "Manga Source Updates",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "manifestURI": "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/manga-source-updates/manifest.json",
   "language": "typescript",
   "type": "plugin",
@@ -14,8 +14,17 @@
   "plugin": {
     "version": "1",
     "permissions": {
-      "scopes": ["storage", "anilist"],
-      "allow": {}
+      "scopes": ["storage", "anilist", "cron"],
+      "allow": {
+        "networkAccess": {
+          "allowedDomains": [
+            "api.github.com",
+            "github.com",
+            "gist.githubusercontent.com"
+          ],
+          "reasoning": "Sync your exclusions, pins, scan results and manual matches across devices via a private GitHub Gist, with browser (device-flow) or PAT login."
+        }
+      }
     }
   },
   "userConfig": {
@@ -44,6 +53,24 @@
         "name": "syncNativeButtons",
         "label": "Trigger a scan from seanime's own \"Reload sources\" (entry page) and \"Refresh sources\" (library) buttons",
         "default": "true"
+      },
+      {
+        "type": "text",
+        "name": "githubPat",
+        "label": "GitHub token (PAT with the 'gist' scope) — optional fallback if you prefer not to use the in-app 'Connect GitHub' browser login.",
+        "default": ""
+      },
+      {
+        "type": "switch",
+        "name": "autoSync",
+        "label": "Auto-sync: periodically pull + merge + push your MSU data via the Gist",
+        "default": "false"
+      },
+      {
+        "type": "text",
+        "name": "syncIntervalMinutes",
+        "label": "Auto-sync interval (minutes)",
+        "default": "30"
       }
     ]
   },

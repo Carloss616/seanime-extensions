@@ -711,6 +711,34 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       },
     };
   }
+  function upsertMatch(map, mediaId, provider, mappedId, by, now) {
+    const key = String(mediaId);
+    const rec = { mappedId, by, updatedAt: now };
+    return { ...map, [key]: { ...(map[key] ?? {}), [provider]: rec } };
+  }
+  function tombstoneMatch(map, mediaId, provider, now) {
+    const key = String(mediaId);
+    const inner = { ...(map[key] ?? {}) };
+    const prev = inner[provider];
+    if (prev) inner[provider] = { ...prev, updatedAt: now, deletedAt: now };
+    return { ...map, [key]: inner };
+  }
+  function resolveMatchAction(sig, existing) {
+    const live = isLive(existing) ? existing : undefined;
+    if (sig === "none" || sig === "empty") {
+      return live ? { type: "tombstone" } : { type: "none" };
+    }
+    const mappedId = sig === "present" ? "" : sig;
+    if (live && live.mappedId === mappedId) return { type: "none" };
+    return { type: "upsert", mappedId };
+  }
+  function getMatches() {
+    const raw = $storage.get(K_MATCHES);
+    return raw && typeof raw === "object" ? raw : {};
+  }
+  function setMatches(map) {
+    $storage.set(K_MATCHES, map);
+  }
   function readObj(key) {
     const raw = $storage.get(key);
     return raw != null && typeof raw === "object" ? raw : {};
@@ -831,34 +859,6 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   function isManualMatchConfirmDialog(html) {
     const h = html.toLowerCase();
     return h.includes("are you sure") && !h.includes("current mapping:");
-  }
-  function upsertMatch(map, mediaId, provider, mappedId, by, now) {
-    const key = String(mediaId);
-    const rec = { mappedId, by, updatedAt: now };
-    return { ...map, [key]: { ...(map[key] ?? {}), [provider]: rec } };
-  }
-  function tombstoneMatch(map, mediaId, provider, now) {
-    const key = String(mediaId);
-    const inner = { ...(map[key] ?? {}) };
-    const prev = inner[provider];
-    if (prev) inner[provider] = { ...prev, updatedAt: now, deletedAt: now };
-    return { ...map, [key]: inner };
-  }
-  function resolveMatchAction(sig, existing) {
-    const live = isLive(existing) ? existing : undefined;
-    if (sig === "none" || sig === "empty") {
-      return live ? { type: "tombstone" } : { type: "none" };
-    }
-    const mappedId = sig === "present" ? "" : sig;
-    if (live && live.mappedId === mappedId) return { type: "none" };
-    return { type: "upsert", mappedId };
-  }
-  function getMatches() {
-    const raw = $storage.get(K_MATCHES);
-    return raw && typeof raw === "object" ? raw : {};
-  }
-  function setMatches(map) {
-    $storage.set(K_MATCHES, map);
   }
   function isActiveProvider(pid, installed) {
     return pid !== "local-manga" && pid in installed;
