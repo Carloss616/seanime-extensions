@@ -1,4 +1,6 @@
 import { K_EXCLUSIONS, K_PINS, K_PROBES, K_SUMMARIES } from "./constants";
+import { getMatches, setMatches } from "./matches";
+import type { LocalMaps } from "./sync";
 import type {
   ExcludedRecord,
   PinRecord,
@@ -113,4 +115,24 @@ export function setProbes(
   map: Record<string, Record<string, ProviderProbe>>,
 ): void {
   $storage.set(K_PROBES, map);
+}
+
+// The sync seam: one snapshot of all five mediaId-keyed maps (RAW, tombstones
+// included — the merge needs them) and one write of the merged-back result.
+export function snapshotLocalMaps(): LocalMaps {
+  return {
+    excluded: getExcluded(),
+    pinned: getPinned(),
+    results: getResults(),
+    probes: getProbes(),
+    matches: getMatches(),
+  };
+}
+
+export function writeLocalMaps(maps: LocalMaps): void {
+  setExcluded(maps.excluded);
+  setPinned(maps.pinned);
+  setResults(maps.results);
+  setProbes(maps.probes);
+  setMatches(maps.matches);
 }

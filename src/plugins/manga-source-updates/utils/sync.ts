@@ -1,3 +1,4 @@
+import type { GistClient } from "../../../_utils/gist/client";
 import type { ManualMatch } from "./matches";
 import type { SourceMap } from "./sources";
 import { fromWireKey, toWireKey } from "./sync-keys";
@@ -337,4 +338,102 @@ export function mergeLocalBack(
     probes: mergeMap(existing.probes, localized.probes),
     matches: mergeMap(existing.matches, localized.matches),
   };
+}
+
+// --- gist binding (auto-discovery, no create/link UI) ------------------------
+
+export interface EnsureGistDeps {
+  client: GistClient;
+  filename: string;
+  getGistId: () => string | undefined;
+  setGistId: (id: string) => void;
+}
+
+export async function ensureGist(deps: EnsureGistDeps): Promise<string> {
+  const existing = deps.getGistId();
+  if (existing) return existing;
+  const found = await deps.client.findGistByFilename(deps.filename);
+  if (found) {
+    deps.setGistId(found);
+    return found;
+  }
+  const info = await deps.client.createGist(
+    deps.filename,
+    serializeWireDoc({
+      version: SYNC_VERSION,
+      updatedAt: 0,
+      excluded: {},
+      pinned: {},
+      results: {},
+      probes: {},
+      matches: {},
+    }),
+  );
+  deps.setGistId(info.id);
+  return info.id;
+}
+
+// --- round-trip: pull → merge → push-if-changed → localize -------------------
+
+export interface SyncDeps {
+  client: GistClient;
+  gistId: string;
+  filename: string;
+  local: LocalMaps; // snapshot from $storage (RAW, tombstones included)
+  sources: SourceMap;
+  // Resolves this instance's extId for a manifest (index + probe). Sync so the
+  // pure localize step can run after the caller pre-resolves every needed extId.
+  extIdForManifest: (manifestId: string) => number | null;
+  now: number;
+  log: Console;
+}
+
+export interface SyncResult {
+  pushed: boolean;
+  writeBack: LocalMaps;
+  dropped: number[]; // local custom-source mediaIds with no ref (not pushed)
+  unresolved: string[]; // remote wire keys we couldn't localize (not written back)
+}
+
+export async function syncMsu(deps: SyncDeps): Promise<SyncResult> {
+  const { doc: wireLocal, dropped } = toWireDoc(
+    deps.local,
+    deps.sources,
+    deps.now,
+  );
+  if (dropped.length > 0) {
+    deps.log.warn(
+      `msu-sync: skipped ${dropped.length} custom-source id(s) with no source ref from push`,
+    );
+  }
+
+  let remoteStr = "";
+  try {
+    remoteStr = await deps.client.getGistFile(deps.gistId, deps.filename);
+  } catch (_) {
+    remoteStr = "";
+  }
+  const remote = parseWireDoc(remoteStr, deps.log);
+  const merged = mergeWireDocs(wireLocal, remote, deps.now);
+
+  const pushed = !wireMapsEqual(merged, remote);
+  if (pushed) {
+    await deps.client.updateGistFile(
+      deps.gistId,
+      deps.filename,
+      serializeWireDoc(merged),
+    );
+  }
+
+  const { maps: localized, unresolved } = localizeWireDoc(
+    merged,
+    deps.extIdForManifest,
+  );
+  if (unresolved.length > 0) {
+    deps.log.warn(
+      `msu-sync: ${unresolved.length} remote key(s) not localizable on this instance`,
+    );
+  }
+  const writeBack = mergeLocalBack(deps.local, localized);
+  return { pushed, writeBack, dropped, unresolved };
 }

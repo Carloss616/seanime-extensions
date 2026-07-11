@@ -10,6 +10,21 @@ export const K_MATCHES = "matches"; // Record<mediaId, Record<providerId, Manual
 export const K_INSTANCE_ID = "instanceId"; // string — this machine's id (never synced)
 export const K_SOURCES = "sources"; // Record<mediaId, CustomSourceRef>
 
+// --- Phase 2 sync ($storage keys are all LOCAL, never in the gist payload) ---
+export const K_OAUTH_TOKEN = "oauthToken"; // device-flow access token
+export const K_GIST_ID = "gistId"; // the shared sync gist's id (auto-discovered)
+export const K_SYNCED_AT = "syncedAt"; // ms epoch of the last successful sync
+
+// The single file in the sync gist. All maps live here, wire-keyed.
+export const SYNC_FILENAME = "msu-sync.json";
+
+// GitHub OAuth App client_id for the Device Flow. PUBLIC (device flow needs no
+// secret) — safe to commit. ponytail: PLACEHOLDER — device-flow login is dead
+// until the extension author registers a GitHub OAuth App (device flow enabled,
+// `gist` scope) and pastes its client_id here. The PAT fallback (config field)
+// is the working auth path until then.
+export const GITHUB_CLIENT_ID = "REPLACE_WITH_OAUTH_APP_CLIENT_ID";
+
 // One table per exclusion reason: `menu` = dropdown label, `badge` = short label
 // on the EXCLUDED row, `intent` = badge color. Keys match the automatic
 // auto-exclude reasons (not-matched / error-found / outdated) so manual + auto

@@ -1,15 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { encodeMediaId } from "../../../_utils/custom-source-id";
+import { GistClient } from "../../../_utils/gist/client";
 import type { SourceMap } from "./sources";
 import {
   effTs,
   emptyLocalMaps,
+  ensureGist,
   type LocalMaps,
   localizeWireDoc,
   mergeLocalBack,
   mergeWireDocs,
   parseWireDoc,
   serializeWireDoc,
+  syncMsu,
   toWireDoc,
   type WireDoc,
   wireMapsEqual,
@@ -278,5 +281,133 @@ describe("toWireDoc / localizeWireDoc / mergeLocalBack", () => {
     const out = mergeLocalBack(existing, localized);
     expect(out.pinned["1"].p.updatedAt).toBe(9);
     expect(out.pinned["2"].p.updatedAt).toBe(5);
+  });
+});
+
+function scriptedClient(scripts: Record<string, () => unknown>) {
+  const calls: { url: string; method: string; body?: string }[] = [];
+  const fn = (async (url: string, init: FetchOptions) => {
+    calls.push({ url, method: init?.method ?? "GET", body: init?.body });
+    const key = `${init?.method ?? "GET"} ${url.split("?")[0]}`;
+    const payload = (scripts[key] ?? (() => ({})))();
+    return {
+      ok: true,
+      status: 200,
+      json: () => payload,
+      text: () => JSON.stringify(payload),
+    } as FetchResponse;
+  }) as unknown as typeof fetch;
+  return { client: new GistClient("tok", fn), calls };
+}
+
+describe("ensureGist", () => {
+  test("returns the stored id without any network call", async () => {
+    const { client, calls } = scriptedClient({});
+    let stored: string | undefined = "existing";
+    const id = await ensureGist({
+      client,
+      filename: "msu-sync.json",
+      getGistId: () => stored,
+      setGistId: (v) => (stored = v),
+    });
+    expect(id).toBe("existing");
+    expect(calls.length).toBe(0);
+  });
+
+  test("discovers by filename when no id is stored", async () => {
+    const { client } = scriptedClient({
+      "GET https://api.github.com/gists": () => [
+        { id: "found", files: { "msu-sync.json": {} } },
+      ],
+    });
+    let stored: string | undefined;
+    const id = await ensureGist({
+      client,
+      filename: "msu-sync.json",
+      getGistId: () => stored,
+      setGistId: (v) => (stored = v),
+    });
+    expect(id).toBe("found");
+    expect(stored).toBe("found");
+  });
+
+  test("creates a gist when none exists", async () => {
+    const { client } = scriptedClient({
+      "GET https://api.github.com/gists": () => [],
+      "POST https://api.github.com/gists": () => ({
+        id: "new",
+        owner: { login: "me" },
+      }),
+    });
+    let stored: string | undefined;
+    const id = await ensureGist({
+      client,
+      filename: "msu-sync.json",
+      getGistId: () => stored,
+      setGistId: (v) => (stored = v),
+    });
+    expect(id).toBe("new");
+    expect(stored).toBe("new");
+  });
+});
+
+describe("syncMsu round-trip", () => {
+  test("merges remote into local, pushes, and returns write-back maps", async () => {
+    const remoteDoc = serializeWireDoc({
+      ...emptyWire(),
+      pinned: { "222": { p: { updatedAt: 100 } } },
+    });
+    const { client, calls } = scriptedClient({
+      "GET https://api.github.com/gists/gid": () => ({
+        files: { "msu-sync.json": { content: remoteDoc } },
+      }),
+      "PATCH https://api.github.com/gists/gid": () => ({}),
+    });
+    const local: LocalMaps = {
+      ...emptyLocalMaps(),
+      pinned: { "111": { p: { updatedAt: 50 } } },
+    };
+    const res = await syncMsu({
+      client,
+      gistId: "gid",
+      filename: "msu-sync.json",
+      local,
+      sources: {},
+      extIdForManifest: () => null,
+      now: 999,
+      log: console,
+    });
+    expect(res.pushed).toBe(true);
+    // Both records present after merge, localized back to mediaId keys.
+    expect(Object.keys(res.writeBack.pinned).sort()).toEqual(["111", "222"]);
+    expect(calls.some((c) => c.method === "PATCH")).toBe(true);
+  });
+
+  test("skips the push when merged equals remote (no-op)", async () => {
+    const doc = serializeWireDoc({
+      ...emptyWire(),
+      pinned: { "111": { p: { updatedAt: 50 } } },
+    });
+    const { client, calls } = scriptedClient({
+      "GET https://api.github.com/gists/gid": () => ({
+        files: { "msu-sync.json": { content: doc } },
+      }),
+      "PATCH https://api.github.com/gists/gid": () => ({}),
+    });
+    const res = await syncMsu({
+      client,
+      gistId: "gid",
+      filename: "msu-sync.json",
+      local: {
+        ...emptyLocalMaps(),
+        pinned: { "111": { p: { updatedAt: 50 } } },
+      },
+      sources: {},
+      extIdForManifest: () => null,
+      now: 1,
+      log: console,
+    });
+    expect(res.pushed).toBe(false);
+    expect(calls.some((c) => c.method === "PATCH")).toBe(false);
   });
 });
