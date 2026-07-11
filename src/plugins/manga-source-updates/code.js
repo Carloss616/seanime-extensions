@@ -118,6 +118,10 @@ var register = (...args) => {
     letterSpacing: "0.08em",
     textTransform: "uppercase",
   };
+  var CAPTION_STYLE = {
+    fontSize: "0.7rem",
+    opacity: "0.55",
+  };
   function initialsCover(tray, name) {
     const label = String(name);
     const clean = label.replace(/[^a-zA-Z0-9]/g, "");
@@ -422,6 +426,107 @@ var register = (...args) => {
     }
     return tray.flex(row, { gap: 3, style: { alignItems: "center" } });
   }
+
+  class GistClient {
+    constructor(token, fetchFn) {
+      this.token = token;
+      this.fetchFn = fetchFn;
+    }
+    headers() {
+      return {
+        Authorization: `Bearer ${this.token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+      };
+    }
+    rawUrl(owner, id, filename) {
+      return `https://gist.githubusercontent.com/${owner}/${id}/raw/${filename}`;
+    }
+    async createGist(filename, content) {
+      const res = await this.fetchFn("https://api.github.com/gists", {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({
+          public: false,
+          description: "Seanime local catalog and progress sync",
+          files: { [filename]: { content } },
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`createGist failed: ${res.status} ${res.text()}`);
+      }
+      const data = res.json();
+      const owner = data.owner?.login ?? "";
+      return {
+        id: data.id,
+        owner,
+        rawUrl: this.rawUrl(owner, data.id, filename),
+      };
+    }
+    async getGistFile(id, filename) {
+      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+        method: "GET",
+        headers: this.headers(),
+      });
+      if (!res.ok) {
+        throw new Error(`getGist failed: ${res.status} ${res.text()}`);
+      }
+      const data = res.json();
+      return data.files?.[filename]?.content ?? "";
+    }
+    async getGistFileWithInfo(id, filename) {
+      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+        method: "GET",
+        headers: this.headers(),
+      });
+      if (!res.ok) {
+        throw new Error(`getGist failed: ${res.status} ${res.text()}`);
+      }
+      const data = res.json();
+      const owner = data.owner?.login ?? "";
+      return {
+        owner,
+        rawUrl: this.rawUrl(owner, id, filename),
+        content: data.files?.[filename]?.content ?? "",
+      };
+    }
+    async updateGistFile(id, filename, content) {
+      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+        method: "PATCH",
+        headers: this.headers(),
+        body: JSON.stringify({ files: { [filename]: { content } } }),
+      });
+      if (!res.ok) {
+        throw new Error(`updateGist failed: ${res.status} ${res.text()}`);
+      }
+    }
+    async deleteGist(id) {
+      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+        method: "DELETE",
+        headers: this.headers(),
+      });
+      if (!res.ok && res.status !== 404) {
+        throw new Error(`deleteGist failed: ${res.status} ${res.text()}`);
+      }
+    }
+    async findGistByFilename(filename) {
+      const res = await this.fetchFn(
+        "https://api.github.com/gists?per_page=100",
+        {
+          method: "GET",
+          headers: this.headers(),
+        },
+      );
+      if (!res.ok) {
+        throw new Error(`listGists failed: ${res.status} ${res.text()}`);
+      }
+      const data = res.json();
+      for (const g of data) {
+        if (g.files && filename in g.files) return g.id;
+      }
+      return null;
+    }
+  }
   function createLogger() {
     const prefix = `[${"manga-source-updates"}]`;
     return {
@@ -642,6 +747,10 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   var K_MATCHES = "matches";
   var K_INSTANCE_ID = "instanceId";
   var K_SOURCES = "sources";
+  var K_OAUTH_TOKEN = "oauthToken";
+  var K_GIST_ID = "gistId";
+  var K_SYNCED_AT = "syncedAt";
+  var SYNC_FILENAME = "msu-sync.json";
   var REASONS = {
     outdated: { menu: "Behind / outdated", badge: "behind", intent: "warning" },
     "bad-numbering": {
@@ -685,6 +794,55 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       nextPinned[key] = nextProviders;
     }
     return { excluded: nextExcluded, pinned: nextPinned };
+  }
+  var EXT_ID_OFFSET = 2147483648;
+  var LOCAL_ID_RANGE = 1099511627776;
+  var MAX_EXT_ID = 1023;
+  function isCustomSourceId(mediaId) {
+    return mediaId >= EXT_ID_OFFSET;
+  }
+  function decodeLocalId(mediaId) {
+    return (mediaId - EXT_ID_OFFSET) % LOCAL_ID_RANGE;
+  }
+  function decodeExtId(mediaId) {
+    return Math.floor((mediaId - EXT_ID_OFFSET) / LOCAL_ID_RANGE);
+  }
+  function encodeMediaId(extId, localId) {
+    return EXT_ID_OFFSET + extId * LOCAL_ID_RANGE + localId;
+  }
+  function parseCustomSourceManifestId(siteUrl) {
+    const PREFIX = "ext_custom_source_";
+    if (!siteUrl || siteUrl.indexOf(PREFIX) !== 0) return;
+    const end = siteUrl.indexOf("|END|");
+    if (end < 0) return;
+    const id = siteUrl.slice(PREFIX.length, end);
+    return id || undefined;
+  }
+  function stableCustomSourceKey(manifestId, localId) {
+    return `${manifestId}:${localId}`;
+  }
+  function buildManifestExtIdIndex(sources) {
+    const out = {};
+    for (const ref of Object.values(sources)) {
+      if (ref.deletedAt != null) continue;
+      if (out[ref.manifestId] == null) out[ref.manifestId] = ref.extId;
+    }
+    return out;
+  }
+  function probeExtId(manifestId, localId, deps) {
+    for (let extId = 1; extId <= MAX_EXT_ID; extId++) {
+      if (extId % 64 === 0) deps.sleep(0);
+      try {
+        const m = deps.getManga(encodeMediaId(extId, localId));
+        if (
+          m?.siteUrl &&
+          parseCustomSourceManifestId(m.siteUrl) === manifestId
+        ) {
+          return extId;
+        }
+      } catch (_) {}
+    }
+    return null;
   }
   function createHeaderProgressReader(ctx) {
     let cache = null;
@@ -810,6 +968,22 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   function setProbes(map) {
     $storage.set(K_PROBES, map);
   }
+  function snapshotLocalMaps() {
+    return {
+      excluded: getExcluded(),
+      pinned: getPinned(),
+      results: getResults(),
+      probes: getProbes(),
+      matches: getMatches(),
+    };
+  }
+  function writeLocalMaps(maps) {
+    setExcluded(maps.excluded);
+    setPinned(maps.pinned);
+    setResults(maps.results);
+    setProbes(maps.probes);
+    setMatches(maps.matches);
+  }
   function hydrateResults() {
     const stored = getResults();
     const out = [];
@@ -888,25 +1062,6 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       return "";
     }
   }
-  var EXT_ID_OFFSET = 2147483648;
-  var LOCAL_ID_RANGE = 1099511627776;
-  function isCustomSourceId(mediaId) {
-    return mediaId >= EXT_ID_OFFSET;
-  }
-  function decodeLocalId(mediaId) {
-    return (mediaId - EXT_ID_OFFSET) % LOCAL_ID_RANGE;
-  }
-  function decodeExtId(mediaId) {
-    return Math.floor((mediaId - EXT_ID_OFFSET) / LOCAL_ID_RANGE);
-  }
-  function parseCustomSourceManifestId(siteUrl) {
-    const PREFIX = "ext_custom_source_";
-    if (!siteUrl || siteUrl.indexOf(PREFIX) !== 0) return;
-    const end = siteUrl.indexOf("|END|");
-    if (end < 0) return;
-    const id = siteUrl.slice(PREFIX.length, end);
-    return id || undefined;
-  }
   function buildSourceRef(mediaId, siteUrl, now) {
     if (!isCustomSourceId(mediaId)) return;
     const manifestId = parseCustomSourceManifestId(siteUrl);
@@ -973,6 +1128,328 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     return kind;
   }
+  var WIRE_CS_PREFIX = "cs:";
+  function toWireKey(mediaId, sources) {
+    if (!isCustomSourceId(mediaId)) return String(mediaId);
+    const ref = sources[String(mediaId)];
+    if (!ref || ref.deletedAt != null) return null;
+    return `${WIRE_CS_PREFIX}${stableCustomSourceKey(ref.manifestId, decodeLocalId(mediaId))}`;
+  }
+  function fromWireKey(key, extIdForManifest) {
+    if (key.indexOf(WIRE_CS_PREFIX) !== 0) {
+      const n = Number(key);
+      return Number.isFinite(n) ? n : null;
+    }
+    const rest = key.slice(WIRE_CS_PREFIX.length);
+    const sep = rest.indexOf(":");
+    if (sep <= 0) return null;
+    const manifestId = rest.slice(0, sep);
+    const localId = Number(rest.slice(sep + 1));
+    if (!Number.isFinite(localId)) return null;
+    const extId = extIdForManifest(manifestId);
+    if (extId == null) return null;
+    return encodeMediaId(extId, localId);
+  }
+  var SYNC_VERSION = 1;
+  function emptyWire() {
+    return {
+      version: SYNC_VERSION,
+      updatedAt: 0,
+      excluded: {},
+      pinned: {},
+      results: {},
+      probes: {},
+      matches: {},
+    };
+  }
+  function effTs(rec) {
+    return Math.max(rec.updatedAt ?? 0, rec.deletedAt ?? 0);
+  }
+  function pick(l, r) {
+    if (!l) return { ...r };
+    if (!r) return { ...l };
+    return effTs(l) >= effTs(r) ? { ...l } : { ...r };
+  }
+  function mergeOneLevel(local, remote) {
+    const out = {};
+    for (const k of new Set([...Object.keys(local), ...Object.keys(remote)])) {
+      out[k] = pick(local[k], remote[k]);
+    }
+    return out;
+  }
+  function mergeTwoLevel(local, remote) {
+    const out = {};
+    for (const k of new Set([...Object.keys(local), ...Object.keys(remote)])) {
+      out[k] = mergeOneLevel(local[k] ?? {}, remote[k] ?? {});
+    }
+    return out;
+  }
+  function mergeWireDocs(local, remote, now) {
+    return {
+      version: SYNC_VERSION,
+      updatedAt: now,
+      excluded: mergeTwoLevel(local.excluded, remote.excluded),
+      pinned: mergeTwoLevel(local.pinned, remote.pinned),
+      results: mergeOneLevel(local.results, remote.results),
+      probes: mergeTwoLevel(local.probes, remote.probes),
+      matches: mergeTwoLevel(local.matches, remote.matches),
+    };
+  }
+  function sortObj(o) {
+    const out = {};
+    for (const k of Object.keys(o).sort()) {
+      const v = o[k];
+      if (v === null || v === undefined) continue;
+      out[k] = v && typeof v === "object" && !Array.isArray(v) ? sortObj(v) : v;
+    }
+    return out;
+  }
+  function canonMaps(doc) {
+    return {
+      excluded: sortMap(doc.excluded),
+      matches: sortMap(doc.matches),
+      pinned: sortMap(doc.pinned),
+      probes: sortMap(doc.probes),
+      results: sortObj(doc.results),
+    };
+  }
+  function sortMap(m) {
+    const out = {};
+    for (const k of Object.keys(m).sort()) {
+      const sorted = sortObj(m[k]);
+      if (Object.keys(sorted).length === 0) continue;
+      out[k] = sorted;
+    }
+    return out;
+  }
+  function serializeWireDoc(doc) {
+    return JSON.stringify(
+      {
+        version: doc.version ?? SYNC_VERSION,
+        updatedAt: doc.updatedAt ?? 0,
+        ...canonMaps(doc),
+      },
+      null,
+      2,
+    );
+  }
+  function wireMapsEqual(a, b) {
+    return JSON.stringify(canonMaps(a)) === JSON.stringify(canonMaps(b));
+  }
+  function parseMap(src) {
+    const out = {};
+    if (!src || typeof src !== "object") return out;
+    for (const [k, inner] of Object.entries(src)) {
+      if (!inner || typeof inner !== "object") continue;
+      const innerOut = {};
+      for (const [pid, rec] of Object.entries(inner)) {
+        if (!rec || typeof rec !== "object") continue;
+        const r = rec;
+        const parsed = {
+          ...rec,
+          updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
+        };
+        if (r.deletedAt !== undefined && typeof r.deletedAt !== "number") {
+          delete parsed.deletedAt;
+        }
+        innerOut[pid] = parsed;
+      }
+      out[k] = innerOut;
+    }
+    return out;
+  }
+  function parseResults(src) {
+    const out = {};
+    if (!src || typeof src !== "object") return out;
+    for (const [k, rec] of Object.entries(src)) {
+      if (!rec || typeof rec !== "object") continue;
+      const r = rec;
+      const parsed = {
+        ...rec,
+        updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
+      };
+      if (r.deletedAt !== undefined && typeof r.deletedAt !== "number") {
+        delete parsed.deletedAt;
+      }
+      out[k] = parsed;
+    }
+    return out;
+  }
+  function parseWireDoc(raw, log) {
+    if (raw == null || raw === "") return emptyWire();
+    let data = raw;
+    if (typeof raw === "string") {
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        return emptyWire();
+      }
+    }
+    if (!data || typeof data !== "object") return emptyWire();
+    if (typeof data.version === "number" && data.version !== SYNC_VERSION) {
+      log.warn(
+        `msu-sync.json version ${data.version} unknown, keeping records`,
+      );
+    }
+    return {
+      version: typeof data.version === "number" ? data.version : SYNC_VERSION,
+      updatedAt: typeof data.updatedAt === "number" ? data.updatedAt : 0,
+      excluded: parseMap(data.excluded),
+      pinned: parseMap(data.pinned),
+      results: parseResults(data.results),
+      probes: parseMap(data.probes),
+      matches: parseMap(data.matches),
+    };
+  }
+  function translateTwoLevel(m, key, dropped) {
+    const out = {};
+    for (const [mediaIdStr, inner] of Object.entries(m)) {
+      const wk = key(Number(mediaIdStr));
+      if (wk == null) {
+        dropped.add(Number(mediaIdStr));
+        continue;
+      }
+      out[wk] = inner;
+    }
+    return out;
+  }
+  function translateOneLevel(m, key, dropped) {
+    const out = {};
+    for (const [mediaIdStr, rec] of Object.entries(m)) {
+      const wk = key(Number(mediaIdStr));
+      if (wk == null) {
+        dropped.add(Number(mediaIdStr));
+        continue;
+      }
+      out[wk] = rec;
+    }
+    return out;
+  }
+  function toWireDoc(local, sources, now) {
+    const dropped = new Set();
+    const key = (mediaId) => toWireKey(mediaId, sources);
+    const doc = {
+      version: SYNC_VERSION,
+      updatedAt: now,
+      excluded: translateTwoLevel(local.excluded, key, dropped),
+      pinned: translateTwoLevel(local.pinned, key, dropped),
+      results: translateOneLevel(local.results, key, dropped),
+      probes: translateTwoLevel(local.probes, key, dropped),
+      matches: translateTwoLevel(local.matches, key, dropped),
+    };
+    return { doc, dropped: [...dropped] };
+  }
+  function localizeWireDoc(doc, extIdForManifest) {
+    const unresolved = new Set();
+    const key = (wireKey) => {
+      const mediaId = fromWireKey(wireKey, extIdForManifest);
+      if (mediaId == null) {
+        unresolved.add(wireKey);
+        return null;
+      }
+      return String(mediaId);
+    };
+    const relTwo = (m) => {
+      const out = {};
+      for (const [wk, inner] of Object.entries(m)) {
+        const lk = key(wk);
+        if (lk != null) out[lk] = inner;
+      }
+      return out;
+    };
+    const relOne = (m) => {
+      const out = {};
+      for (const [wk, rec] of Object.entries(m)) {
+        const lk = key(wk);
+        if (lk != null) out[lk] = rec;
+      }
+      return out;
+    };
+    const maps = {
+      excluded: relTwo(doc.excluded),
+      pinned: relTwo(doc.pinned),
+      results: relOne(doc.results),
+      probes: relTwo(doc.probes),
+      matches: relTwo(doc.matches),
+    };
+    return { maps, unresolved: [...unresolved] };
+  }
+  function mergeLocalBack(existing, localized) {
+    const mergeMap = (e, l) => {
+      const out = { ...e };
+      for (const [k, v] of Object.entries(l)) out[k] = v;
+      return out;
+    };
+    return {
+      excluded: mergeMap(existing.excluded, localized.excluded),
+      pinned: mergeMap(existing.pinned, localized.pinned),
+      results: mergeMap(existing.results, localized.results),
+      probes: mergeMap(existing.probes, localized.probes),
+      matches: mergeMap(existing.matches, localized.matches),
+    };
+  }
+  async function ensureGist(deps) {
+    const existing = deps.getGistId();
+    if (existing) return existing;
+    const found = await deps.client.findGistByFilename(deps.filename);
+    if (found) {
+      deps.setGistId(found);
+      return found;
+    }
+    const info = await deps.client.createGist(
+      deps.filename,
+      serializeWireDoc({
+        version: SYNC_VERSION,
+        updatedAt: 0,
+        excluded: {},
+        pinned: {},
+        results: {},
+        probes: {},
+        matches: {},
+      }),
+    );
+    deps.setGistId(info.id);
+    return info.id;
+  }
+  async function syncMsu(deps) {
+    const { doc: wireLocal, dropped } = toWireDoc(
+      deps.local,
+      deps.sources,
+      deps.now,
+    );
+    if (dropped.length > 0) {
+      deps.log.warn(
+        `msu-sync: skipped ${dropped.length} custom-source id(s) with no source ref from push`,
+      );
+    }
+    let remoteStr = "";
+    try {
+      remoteStr = await deps.client.getGistFile(deps.gistId, deps.filename);
+    } catch (_) {
+      remoteStr = "";
+    }
+    const remote = parseWireDoc(remoteStr, deps.log);
+    const merged = mergeWireDocs(wireLocal, remote, deps.now);
+    const pushed = !wireMapsEqual(merged, remote);
+    if (pushed) {
+      await deps.client.updateGistFile(
+        deps.gistId,
+        deps.filename,
+        serializeWireDoc(merged),
+      );
+    }
+    const { maps: localized, unresolved } = localizeWireDoc(
+      merged,
+      deps.extIdForManifest,
+    );
+    if (unresolved.length > 0) {
+      deps.log.warn(
+        `msu-sync: ${unresolved.length} remote key(s) not localizable on this instance`,
+      );
+    }
+    const writeBack = mergeLocalBack(deps.local, localized);
+    return { pushed, writeBack, dropped, unresolved };
+  }
   function collectTitles(media) {
     const t = media.title ?? {};
     const raw = [
@@ -1034,6 +1511,121 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     const confirmGlobalOpen = ctx.state(false);
     const lastMappingSigByMedia = {};
     const myInstanceId = getInstanceId();
+    const oauthToken = () => ($storage.get(K_OAUTH_TOKEN) ?? "").trim();
+    const patToken = () => ($getUserPreference("githubPat") ?? "").trim();
+    const syncToken = () => oauthToken() || patToken();
+    const hasSync = () => syncToken().length > 0;
+    const syncClient = () =>
+      new GistClient(syncToken(), (u, i) => ctx.fetch(u, i));
+    const syncing = ctx.state(false);
+    const syncedAt = ctx.state($storage.get(K_SYNCED_AT) ?? 0);
+    function makeExtIdResolver(neededLocalIdByManifest) {
+      const index = buildManifestExtIdIndex(getSources());
+      const cache = { ...index };
+      return (manifestId) => {
+        if (manifestId in cache) return cache[manifestId];
+        const seed = neededLocalIdByManifest[manifestId];
+        const extId =
+          seed == null
+            ? null
+            : probeExtId(manifestId, seed, {
+                getManga: (mediaId) => $anilist.getManga(mediaId),
+                sleep: (ms) => $sleep(ms),
+              });
+        cache[manifestId] = extId;
+        return extId;
+      };
+    }
+    let lastSilentSyncAt = 0;
+    const SILENT_SYNC_COOLDOWN_MS = 1e4;
+    async function syncNow(reason, silent) {
+      if (!hasSync()) {
+        if (!silent) ctx.toast.error("Connect GitHub (or add a PAT) first");
+        return;
+      }
+      if (syncing.get()) return;
+      if (silent) {
+        const nowMs = Date.now();
+        if (nowMs - lastSilentSyncAt < SILENT_SYNC_COOLDOWN_MS) return;
+        lastSilentSyncAt = nowMs;
+      }
+      syncing.set(true);
+      try {
+        const client = syncClient();
+        const gistId = await ensureGist({
+          client,
+          filename: SYNC_FILENAME,
+          getGistId: () => $storage.get(K_GIST_ID) ?? undefined,
+          setGistId: (id) => $storage.set(K_GIST_ID, id),
+        });
+        const local = snapshotLocalMaps();
+        const sources = getSources();
+        const neededLocalIdByManifest = {};
+        try {
+          const remoteStr = await client.getGistFile(gistId, SYNC_FILENAME);
+          const remote = JSON.parse(remoteStr || "{}");
+          for (const section of [
+            "excluded",
+            "pinned",
+            "results",
+            "probes",
+            "matches",
+          ]) {
+            for (const wk of Object.keys(remote?.[section] ?? {})) {
+              if (typeof wk === "string" && wk.indexOf("cs:") === 0) {
+                const rest = wk.slice(3);
+                const sep = rest.indexOf(":");
+                if (sep > 0) {
+                  const manifestId = rest.slice(0, sep);
+                  const lid = Number(rest.slice(sep + 1));
+                  if (
+                    Number.isFinite(lid) &&
+                    neededLocalIdByManifest[manifestId] == null
+                  ) {
+                    neededLocalIdByManifest[manifestId] = lid;
+                  }
+                }
+              }
+            }
+          }
+        } catch (_) {}
+        const res = await syncMsu({
+          client,
+          gistId,
+          filename: SYNC_FILENAME,
+          local,
+          sources,
+          extIdForManifest: makeExtIdResolver(neededLocalIdByManifest),
+          now: Date.now(),
+          log,
+        });
+        writeLocalMaps(res.writeBack);
+        const now = Date.now();
+        $storage.set(K_SYNCED_AT, now);
+        syncedAt.set(now);
+        results.set(hydrateResults());
+        probeCache.set(hydrateProbes());
+        if (!silent) {
+          ctx.toast.success(
+            res.pushed ? `Synced (${reason})` : `Up to date (${reason})`,
+          );
+        }
+        try {
+          $app.invalidateClientQuery([
+            "MANGA-get-manga-collection",
+            "MANGA-get-anilist-manga-collection",
+            "MANGA-get-manga-entry",
+          ]);
+        } catch (e) {
+          log.warn("invalidateClientQuery failed:", e);
+        }
+      } catch (e) {
+        log.warn(`sync failed (${reason}):`, e);
+        if (!silent) ctx.toast.error(`Sync failed: ${e.message}`);
+      } finally {
+        syncing.set(false);
+      }
+    }
     function reconcileInactiveProviders() {
       const active = ctx.manga.getProviders();
       const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
@@ -1410,6 +2002,16 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       cancelRequested.set(true);
       status.set("Cancelling…");
     });
+    ctx.registerEventHandler("msu-sync-now", () => {
+      syncNow("manual", false);
+    });
+    ctx.registerEventHandler("msu-sync-disconnect", () => {
+      $storage.set(K_OAUTH_TOKEN, "");
+      syncedAt.set(0);
+      ctx.toast.info(
+        "Disconnected. (Clear the PAT config field to fully stop.)",
+      );
+    });
     function clearExclusions(mediaId) {
       const next = clearedExclusions(
         getExcluded(),
@@ -1718,6 +2320,48 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         "Reading list",
         results.get().filter((r) => !r.isNew),
       );
+    }
+    function renderSyncSection() {
+      const connected = hasSync();
+      const via = oauthToken() ? "GitHub login" : patToken() ? "PAT" : "";
+      const last = syncedAt.get();
+      const syncStatusLabel = !connected
+        ? "Not connected"
+        : syncing.get()
+          ? "Syncing…"
+          : last > 0
+            ? `Synced · via ${via}`
+            : `Connected · via ${via}`;
+      const rows = [
+        tray.flex(
+          [
+            tray.text("Sync", { style: LABEL_STYLE }),
+            tray.text(syncStatusLabel, { style: CAPTION_STYLE }),
+          ],
+          { direction: "column", gap: 1 },
+        ),
+      ];
+      const actions = [];
+      if (connected) {
+        actions.push(
+          tray.button(syncing.get() ? "⏳ Syncing" : "↻ Sync now", {
+            onClick: "msu-sync-now",
+            size: "sm",
+            disabled: syncing.get(),
+          }),
+          tray.button("Disconnect", {
+            onClick: "msu-sync-disconnect",
+            size: "sm",
+            intent: "alert-subtle",
+          }),
+        );
+      } else {
+        actions.push(
+          tray.button("Connect GitHub", { onClick: "msu-connect", size: "sm" }),
+        );
+      }
+      rows.push(tray.flex(actions, { gap: 2 }));
+      return tray.stack(rows, { gap: 2 });
     }
     function renderDetail() {
       const id = detailId.get();
@@ -2086,6 +2730,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         await refreshProgress();
         if (id > 0) openDetail(id);
         else detailId.set(null);
+        syncNow("tray opened", true);
       })();
     });
     const entryButton = ctx.action.newMangaPageButton({
@@ -2449,6 +3094,23 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       );
       return tray.stack(joinDividers(tray, [head, actionRow]), { gap: 3 });
     }
+    const autoSync = ($getUserPreference("autoSync") ?? "false") === "true";
+    if (autoSync && hasSync()) {
+      const mins = Math.max(
+        5,
+        Number($getUserPreference("syncIntervalMinutes") ?? "30") || 30,
+      );
+      const expr =
+        mins < 60 ? `*/${mins} * * * *` : `0 */${Math.round(mins / 60)} * * *`;
+      try {
+        ctx.cron.add("msu-auto-sync", expr, () => {
+          syncNow("auto", true);
+        });
+        ctx.cron.start();
+      } catch (e) {
+        ctx.toast.error(`Auto-sync schedule failed: ${e.message}`);
+      }
+    }
     tray.render(() => {
       if (confirmGlobalOpen.get()) return renderGlobalConfirm();
       if (detailId.get() != null) return renderDetail();
@@ -2485,7 +3147,12 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
               }),
             ],
       });
-      const blocks = [header, renderNewOn(), renderResults()];
+      const blocks = [
+        header,
+        renderSyncSection(),
+        renderNewOn(),
+        renderResults(),
+      ];
       return tray.stack(joinDividers(tray, blocks), { gap: 3 });
     });
   };

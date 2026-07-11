@@ -1,15 +1,26 @@
 import { joinDividers } from "../../../_components/divider";
 import { createDomDecorator } from "../../../_components/dom-decorator";
 import { type EntryListRow, entryList } from "../../../_components/entry-list";
+import { CAPTION_STYLE, LABEL_STYLE } from "../../../_components/text";
 import { trayHeader } from "../../../_components/tray-header";
+import { GistClient } from "../../../_utils/gist/client";
 import { createLogger } from "../../../_utils/logger";
 import scanPanelHtml from "../assets/scan-panel.html";
 import { readCardAttrs } from "../utils/card-dom";
 import { makeProbe, unreadChapters } from "../utils/chapters";
 import { classify, isBadKind, isNoMatchError } from "../utils/classify";
 import { readingEntries } from "../utils/collection";
-import { REASONS, reasonIntent, reasonLabel } from "../utils/constants";
+import {
+  K_GIST_ID,
+  K_OAUTH_TOKEN,
+  K_SYNCED_AT,
+  REASONS,
+  reasonIntent,
+  reasonLabel,
+  SYNC_FILENAME,
+} from "../utils/constants";
 import { clearedExclusions } from "../utils/exclusions";
+import { buildManifestExtIdIndex, probeExtId } from "../utils/ext-id";
 import { createHeaderProgressReader } from "../utils/header-progress";
 import { hydrateProbes, hydrateResults } from "../utils/hydrate";
 import { getInstanceId } from "../utils/instance";
@@ -45,7 +56,10 @@ import {
   setExcluded as setExcludedMap,
   setPinned as setPinnedMap,
   setResults,
+  snapshotLocalMaps,
+  writeLocalMaps,
 } from "../utils/store";
+import { ensureGist, syncMsu } from "../utils/sync";
 import { collectTitles, resolveTitle } from "../utils/titles";
 import type {
   ExcludeReason,
@@ -141,6 +155,150 @@ export const register = (ctx: $ui.Context) => {
   // Last seen manual-mapping sig per manga — detect save/remove in the modal.
   const lastMappingSigByMedia: Record<number, string | undefined> = {};
   const myInstanceId = getInstanceId();
+
+  // --- Phase 2 sync state ----------------------------------------------------
+  // Effective token: device-flow OAuth token wins, else the PAT config field.
+  const oauthToken = () => ($storage.get<string>(K_OAUTH_TOKEN) ?? "").trim();
+  const patToken = () => ($getUserPreference("githubPat") ?? "").trim();
+  const syncToken = () => oauthToken() || patToken();
+  const hasSync = () => syncToken().length > 0;
+  const syncClient = () =>
+    new GistClient(syncToken(), (u, i) => ctx.fetch(u, i));
+
+  const syncing = ctx.state<boolean>(false);
+  const syncedAt = ctx.state<number>($storage.get<number>(K_SYNCED_AT) ?? 0);
+
+  // Resolve this instance's extId for a manifest: local K_SOURCES index first
+  // (free), then a probe seeded with a known localId from the remote records.
+  // Cached per sync run so the ≤1023-call probe runs at most once per manifest.
+  function makeExtIdResolver(
+    neededLocalIdByManifest: Record<string, number>,
+  ): (manifestId: string) => number | null {
+    const index = buildManifestExtIdIndex(getSources());
+    const cache: Record<string, number | null> = { ...index };
+    return (manifestId: string) => {
+      if (manifestId in cache) return cache[manifestId];
+      const seed = neededLocalIdByManifest[manifestId];
+      const extId =
+        seed == null
+          ? null
+          : probeExtId(manifestId, seed, {
+              getManga: (mediaId) => $anilist.getManga(mediaId),
+              sleep: (ms) => $sleep(ms),
+            });
+      cache[manifestId] = extId;
+      return extId;
+    };
+  }
+
+  let lastSilentSyncAt = 0;
+  const SILENT_SYNC_COOLDOWN_MS = 10_000;
+
+  // The one sync round-trip, reused by manual push/pull, cron, and pull-on-open.
+  // `silent` suppresses success toasts (used by cron / pull-on-open).
+  async function syncNow(reason: string, silent: boolean): Promise<void> {
+    if (!hasSync()) {
+      if (!silent) ctx.toast.error("Connect GitHub (or add a PAT) first");
+      return;
+    }
+    if (syncing.get()) return;
+    if (silent) {
+      const nowMs = Date.now();
+      if (nowMs - lastSilentSyncAt < SILENT_SYNC_COOLDOWN_MS) return;
+      lastSilentSyncAt = nowMs;
+    }
+    syncing.set(true);
+    try {
+      const client = syncClient();
+      const gistId = await ensureGist({
+        client,
+        filename: SYNC_FILENAME,
+        getGistId: () => $storage.get<string>(K_GIST_ID) ?? undefined,
+        setGistId: (id) => $storage.set(K_GIST_ID, id),
+      });
+
+      const local = snapshotLocalMaps();
+      const sources = getSources();
+
+      // Pre-collect a known localId per manifest present in the remote so the
+      // extId resolver can probe manifests with zero local manga. Cheap: read
+      // remote once here only to seed; syncMsu re-reads inside (its own try).
+      const neededLocalIdByManifest: Record<string, number> = {};
+      try {
+        const remoteStr = await client.getGistFile(gistId, SYNC_FILENAME);
+        const remote = JSON.parse(remoteStr || "{}");
+        for (const section of [
+          "excluded",
+          "pinned",
+          "results",
+          "probes",
+          "matches",
+        ]) {
+          for (const wk of Object.keys(remote?.[section] ?? {})) {
+            if (typeof wk === "string" && wk.indexOf("cs:") === 0) {
+              const rest = wk.slice(3);
+              const sep = rest.indexOf(":");
+              if (sep > 0) {
+                const manifestId = rest.slice(0, sep);
+                const lid = Number(rest.slice(sep + 1));
+                if (
+                  Number.isFinite(lid) &&
+                  neededLocalIdByManifest[manifestId] == null
+                ) {
+                  neededLocalIdByManifest[manifestId] = lid;
+                }
+              }
+            }
+          }
+        }
+      } catch (_) {
+        // best-effort seed; index-only resolution still works
+      }
+
+      const res = await syncMsu({
+        client,
+        gistId,
+        filename: SYNC_FILENAME,
+        local,
+        sources,
+        extIdForManifest: makeExtIdResolver(neededLocalIdByManifest),
+        now: Date.now(),
+        log,
+      });
+
+      writeLocalMaps(res.writeBack);
+      const now = Date.now();
+      $storage.set(K_SYNCED_AT, now);
+      syncedAt.set(now);
+
+      // Re-hydrate the tray's in-memory state from the merged $storage so a
+      // pull that changed rows is reflected without a manual rescan.
+      results.set(hydrateResults());
+      probeCache.set(hydrateProbes());
+
+      if (!silent) {
+        ctx.toast.success(
+          res.pushed ? `Synced (${reason})` : `Up to date (${reason})`,
+        );
+      }
+      // Nudge the frontend to refetch chapter/collection queries the merge may
+      // have affected.
+      try {
+        $app.invalidateClientQuery([
+          "MANGA-get-manga-collection",
+          "MANGA-get-anilist-manga-collection",
+          "MANGA-get-manga-entry",
+        ]);
+      } catch (e) {
+        log.warn("invalidateClientQuery failed:", e);
+      }
+    } catch (e) {
+      log.warn(`sync failed (${reason}):`, e);
+      if (!silent) ctx.toast.error(`Sync failed: ${(e as Error).message}`);
+    } finally {
+      syncing.set(false);
+    }
+  }
 
   // Recalculate list-row summaries ignoring inactive providers (probes stay in
   // storage — disabled / uninstalled sources are only hidden from the UI).
@@ -629,6 +787,18 @@ export const register = (ctx: $ui.Context) => {
     status.set("Cancelling…");
   });
 
+  ctx.registerEventHandler("msu-sync-now", () => {
+    void syncNow("manual", false);
+  });
+
+  ctx.registerEventHandler("msu-sync-disconnect", () => {
+    $storage.set(K_OAUTH_TOKEN, "");
+    // Keep K_GIST_ID so re-connecting re-uses the same gist; clearing the token
+    // is enough to stop syncing. (PAT is a config field the user manages.)
+    syncedAt.set(0);
+    ctx.toast.info("Disconnected. (Clear the PAT config field to fully stop.)");
+  });
+
   // Clear exclusions + pins for a scope so the next scan re-discovers every
   // source from 0 (pure map logic lives in utils/exclusions; this just does the
   // $storage I/O around it). Pass a mediaId for one manga, omit for all.
@@ -1024,6 +1194,61 @@ export const register = (ctx: $ui.Context) => {
       "Reading list",
       results.get().filter((r) => !r.isNew),
     );
+  }
+
+  // Sync status + controls — a self-contained section composed as a page-stack
+  // block (see the tray spacing convention). Not-connected state shows a single
+  // "Connect GitHub" button whose device-flow handler lands in a follow-up task;
+  // the PAT config field is the working auth path until then.
+  function renderSyncSection(): unknown {
+    const connected = hasSync();
+    const via = oauthToken() ? "GitHub login" : patToken() ? "PAT" : "";
+    const last = syncedAt.get();
+    // Named to avoid shadowing the outer register-scope `status` scan-status
+    // state (this is the sync section's own status line).
+    const syncStatusLabel = !connected
+      ? "Not connected"
+      : syncing.get()
+        ? "Syncing…"
+        : last > 0
+          ? `Synced · via ${via}`
+          : `Connected · via ${via}`;
+
+    const rows: unknown[] = [
+      tray.flex(
+        [
+          tray.text("Sync", { style: LABEL_STYLE }),
+          tray.text(syncStatusLabel, { style: CAPTION_STYLE }),
+        ],
+        { direction: "column", gap: 1 },
+      ),
+    ];
+
+    const actions: unknown[] = [];
+    if (connected) {
+      actions.push(
+        tray.button(syncing.get() ? "⏳ Syncing" : "↻ Sync now", {
+          onClick: "msu-sync-now",
+          size: "sm",
+          disabled: syncing.get(),
+        }),
+        tray.button("Disconnect", {
+          onClick: "msu-sync-disconnect",
+          size: "sm",
+          intent: "alert-subtle",
+        }),
+      );
+    } else {
+      // Device-flow connect (a follow-up task wires msu-connect + the code
+      // view). Even with no OAuth App yet, the PAT config field lights up
+      // `connected`.
+      actions.push(
+        tray.button("Connect GitHub", { onClick: "msu-connect", size: "sm" }),
+      );
+    }
+    rows.push(tray.flex(actions, { gap: 2 }));
+
+    return tray.stack(rows, { gap: 2 });
   }
 
   // Per-manga detail view: every probed source split into AVAILABLE / EXCLUDED
@@ -1489,6 +1714,7 @@ export const register = (ctx: $ui.Context) => {
       await refreshProgress();
       if (id > 0) openDetail(id);
       else detailId.set(null);
+      void syncNow("tray opened", true);
     })();
   });
 
@@ -1972,6 +2198,25 @@ export const register = (ctx: $ui.Context) => {
     return tray.stack(joinDividers(tray, [head, actionRow]), { gap: 3 });
   }
 
+  const autoSync = ($getUserPreference("autoSync") ?? "false") === "true";
+  if (autoSync && hasSync()) {
+    const mins = Math.max(
+      5,
+      Number($getUserPreference("syncIntervalMinutes") ?? "30") || 30,
+    );
+    // cron minute field is 0-59; for >= 60 min use an hour-step expression.
+    const expr =
+      mins < 60 ? `*/${mins} * * * *` : `0 */${Math.round(mins / 60)} * * *`;
+    try {
+      ctx.cron.add("msu-auto-sync", expr, () => {
+        void syncNow("auto", true);
+      });
+      ctx.cron.start();
+    } catch (e) {
+      ctx.toast.error(`Auto-sync schedule failed: ${(e as Error).message}`);
+    }
+  }
+
   tray.render(() => {
     if (confirmGlobalOpen.get()) return renderGlobalConfirm();
     if (detailId.get() != null) return renderDetail();
@@ -2013,7 +2258,12 @@ export const register = (ctx: $ui.Context) => {
             }),
           ],
     });
-    const blocks = [header, renderNewOn(), renderResults()];
+    const blocks = [
+      header,
+      renderSyncSection(),
+      renderNewOn(),
+      renderResults(),
+    ];
     return tray.stack(joinDividers(tray, blocks), { gap: 3 });
   });
 };
