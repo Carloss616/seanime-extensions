@@ -8,13 +8,13 @@ import {
   decodeExtId,
   isCustomSourceId,
 } from "../../../_utils/custom-source-id";
+import type { GistClient } from "../../../_utils/gist/client";
 import {
   mergeProgress,
   parseProgress,
   serializeProgress,
 } from "../../../_utils/local-catalog/progress";
 import { createLogger } from "../../../_utils/logger";
-import type { GistClient } from "./gist-client";
 
 const log = createLogger();
 

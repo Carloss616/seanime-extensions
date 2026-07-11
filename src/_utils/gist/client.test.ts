@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { GistClient } from "./gist-client.ts";
+import { GistClient } from "./client.ts";
 
 type Call = { url: string; init: FetchOptions };
 
@@ -91,5 +91,23 @@ describe("GistClient", () => {
       text: () => "unauthorized",
     })) as unknown as typeof fetch);
     await expect(c.deleteGist("abc")).rejects.toThrow();
+  });
+
+  test("findGistByFilename GETs /gists and returns the id containing the filename", async () => {
+    const { fn, calls } = fakeFetch([
+      { id: "other", files: { "unrelated.json": {} } },
+      { id: "mine", files: { "msu-sync.json": {} } },
+    ]);
+    const c = new GistClient("tok", fn as unknown as typeof fetch);
+    const id = await c.findGistByFilename("msu-sync.json");
+    expect(calls[0].url).toBe("https://api.github.com/gists?per_page=100");
+    expect(calls[0].init.method).toBe("GET");
+    expect(id).toBe("mine");
+  });
+
+  test("findGistByFilename returns null when no gist has the file", async () => {
+    const { fn } = fakeFetch([{ id: "other", files: { "x.json": {} } }]);
+    const c = new GistClient("tok", fn as unknown as typeof fetch);
+    expect(await c.findGistByFilename("msu-sync.json")).toBeNull();
   });
 });

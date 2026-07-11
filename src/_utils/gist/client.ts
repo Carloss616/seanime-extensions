@@ -113,4 +113,26 @@ export class GistClient {
       throw new Error(`deleteGist failed: ${res.status} ${res.text()}`);
     }
   }
+
+  /** List the authenticated user's gists and return the id of the first one
+   *  that contains `filename`, or null. Lets a second device find the shared
+   *  sync gist by filename instead of pasting an id — no create/link UI. */
+  async findGistByFilename(filename: string): Promise<string | null> {
+    const res = await this.fetchFn(
+      "https://api.github.com/gists?per_page=100",
+      {
+        method: "GET",
+        headers: this.headers(),
+      },
+    );
+    if (!res.ok) {
+      throw new Error(`listGists failed: ${res.status} ${res.text()}`);
+    }
+    const data =
+      res.json<Array<{ id: string; files?: Record<string, unknown> }>>();
+    for (const g of data) {
+      if (g.files && filename in g.files) return g.id;
+    }
+    return null;
+  }
 }

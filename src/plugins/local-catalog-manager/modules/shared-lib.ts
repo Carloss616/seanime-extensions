@@ -13,6 +13,7 @@ import {
   encodeMediaId,
   isCustomSourceId,
 } from "../../../_utils/custom-source-id";
+import { GistClient } from "../../../_utils/gist/client";
 import {
   catalogsEqual,
   coerceTitle,
@@ -36,7 +37,6 @@ import {
   upsertEntry,
   validateEntry,
 } from "../utils/catalog";
-import { GistClient } from "../utils/gist-client";
 import {
   applyRemote,
   buildMediaIdLookup,

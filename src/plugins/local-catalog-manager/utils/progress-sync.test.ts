@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { GistClient } from "./gist-client.ts";
+import type { GistClient } from "../../../_utils/gist/client.ts";
 import {
   applyRemote,
   buildMediaIdLookup,

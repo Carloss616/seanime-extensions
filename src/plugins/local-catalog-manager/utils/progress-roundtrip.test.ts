@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { encodeMediaId } from "../../../_utils/custom-source-id";
+import type { GistClient } from "../../../_utils/gist/client.ts";
 import { createLogger } from "../../../_utils/logger";
-import type { GistClient } from "./gist-client.ts";
 import {
   buildEncodedMediaIdLookup,
   syncProgressRoundTrip,

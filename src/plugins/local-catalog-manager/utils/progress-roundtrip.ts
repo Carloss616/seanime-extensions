@@ -2,6 +2,7 @@
 // tray's reload/sync flows and the onGetMangaCollection silent-sync hook.
 
 import { encodeMediaId } from "../../../_utils/custom-source-id";
+import type { GistClient } from "../../../_utils/gist/client";
 import {
   mergeProgress,
   parseProgress,
@@ -9,7 +10,6 @@ import {
   serializeProgress,
 } from "../../../_utils/local-catalog/progress";
 import type { createLogger } from "../../../_utils/logger";
-import type { GistClient } from "./gist-client";
 import { type ApplyDeps, applyRemote } from "./progress-sync";
 
 export interface ProgressRoundTripResult {
