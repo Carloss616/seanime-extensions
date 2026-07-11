@@ -368,6 +368,7 @@ export async function ensureGist(deps: EnsureGistDeps): Promise<string> {
       probes: {},
       matches: {},
     }),
+    "Seanime manga source updates sync",
   );
   deps.setGistId(info.id);
   return info.id;

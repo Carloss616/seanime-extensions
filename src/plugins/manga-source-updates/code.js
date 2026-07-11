@@ -442,13 +442,13 @@ var register = (...args) => {
     rawUrl(owner, id, filename) {
       return `https://gist.githubusercontent.com/${owner}/${id}/raw/${filename}`;
     }
-    async createGist(filename, content) {
+    async createGist(filename, content, description) {
       const res = await this.fetchFn("https://api.github.com/gists", {
         method: "POST",
         headers: this.headers(),
         body: JSON.stringify({
           public: false,
-          description: "Seanime local catalog and progress sync",
+          description,
           files: { [filename]: { content } },
         }),
       });
@@ -1448,6 +1448,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         probes: {},
         matches: {},
       }),
+      "Seanime manga-source-updates cross-device sync",
     );
     deps.setGistId(info.id);
     return info.id;

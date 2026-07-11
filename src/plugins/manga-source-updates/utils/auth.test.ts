@@ -36,6 +36,28 @@ describe("interpretDeviceCode", () => {
     expect(interpretDeviceCode({ user_code: "x" }).ok).toBe(false);
     expect(interpretDeviceCode({ error: "not_found" }).ok).toBe(false);
   });
+
+  test("defaults expiresIn to 900 when absent", () => {
+    const r = interpretDeviceCode({
+      device_code: "dc",
+      user_code: "x",
+      verification_uri: "https://x",
+      interval: 5,
+    });
+    expect(r.ok && r.start.expiresIn).toBe(900);
+  });
+
+  test("preserves a real 0 for expires_in and interval (not defaulted)", () => {
+    const r = interpretDeviceCode({
+      device_code: "dc",
+      user_code: "x",
+      verification_uri: "https://x",
+      expires_in: 0,
+      interval: 0,
+    });
+    expect(r.ok && r.start.expiresIn).toBe(0);
+    expect(r.ok && r.start.interval).toBe(0);
+  });
 });
 
 describe("interpretTokenResponse", () => {

@@ -15,6 +15,7 @@ export const SOURCE_PREFIX = "ext_custom_source_local-catalog";
 // Gist file names (both files live in the same gist — see README).
 export const CATALOG_FILENAME = "seanime-local-catalog.json";
 export const PROGRESS_FILENAME = "seanime-local-progress.json";
+export const GIST_DESCRIPTION = "Seanime local catalog and progress sync";
 
 // $storage keys. All prefixed `lcm_` (matches plugin id `local-catalog-manager`).
 export const K_GIST = "lcm_gist_id";

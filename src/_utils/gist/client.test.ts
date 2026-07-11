@@ -21,7 +21,7 @@ describe("GistClient", () => {
   test("createGist posts to /gists with auth + secret + filename, returns id/owner/rawUrl", async () => {
     const { fn, calls } = fakeFetch({ id: "abc", owner: { login: "carlos" } });
     const c = new GistClient("tok", fn as unknown as typeof fetch);
-    const res = await c.createGist("catalog.json", "{}");
+    const res = await c.createGist("catalog.json", "{}", "desc");
     expect(calls[0].url).toBe("https://api.github.com/gists");
     expect(calls[0].init.method).toBe("POST");
     expect(calls[0].init.headers?.Authorization).toBe("Bearer tok");
@@ -33,6 +33,19 @@ describe("GistClient", () => {
       owner: "carlos",
       rawUrl: "https://gist.githubusercontent.com/carlos/abc/raw/catalog.json",
     });
+  });
+
+  test("createGist puts the caller-supplied description in the POST body", async () => {
+    const withDesc = fakeFetch({ id: "abc", owner: { login: "carlos" } });
+    const c1 = new GistClient("tok", withDesc.fn as unknown as typeof fetch);
+    await c1.createGist(
+      "msu-sync.json",
+      "{}",
+      "Seanime manga source updates sync",
+    );
+    expect(JSON.parse(withDesc.calls[0].init.body).description).toBe(
+      "Seanime manga source updates sync",
+    );
   });
 
   test("getGistFile GETs /gists/:id and returns the file content", async () => {

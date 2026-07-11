@@ -9,6 +9,7 @@ import {
 } from "../utils/client-cache";
 import {
   CATALOG_FILENAME,
+  GIST_DESCRIPTION,
   K_CATALOG,
   K_DRIFT_FRESH_GIST,
   K_DRIFT_REMOTE,
@@ -844,7 +845,11 @@ export const register = (ctx: $ui.Context) => {
         const localEntries = entries.get();
         // Seed with an empty catalog so the gist file is valid JSON immediately.
         const initial = serializeCatalog([], Date.now());
-        const info = await client().createGist(CATALOG_FILENAME, initial);
+        const info = await client().createGist(
+          CATALOG_FILENAME,
+          initial,
+          GIST_DESCRIPTION,
+        );
         $storage.set(K_GIST, info.id);
         $storage.set(K_OWNER, info.owner);
         $storage.set(K_RAW, info.rawUrl);
@@ -1219,7 +1224,11 @@ export const register = (ctx: $ui.Context) => {
       try {
         let gistId = effectiveGistId();
         if (!gistId) {
-          const info = await client().createGist(CATALOG_FILENAME, json);
+          const info = await client().createGist(
+            CATALOG_FILENAME,
+            json,
+            GIST_DESCRIPTION,
+          );
           $storage.set(K_GIST, info.id);
           $storage.set(K_OWNER, info.owner);
           $storage.set(K_RAW, info.rawUrl);

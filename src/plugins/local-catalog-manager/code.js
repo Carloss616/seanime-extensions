@@ -972,6 +972,7 @@ var register = (...args) => {
   var SOURCE_PREFIX = "ext_custom_source_local-catalog";
   var CATALOG_FILENAME = "seanime-local-catalog.json";
   var PROGRESS_FILENAME = "seanime-local-progress.json";
+  var GIST_DESCRIPTION = "Seanime local catalog and progress sync";
   var K_GIST = "lcm_gist_id";
   var K_OWNER = "lcm_owner";
   var K_RAW = "lcm_raw_url";
@@ -2104,7 +2105,11 @@ var register = (...args) => {
         try {
           const localEntries = entries.get();
           const initial = serializeCatalog([], Date.now());
-          const info = await client().createGist(CATALOG_FILENAME, initial);
+          const info = await client().createGist(
+            CATALOG_FILENAME,
+            initial,
+            GIST_DESCRIPTION,
+          );
           $storage.set(K_GIST, info.id);
           $storage.set(K_OWNER, info.owner);
           $storage.set(K_RAW, info.rawUrl);
@@ -2396,7 +2401,11 @@ var register = (...args) => {
         try {
           let gistId = effectiveGistId();
           if (!gistId) {
-            const info = await client().createGist(CATALOG_FILENAME, json);
+            const info = await client().createGist(
+              CATALOG_FILENAME,
+              json,
+              GIST_DESCRIPTION,
+            );
             $storage.set(K_GIST, info.id);
             $storage.set(K_OWNER, info.owner);
             $storage.set(K_RAW, info.rawUrl);
@@ -3914,13 +3923,13 @@ var sharedLib = (...args) => {
     rawUrl(owner, id, filename) {
       return `https://gist.githubusercontent.com/${owner}/${id}/raw/${filename}`;
     }
-    async createGist(filename, content) {
+    async createGist(filename, content, description) {
       const res = await this.fetchFn("https://api.github.com/gists", {
         method: "POST",
         headers: this.headers(),
         body: JSON.stringify({
           public: false,
-          description: "Seanime local catalog and progress sync",
+          description,
           files: { [filename]: { content } },
         }),
       });

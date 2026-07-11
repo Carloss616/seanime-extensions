@@ -27,13 +27,17 @@ export class GistClient {
     return `https://gist.githubusercontent.com/${owner}/${id}/raw/${filename}`;
   }
 
-  async createGist(filename: string, content: string): Promise<GistInfo> {
+  async createGist(
+    filename: string,
+    content: string,
+    description: string,
+  ): Promise<GistInfo> {
     const res = await this.fetchFn("https://api.github.com/gists", {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({
         public: false,
-        description: "Seanime local catalog and progress sync",
+        description,
         files: { [filename]: { content } },
       }),
     });
