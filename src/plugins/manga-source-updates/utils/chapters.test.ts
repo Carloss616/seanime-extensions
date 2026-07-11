@@ -34,6 +34,7 @@ describe("makeProbe", () => {
       count: 0,
       matched: false,
       errored: true,
+      updatedAt: 0,
     });
   });
 

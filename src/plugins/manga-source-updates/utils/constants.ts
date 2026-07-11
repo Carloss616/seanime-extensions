@@ -1,10 +1,14 @@
 import type { ExcludeReason } from "./types";
 
-// $storage keys.
-export const K_EXCLUDED = "excludedProviders"; // Record<mediaId, Record<providerId, reason>>
-export const K_RESULTS = "lastResults"; // Record<mediaId, StoredResult>
-export const K_PINNED = "pinnedProviders"; // Record<mediaId, providerId[]> — user-locked
-export const K_PROBES = "lastProbes"; // Record<mediaId, Record<providerId, ProviderProbe>>
+// $storage keys. (Identifiers keep the K_ prefix; the string values are the
+// actual keys in plugin_data.)
+export const K_EXCLUSIONS = "exclusions"; // Record<mediaId, Record<providerId, ExcludedRecord>>
+export const K_SUMMARIES = "summaries"; // Record<mediaId, StoredResult> — per-manga row summary
+export const K_PINS = "pins"; // Record<mediaId, Record<providerId, PinRecord>> — user-locked
+export const K_PROBES = "probes"; // Record<mediaId, Record<providerId, ProviderProbe>> — per-source probe results
+export const K_MATCHES = "matches"; // Record<mediaId, Record<providerId, ManualMatch>>
+export const K_INSTANCE_ID = "instanceId"; // string — this machine's id (never synced)
+export const K_SOURCES = "sources"; // Record<mediaId, CustomSourceRef>
 
 // One table per exclusion reason: `menu` = dropdown label, `badge` = short label
 // on the EXCLUDED row, `intent` = badge color. Keys match the automatic

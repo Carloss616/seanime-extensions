@@ -7,6 +7,8 @@ import {
   isCustomSourceId,
   LOCAL_ID_RANGE,
   MAX_EXT_ID,
+  parseCustomSourceManifestId,
+  stableCustomSourceKey,
 } from "./custom-source-id.ts";
 
 describe("custom-source-id constants", () => {
@@ -70,5 +72,43 @@ describe("encodeMediaId", () => {
   test("max representable mediaId stays under Number.MAX_SAFE_INTEGER", () => {
     const mediaId = encodeMediaId(MAX_EXT_ID, LOCAL_ID_RANGE - 1);
     expect(Number.isSafeInteger(mediaId)).toBe(true);
+  });
+});
+
+describe("parseCustomSourceManifestId", () => {
+  test("extracts the manifest id from a wrapped siteUrl", () => {
+    expect(
+      parseCustomSourceManifestId(
+        "ext_custom_source_mangaupdates|END|https://x",
+      ),
+    ).toBe("mangaupdates");
+  });
+  test("handles a hyphenated manifest id", () => {
+    expect(
+      parseCustomSourceManifestId(
+        "ext_custom_source_local-catalog|END|https://y",
+      ),
+    ).toBe("local-catalog");
+  });
+  test("undefined for a native AniList siteUrl", () => {
+    expect(
+      parseCustomSourceManifestId("https://anilist.co/manga/1"),
+    ).toBeUndefined();
+  });
+  test("undefined for empty / missing / malformed (no |END|)", () => {
+    expect(parseCustomSourceManifestId(undefined)).toBeUndefined();
+    expect(parseCustomSourceManifestId("")).toBeUndefined();
+    expect(parseCustomSourceManifestId("ext_custom_source_x")).toBeUndefined();
+    expect(
+      parseCustomSourceManifestId("ext_custom_source_|END|u"),
+    ).toBeUndefined();
+  });
+});
+
+describe("stableCustomSourceKey", () => {
+  test("joins manifest id and localId", () => {
+    expect(stableCustomSourceKey("mangaupdates", 60735012287)).toBe(
+      "mangaupdates:60735012287",
+    );
   });
 });

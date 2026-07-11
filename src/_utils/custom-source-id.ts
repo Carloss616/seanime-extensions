@@ -40,3 +40,29 @@ export function decodeExtId(mediaId: number): number {
 export function encodeMediaId(extId: number, localId: number): number {
   return EXT_ID_OFFSET + extId * LOCAL_ID_RANGE + localId;
 }
+
+// Extract the custom-source MANIFEST id from a seanime-wrapped siteUrl:
+//   ext_custom_source_<manifest-id>|END|<original-url>
+// Returns undefined for a native AniList entry or a malformed wrapper. Unlike
+// each plugin's own SOURCE_PREFIX check (which matches ONE known manifest), this
+// extracts whatever manifest id is present — MSU spans every installed source.
+export function parseCustomSourceManifestId(
+  siteUrl: string | undefined,
+): string | undefined {
+  const PREFIX = "ext_custom_source_";
+  if (!siteUrl || siteUrl.indexOf(PREFIX) !== 0) return undefined;
+  const end = siteUrl.indexOf("|END|");
+  if (end < 0) return undefined;
+  const id = siteUrl.slice(PREFIX.length, end);
+  return id || undefined;
+}
+
+// Stable cross-instance identity for a custom-source entry: manifest id + the
+// provider-local id (both stable across installs, unlike the synthetic mediaId
+// whose extId differs per install). Used as the Phase 2 sync key.
+export function stableCustomSourceKey(
+  manifestId: string,
+  localId: number,
+): string {
+  return `${manifestId}:${localId}`;
+}

@@ -35,5 +35,8 @@ export function makeProbe(
     count: chapters?.length ?? 0,
     matched: !!chapters && chapters.length > 0,
     errored: chapters == null,
+    // Stamped later at the setProbes/mergeProbeTimestamps persist boundary —
+    // 0 is correct for a freshly-built, not-yet-persisted probe.
+    updatedAt: 0,
   };
 }

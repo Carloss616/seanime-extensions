@@ -1,5 +1,5 @@
 import { unreadChapters } from "./chapters";
-import type { ResultKind } from "./types";
+import type { AutoBadKind, ResultKind } from "./types";
 
 // Classify a source's result for a manga. `read` is the user's progress; `gap`
 // the far-behind threshold. Shared by the scan and the detail probe.
@@ -16,8 +16,10 @@ export function classify(
   return unreadChapters(read, latest) > 0 ? "new" : "up-to-date";
 }
 
-// Kinds that mark a source as a bad match for a manga -> auto-exclude.
-export function isBadKind(kind: ResultKind): boolean {
+// Kinds that mark a source as a bad match for a manga -> auto-exclude. A type
+// predicate (not just boolean) so a caller narrows `kind` to AutoBadKind —
+// which is assignable to ExcludeReason when auto-excluding.
+export function isBadKind(kind: ResultKind): kind is AutoBadKind {
   return (
     kind === "not-matched" || kind === "error-found" || kind === "outdated"
   );

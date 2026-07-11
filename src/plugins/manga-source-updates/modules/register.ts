@@ -8,29 +8,44 @@ import { readCardAttrs } from "../utils/card-dom";
 import { makeProbe, unreadChapters } from "../utils/chapters";
 import { classify, isBadKind, isNoMatchError } from "../utils/classify";
 import { readingEntries } from "../utils/collection";
-import {
-  K_EXCLUDED,
-  K_PINNED,
-  K_PROBES,
-  K_RESULTS,
-  REASONS,
-  reasonIntent,
-  reasonLabel,
-} from "../utils/constants";
-import {
-  clearedExclusions,
-  type ExcludedMap,
-  type PinnedMap,
-} from "../utils/exclusions";
+import { REASONS, reasonIntent, reasonLabel } from "../utils/constants";
+import { clearedExclusions } from "../utils/exclusions";
 import { createHeaderProgressReader } from "../utils/header-progress";
 import { hydrateProbes, hydrateResults } from "../utils/hydrate";
+import { getInstanceId } from "../utils/instance";
 import {
   isManualMatchConfirmDialog,
   mappingSigFromHtml,
 } from "../utils/manual-match";
+import {
+  getMatches,
+  resolveMatchAction,
+  setMatches,
+  tombstoneMatch,
+  upsertMatch,
+} from "../utils/matches";
 import { isActiveProvider, pruneInactiveProbes } from "../utils/providers";
 import { readSelectedProvider } from "../utils/selected-provider";
+import {
+  buildSourceRef,
+  getSources,
+  setSources,
+  upsertSourceRef,
+} from "../utils/sources";
 import { cardBadgeKind, statusFor } from "../utils/status";
+import {
+  getExcluded,
+  getExcludedView,
+  getPinned,
+  getPinnedView,
+  getResults,
+  isLive,
+  mergeProbeTimestamps,
+  setProbes as persistProbes,
+  setExcluded as setExcludedMap,
+  setPinned as setPinnedMap,
+  setResults,
+} from "../utils/store";
 import { collectTitles, resolveTitle } from "../utils/titles";
 import type {
   ExcludeReason,
@@ -109,9 +124,11 @@ export const register = (ctx: $ui.Context) => {
   // keeps the in-memory state and $storage in sync.
   const probeCache = ctx.state<Record<number, ProbeMap>>(hydrateProbes());
   function setProbes(mediaId: number, probes: ProbeMap) {
-    const next = { ...probeCache.get(), [mediaId]: probes };
+    const prev = probeCache.get()[mediaId] ?? {};
+    const stamped = mergeProbeTimestamps(prev, probes, Date.now());
+    const next = { ...probeCache.get(), [mediaId]: stamped };
     probeCache.set(next);
-    $storage.set(K_PROBES, next);
+    persistProbes(next as Record<string, Record<string, ProviderProbe>>);
   }
   // mediaId of the manga entry the user is currently viewing (0 = not on one),
   // tracked via onNavigate so opening the tray on a manga page jumps to it.
@@ -123,6 +140,7 @@ export const register = (ctx: $ui.Context) => {
 
   // Last seen manual-mapping sig per manga — detect save/remove in the modal.
   const lastMappingSigByMedia: Record<number, string | undefined> = {};
+  const myInstanceId = getInstanceId();
 
   // Recalculate list-row summaries ignoring inactive providers (probes stay in
   // storage — disabled / uninstalled sources are only hidden from the UI).
@@ -130,7 +148,7 @@ export const register = (ctx: $ui.Context) => {
     const active = ctx.manga.getProviders();
     const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
     const cache = probeCache.get();
-    const stored = $storage.get<Record<string, StoredResult>>(K_RESULTS) ?? {};
+    const stored = getResults();
     let rowsChanged = false;
     const nextResults = results.get().map((r) => {
       const probes = pruneInactiveProbes(cache[r.mediaId] ?? {}, active);
@@ -151,7 +169,7 @@ export const register = (ctx: $ui.Context) => {
         mediaId: r.mediaId,
         isNew,
         fromCache: r.fromCache,
-        checkedAt: r.checkedAt,
+        updatedAt: r.updatedAt,
       };
       stored[String(r.mediaId)] = {
         title: row.title,
@@ -161,13 +179,13 @@ export const register = (ctx: $ui.Context) => {
         sources: row.sources,
         newSources: row.newSources,
         kind: row.kind,
-        checkedAt: row.checkedAt,
+        updatedAt: row.updatedAt,
       };
       return row;
     });
     if (rowsChanged) {
       results.set(nextResults);
-      $storage.set(K_RESULTS, stored);
+      setResults(stored);
     }
   }
 
@@ -240,8 +258,7 @@ export const register = (ctx: $ui.Context) => {
     probes: ProbeMap,
   ): StoredResult {
     const key = String(mediaId);
-    const excluded =
-      $storage.get<Record<string, Record<string, string>>>(K_EXCLUDED) ?? {};
+    const excluded = getExcludedView();
     const providers = ctx.manga.getProviders();
     const providerIds = Object.keys(providers).filter((p) =>
       isActiveProvider(p, providers),
@@ -275,7 +292,7 @@ export const register = (ctx: $ui.Context) => {
       sources: matched.length,
       newSources,
       kind,
-      checkedAt: Date.now(),
+      updatedAt: Date.now(),
     };
   }
 
@@ -286,6 +303,18 @@ export const register = (ctx: $ui.Context) => {
   // immediately so the detail view moves the row to the Excluded group live.
   // `onProgress` lets the detail update its list per source. Returns the probe
   // list (the included sources) + row result.
+  // Record a custom-source entry's stable identity (manifestId + localId) so a
+  // future cross-instance sync can remap it. Native AniList entries yield
+  // undefined and are skipped. No network — reads the siteUrl already on the
+  // collection media. Shared by the full scan and the per-manga detail scan;
+  // idempotent, so it only writes the first time a source is seen.
+  function captureSourceRef(mediaId: number, media: $app.AL_BaseManga) {
+    const sref = buildSourceRef(mediaId, media.siteUrl, Date.now());
+    if (!sref) return;
+    const up = upsertSourceRef(getSources(), mediaId, sref);
+    if (up.changed) setSources(up.map);
+  }
+
   async function scanOneManga(
     mediaId: number,
     media: $app.AL_BaseManga,
@@ -300,17 +329,15 @@ export const register = (ctx: $ui.Context) => {
     const providerIds = Object.keys(providers).filter(
       (p) => p !== "local-manga",
     );
-    const excluded =
-      $storage.get<Record<string, Record<string, string>>>(K_EXCLUDED) ?? {};
-    const pinnedForManga =
-      $storage.get<Record<string, string[]>>(K_PINNED)?.[key] ?? [];
+    const excluded = getExcluded();
+    const pinnedForManga = getPinnedView()[key] ?? [];
 
     await ctx.manga.emptyCache(mediaId);
     const probes: ProbeMap = {};
     // Fetch in parallel batches: readContainer is an async fn (a real Promise,
     // so Promise.all is safe in goja — unlike a raw Go-bound value), so a batch
     // hits up to BATCH providers at once instead of one-by-one.
-    const toScan = providerIds.filter((pid) => excluded[key]?.[pid] == null);
+    const toScan = providerIds.filter((pid) => !isLive(excluded[key]?.[pid]));
     const BATCH = Math.max(
       1,
       Math.floor(Number($getUserPreference("parallelBatch") ?? "10")) || 10,
@@ -354,15 +381,15 @@ export const register = (ctx: $ui.Context) => {
           );
           if (isBadKind(kind)) {
             if (!excluded[key]) excluded[key] = {};
-            excluded[key][pid] = kind;
-            $storage.set(K_EXCLUDED, excluded); // persist live for the visual
+            excluded[key][pid] = { reason: kind, updatedAt: Date.now() };
+            setExcludedMap(excluded); // persist live for the visual
           }
         }
       }
       onProgress?.(probes); // once per batch
     }
     scanningProviders.set(null);
-    $storage.set(K_EXCLUDED, excluded);
+    setExcludedMap(excluded);
 
     const result = buildResult(
       mediaId,
@@ -404,8 +431,7 @@ export const register = (ctx: $ui.Context) => {
       const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
       const now = Date.now();
 
-      const stored =
-        $storage.get<Record<string, StoredResult>>(K_RESULTS) ?? {};
+      const stored = getResults();
 
       // Seed the working list from what's already shown, so cancelling (or a
       // crash) leaves the prior rows intact — each manga is UPDATED in place as
@@ -428,6 +454,7 @@ export const register = (ctx: $ui.Context) => {
         const mediaId = Number(entry.mediaId ?? media.id);
         const key = String(mediaId);
         const read = Number(entry.listData?.progress ?? 0);
+        captureSourceRef(mediaId, media);
         const title = resolveTitle(media);
         const cover = media.coverImage?.large ?? media.coverImage?.extraLarge;
         // Advance the global progress (also counts TTL-cached manga below).
@@ -445,7 +472,7 @@ export const register = (ctx: $ui.Context) => {
           !force &&
           prior &&
           !isBadKind(prior.kind) &&
-          now - Number(prior.checkedAt) < ttlMs
+          now - Number(prior.updatedAt) < ttlMs
         ) {
           upsert({
             ...prior,
@@ -470,7 +497,7 @@ export const register = (ctx: $ui.Context) => {
             read,
             sources: 0,
             kind: "up-to-date",
-            checkedAt: now,
+            updatedAt: now,
             mediaId,
             isNew: false,
             fromCache: false,
@@ -508,7 +535,7 @@ export const register = (ctx: $ui.Context) => {
         stored[key] = result;
         // Persist progressively: a cancel/crash mid-scan keeps the prior data
         // plus whatever was just scanned, instead of only writing at the end.
-        $storage.set(K_RESULTS, stored);
+        setResults(stored);
         upsert({
           ...result,
           mediaId,
@@ -518,7 +545,7 @@ export const register = (ctx: $ui.Context) => {
         scanned++;
       }
 
-      $storage.set(K_RESULTS, stored);
+      setResults(stored);
 
       const newCount = out.filter((r) => r.isNew).length;
       const cancelled = cancelRequested.get();
@@ -607,12 +634,13 @@ export const register = (ctx: $ui.Context) => {
   // $storage I/O around it). Pass a mediaId for one manga, omit for all.
   function clearExclusions(mediaId?: number) {
     const next = clearedExclusions(
-      $storage.get<ExcludedMap>(K_EXCLUDED) ?? {},
-      $storage.get<PinnedMap>(K_PINNED) ?? {},
+      getExcluded(),
+      getPinned(),
       mediaId,
+      Date.now(),
     );
-    $storage.set(K_EXCLUDED, next.excluded);
-    $storage.set(K_PINNED, next.pinned);
+    setExcludedMap(next.excluded);
+    setPinnedMap(next.pinned);
   }
 
   // Global clear: wipe every exclusion + pin, then force-rescan the whole list
@@ -660,9 +688,9 @@ export const register = (ctx: $ui.Context) => {
   // Persist a manga's row summary to $storage and update the in-memory list
   // (replace if present, else append). Shared by every scan path.
   function syncRow(mediaId: number, result: StoredResult) {
-    const stored = $storage.get<Record<string, StoredResult>>(K_RESULTS) ?? {};
+    const stored = getResults();
     stored[String(mediaId)] = result;
-    $storage.set(K_RESULTS, stored);
+    setResults(stored);
     const row: MangaResult = {
       ...result,
       mediaId,
@@ -697,8 +725,7 @@ export const register = (ctx: $ui.Context) => {
 
     const existing = probeCache.get()[mediaId] ?? {};
     const key = String(mediaId);
-    const excluded =
-      $storage.get<Record<string, Record<string, string>>>(K_EXCLUDED) ?? {};
+    const excluded = getExcludedView();
     const providers = ctx.manga.getProviders();
     const providerIds = Object.keys(existing).length
       ? Object.keys(existing)
@@ -756,6 +783,7 @@ export const register = (ctx: $ui.Context) => {
     try {
       const found = await findEntry(mediaId);
       if (!found) return;
+      captureSourceRef(mediaId, found.media);
       const title = resolveTitle(found.media);
       detailTitle.set(title);
       detailCover.set(
@@ -889,20 +917,25 @@ export const register = (ctx: $ui.Context) => {
     reason: ExcludeReason = "other",
   ) {
     const key = String(mediaId);
-    const excluded =
-      $storage.get<Record<string, Record<string, string>>>(K_EXCLUDED) ?? {};
-    const pinned = $storage.get<Record<string, string[]>>(K_PINNED) ?? {};
+    const excluded = getExcluded();
+    const pinned = getPinned();
     if (exclude) {
       if (!excluded[key]) excluded[key] = {};
-      excluded[key][provider] = reason;
-    } else if (excluded[key]) {
-      delete excluded[key][provider];
+      excluded[key][provider] = { reason, updatedAt: Date.now() };
+    } else {
+      const prev = excluded[key]?.[provider];
+      if (prev) {
+        excluded[key][provider] = {
+          ...prev,
+          updatedAt: Date.now(),
+          deletedAt: Date.now(),
+        };
+      }
     }
-    const set = pinned[key] ?? [];
-    if (!set.includes(provider)) set.push(provider);
-    pinned[key] = set;
-    $storage.set(K_EXCLUDED, excluded);
-    $storage.set(K_PINNED, pinned);
+    if (!pinned[key]) pinned[key] = {};
+    pinned[key][provider] = { updatedAt: Date.now() };
+    setExcludedMap(excluded);
+    setPinnedMap(pinned);
     ctx.toast.info(exclude ? "Excluded source" : "Included source");
     // A re-included source wasn't probed (excluded ones are skipped), so it has
     // no chapter data yet — scan JUST that source to fetch it (this re-renders
@@ -1000,8 +1033,7 @@ export const register = (ctx: $ui.Context) => {
     if (id == null) return null;
     const key = String(id);
     const cur = results.get().find((r) => r.mediaId === id);
-    const excluded =
-      $storage.get<Record<string, Record<string, string>>>(K_EXCLUDED) ?? {};
+    const excluded = getExcludedView();
     const excludedForManga = excluded[key] ?? {};
     // Probes for this manga, keyed by provider id (empty = never scanned).
     const probeByProvider = probeCache.get()[id] ?? {};
@@ -1367,7 +1399,7 @@ export const register = (ctx: $ui.Context) => {
       }
     }
     const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
-    const stored = $storage.get<Record<string, StoredResult>>(K_RESULTS) ?? {};
+    const stored = getResults();
     const probesById = probeCache.get();
     let changed = false;
     const next = results.get().map((r) => {
@@ -1407,12 +1439,12 @@ export const register = (ctx: $ui.Context) => {
         sources,
         newSources,
         kind,
-        checkedAt: row.checkedAt,
+        updatedAt: row.updatedAt,
       };
       return row;
     });
     if (changed) {
-      $storage.set(K_RESULTS, stored);
+      setResults(stored);
       results.set(next);
     }
   }
@@ -1601,9 +1633,7 @@ export const register = (ctx: $ui.Context) => {
 
     const key = String(mediaId);
     const probes = probeCache.get()[mediaId] ?? {};
-    const excluded =
-      $storage.get<Record<string, Record<string, string>>>(K_EXCLUDED)?.[key] ??
-      {};
+    const excluded = getExcludedView()[key] ?? {};
     const providers = ctx.manga.getProviders();
     const items = Object.keys(probes)
       .filter(
@@ -1752,12 +1782,39 @@ export const register = (ctx: $ui.Context) => {
       const sig = mappingSigFromHtml(html);
       if (sig === null) return;
 
+      const provider = await readSelectedProvider(ctx);
+      if (!provider) return;
+
+      // Record the mapping the moment the panel shows its state ("Current
+      // mapping: …" or "No manual match") — NOT only when it changes — so an
+      // already-matched manga is captured on open. resolveMatchAction is
+      // idempotent, so re-observing the same state writes nothing.
+      const now = Date.now();
+      const matches = getMatches();
+      const action = resolveMatchAction(
+        sig,
+        matches[String(mediaId)]?.[provider],
+      );
+      if (action.type === "tombstone") {
+        setMatches(tombstoneMatch(matches, mediaId, provider, now));
+      } else if (action.type === "upsert") {
+        setMatches(
+          upsertMatch(
+            matches,
+            mediaId,
+            provider,
+            action.mappedId,
+            myInstanceId,
+            now,
+          ),
+        );
+      }
+
+      // Rescan the provider only when the mapping actually CHANGED (expensive) —
+      // this keeps its own change guard, separate from the recording above.
       const prev = lastMappingSigByMedia[mediaId];
       lastMappingSigByMedia[mediaId] = sig;
       if (prev === undefined || prev === sig) return;
-
-      const provider = await readSelectedProvider(ctx);
-      if (!provider) return;
 
       void scanOneProvider(mediaId, provider).then(() => {
         dm.refresh();

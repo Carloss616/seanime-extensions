@@ -1,14 +1,15 @@
-import { K_PROBES, K_RESULTS } from "./constants";
-import type { MangaResult, ProviderProbe, StoredResult } from "./types";
+import { getProbes, getResults, isLive } from "./store";
+import type { MangaResult, ProviderProbe } from "./types";
 
 // Rebuild the last-scan rows from $storage so the tray shows them immediately
-// after a plugin reload, without re-scanning. mediaId is the map key; every
-// row is flagged fromCache.
+// after a plugin reload. mediaId is the map key; every row is flagged fromCache.
+// Tombstoned rows are skipped.
 export function hydrateResults(): MangaResult[] {
-  const stored = $storage.get<Record<string, StoredResult>>(K_RESULTS) ?? {};
+  const stored = getResults();
   const out: MangaResult[] = [];
   for (const key of Object.keys(stored)) {
     const r = stored[key];
+    if (!isLive(r)) continue;
     out.push({
       ...r,
       mediaId: Number(key),
@@ -24,7 +25,8 @@ export function hydrateResults(): MangaResult[] {
 
 // Rehydrate the per-source probes from $storage (keyed by provider id).
 export function hydrateProbes(): Record<number, Record<string, ProviderProbe>> {
-  return (
-    $storage.get<Record<number, Record<string, ProviderProbe>>>(K_PROBES) ?? {}
-  );
+  return getProbes() as unknown as Record<
+    number,
+    Record<string, ProviderProbe>
+  >;
 }

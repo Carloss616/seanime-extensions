@@ -606,6 +606,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       count: chapters?.length ?? 0,
       matched: !!chapters && chapters.length > 0,
       errored: chapters == null,
+      updatedAt: 0,
     };
   }
   function classify(read, latest, count, errored, gap) {
@@ -634,10 +635,13 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     return out;
   }
-  var K_EXCLUDED = "excludedProviders";
-  var K_RESULTS = "lastResults";
-  var K_PINNED = "pinnedProviders";
-  var K_PROBES = "lastProbes";
+  var K_EXCLUSIONS = "exclusions";
+  var K_SUMMARIES = "summaries";
+  var K_PINS = "pins";
+  var K_PROBES = "probes";
+  var K_MATCHES = "matches";
+  var K_INSTANCE_ID = "instanceId";
+  var K_SOURCES = "sources";
   var REASONS = {
     outdated: { menu: "Behind / outdated", badge: "behind", intent: "warning" },
     "bad-numbering": {
@@ -651,13 +655,35 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   };
   var reasonLabel = (key) => REASONS[key].badge;
   var reasonIntent = (key) => REASONS[key].intent;
-  function clearedExclusions(excluded, pinned, mediaId) {
-    if (mediaId == null) return { excluded: {}, pinned: {} };
-    const key = String(mediaId);
+  function clearedExclusions(excluded, pinned, mediaId, now) {
+    const scopeKeys =
+      mediaId == null ? Object.keys(excluded) : [String(mediaId)];
+    const pinScopeKeys =
+      mediaId == null ? Object.keys(pinned) : [String(mediaId)];
     const nextExcluded = { ...excluded };
+    for (const key of scopeKeys) {
+      const providers = nextExcluded[key];
+      if (!providers) continue;
+      const nextProviders = { ...providers };
+      for (const [pid, rec] of Object.entries(providers)) {
+        if (rec.deletedAt == null) {
+          nextProviders[pid] = { ...rec, updatedAt: now, deletedAt: now };
+        }
+      }
+      nextExcluded[key] = nextProviders;
+    }
     const nextPinned = { ...pinned };
-    delete nextExcluded[key];
-    delete nextPinned[key];
+    for (const key of pinScopeKeys) {
+      const providers = nextPinned[key];
+      if (!providers) continue;
+      const nextProviders = { ...providers };
+      for (const [pid, rec] of Object.entries(providers)) {
+        if (rec.deletedAt == null) {
+          nextProviders[pid] = { ...rec, updatedAt: now, deletedAt: now };
+        }
+      }
+      nextPinned[key] = nextProviders;
+    }
     return { excluded: nextExcluded, pinned: nextPinned };
   }
   function createHeaderProgressReader(ctx) {
@@ -685,11 +711,83 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       },
     };
   }
+  function readObj(key) {
+    const raw = $storage.get(key);
+    return raw != null && typeof raw === "object" ? raw : {};
+  }
+  function isLive(rec) {
+    return rec != null && rec.deletedAt == null;
+  }
+  function liveExcludedView(map) {
+    const out = {};
+    for (const [media, providers] of Object.entries(map)) {
+      const inner = {};
+      for (const [pid, rec] of Object.entries(providers)) {
+        if (isLive(rec)) inner[pid] = rec.reason;
+      }
+      out[media] = inner;
+    }
+    return out;
+  }
+  function livePinnedView(map) {
+    const out = {};
+    for (const [media, providers] of Object.entries(map)) {
+      out[media] = Object.entries(providers)
+        .filter(([, rec]) => isLive(rec))
+        .map(([pid]) => pid);
+    }
+    return out;
+  }
+  function mergeProbeTimestamps(prev, next, now) {
+    const out = {};
+    for (const [pid, probe] of Object.entries(next)) {
+      const before = prev[pid];
+      const same =
+        before != null &&
+        before.latest === probe.latest &&
+        before.count === probe.count &&
+        before.matched === probe.matched &&
+        before.errored === probe.errored;
+      out[pid] = { ...probe, updatedAt: same ? before.updatedAt : now };
+    }
+    return out;
+  }
+  function getExcluded() {
+    return readObj(K_EXCLUSIONS);
+  }
+  function setExcluded(map) {
+    $storage.set(K_EXCLUSIONS, map);
+  }
+  function getExcludedView() {
+    return liveExcludedView(getExcluded());
+  }
+  function getPinned() {
+    return readObj(K_PINS);
+  }
+  function setPinned(map) {
+    $storage.set(K_PINS, map);
+  }
+  function getPinnedView() {
+    return livePinnedView(getPinned());
+  }
+  function getResults() {
+    return readObj(K_SUMMARIES);
+  }
+  function setResults(map) {
+    $storage.set(K_SUMMARIES, map);
+  }
+  function getProbes() {
+    return readObj(K_PROBES);
+  }
+  function setProbes(map) {
+    $storage.set(K_PROBES, map);
+  }
   function hydrateResults() {
-    const stored = $storage.get(K_RESULTS) ?? {};
+    const stored = getResults();
     const out = [];
     for (const key of Object.keys(stored)) {
       const r = stored[key];
+      if (!isLive(r)) continue;
       out.push({
         ...r,
         mediaId: Number(key),
@@ -703,7 +801,21 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     return out;
   }
   function hydrateProbes() {
-    return $storage.get(K_PROBES) ?? {};
+    return getProbes();
+  }
+  function deriveInstanceId(existing, now, rand) {
+    if (typeof existing === "string" && existing.length > 0) return existing;
+    const suffix = rand.toString(36).slice(2) || "0";
+    return `${now}-${suffix}`;
+  }
+  function getInstanceId() {
+    const id = deriveInstanceId(
+      $storage.get(K_INSTANCE_ID),
+      Date.now(),
+      Math.random(),
+    );
+    $storage.set(K_INSTANCE_ID, id);
+    return id;
   }
   function mappingSigFromHtml(html) {
     const h = html.toLowerCase();
@@ -719,6 +831,34 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   function isManualMatchConfirmDialog(html) {
     const h = html.toLowerCase();
     return h.includes("are you sure") && !h.includes("current mapping:");
+  }
+  function upsertMatch(map, mediaId, provider, mappedId, by, now) {
+    const key = String(mediaId);
+    const rec = { mappedId, by, updatedAt: now };
+    return { ...map, [key]: { ...(map[key] ?? {}), [provider]: rec } };
+  }
+  function tombstoneMatch(map, mediaId, provider, now) {
+    const key = String(mediaId);
+    const inner = { ...(map[key] ?? {}) };
+    const prev = inner[provider];
+    if (prev) inner[provider] = { ...prev, updatedAt: now, deletedAt: now };
+    return { ...map, [key]: inner };
+  }
+  function resolveMatchAction(sig, existing) {
+    const live = isLive(existing) ? existing : undefined;
+    if (sig === "none" || sig === "empty") {
+      return live ? { type: "tombstone" } : { type: "none" };
+    }
+    const mappedId = sig === "present" ? "" : sig;
+    if (live && live.mappedId === mappedId) return { type: "none" };
+    return { type: "upsert", mappedId };
+  }
+  function getMatches() {
+    const raw = $storage.get(K_MATCHES);
+    return raw && typeof raw === "object" ? raw : {};
+  }
+  function setMatches(map) {
+    $storage.set(K_MATCHES, map);
   }
   function isActiveProvider(pid, installed) {
     return pid !== "local-manga" && pid in installed;
@@ -747,6 +887,51 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     } catch {
       return "";
     }
+  }
+  var EXT_ID_OFFSET = 2147483648;
+  var LOCAL_ID_RANGE = 1099511627776;
+  function isCustomSourceId(mediaId) {
+    return mediaId >= EXT_ID_OFFSET;
+  }
+  function decodeLocalId(mediaId) {
+    return (mediaId - EXT_ID_OFFSET) % LOCAL_ID_RANGE;
+  }
+  function decodeExtId(mediaId) {
+    return Math.floor((mediaId - EXT_ID_OFFSET) / LOCAL_ID_RANGE);
+  }
+  function parseCustomSourceManifestId(siteUrl) {
+    const PREFIX = "ext_custom_source_";
+    if (!siteUrl || siteUrl.indexOf(PREFIX) !== 0) return;
+    const end = siteUrl.indexOf("|END|");
+    if (end < 0) return;
+    const id = siteUrl.slice(PREFIX.length, end);
+    return id || undefined;
+  }
+  function buildSourceRef(mediaId, siteUrl, now) {
+    if (!isCustomSourceId(mediaId)) return;
+    const manifestId = parseCustomSourceManifestId(siteUrl);
+    if (!manifestId) return;
+    return {
+      manifestId,
+      localId: decodeLocalId(mediaId),
+      extId: decodeExtId(mediaId),
+      updatedAt: now,
+    };
+  }
+  function upsertSourceRef(map, mediaId, ref) {
+    const key = String(mediaId);
+    const prev = map[key];
+    if (prev && prev.deletedAt == null && prev.manifestId === ref.manifestId) {
+      return { map, changed: false };
+    }
+    return { map: { ...map, [key]: ref }, changed: true };
+  }
+  function getSources() {
+    const raw = $storage.get(K_SOURCES);
+    return raw && typeof raw === "object" ? raw : {};
+  }
+  function setSources(map) {
+    $storage.set(K_SOURCES, map);
   }
   function statusFor(r, thinLabel = false) {
     const n = unreadChapters(r.read, r.latest);
@@ -838,19 +1023,22 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     const scanningProviders = ctx.state(null);
     const scanStatus = ctx.state(null);
     const probeCache = ctx.state(hydrateProbes());
-    function setProbes(mediaId, probes) {
-      const next = { ...probeCache.get(), [mediaId]: probes };
+    function setProbes2(mediaId, probes) {
+      const prev = probeCache.get()[mediaId] ?? {};
+      const stamped = mergeProbeTimestamps(prev, probes, Date.now());
+      const next = { ...probeCache.get(), [mediaId]: stamped };
       probeCache.set(next);
-      $storage.set(K_PROBES, next);
+      setProbes(next);
     }
     const currentMediaId = ctx.state(0);
     const confirmGlobalOpen = ctx.state(false);
     const lastMappingSigByMedia = {};
+    const myInstanceId = getInstanceId();
     function reconcileInactiveProviders() {
       const active = ctx.manga.getProviders();
       const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
       const cache = probeCache.get();
-      const stored = $storage.get(K_RESULTS) ?? {};
+      const stored = getResults();
       let rowsChanged = false;
       const nextResults = results.get().map((r) => {
         const probes = pruneInactiveProbes(cache[r.mediaId] ?? {}, active);
@@ -871,7 +1059,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           mediaId: r.mediaId,
           isNew,
           fromCache: r.fromCache,
-          checkedAt: r.checkedAt,
+          updatedAt: r.updatedAt,
         };
         stored[String(r.mediaId)] = {
           title: row.title,
@@ -881,13 +1069,13 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           sources: row.sources,
           newSources: row.newSources,
           kind: row.kind,
-          checkedAt: row.checkedAt,
+          updatedAt: row.updatedAt,
         };
         return row;
       });
       if (rowsChanged) {
         results.set(nextResults);
-        $storage.set(K_RESULTS, stored);
+        setResults(stored);
       }
     }
     async function readCachedContainer(mediaId, provider) {
@@ -932,7 +1120,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     function buildResult(mediaId, media, read, gap, probes) {
       const key = String(mediaId);
-      const excluded = $storage.get(K_EXCLUDED) ?? {};
+      const excluded = getExcludedView();
       const providers = ctx.manga.getProviders();
       const providerIds = Object.keys(providers).filter((p) =>
         isActiveProvider(p, providers),
@@ -964,8 +1152,14 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         sources: matched.length,
         newSources,
         kind,
-        checkedAt: Date.now(),
+        updatedAt: Date.now(),
       };
+    }
+    function captureSourceRef(mediaId, media) {
+      const sref = buildSourceRef(mediaId, media.siteUrl, Date.now());
+      if (!sref) return;
+      const up = upsertSourceRef(getSources(), mediaId, sref);
+      if (up.changed) setSources(up.map);
     }
     async function scanOneManga(mediaId, media, read, gap, onProgress) {
       const key = String(mediaId);
@@ -975,11 +1169,11 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       const providerIds = Object.keys(providers).filter(
         (p) => p !== "local-manga",
       );
-      const excluded = $storage.get(K_EXCLUDED) ?? {};
-      const pinnedForManga = $storage.get(K_PINNED)?.[key] ?? [];
+      const excluded = getExcluded();
+      const pinnedForManga = getPinnedView()[key] ?? [];
       await ctx.manga.emptyCache(mediaId);
       const probes = {};
-      const toScan = providerIds.filter((pid) => excluded[key]?.[pid] == null);
+      const toScan = providerIds.filter((pid) => !isLive(excluded[key]?.[pid]));
       const BATCH = Math.max(
         1,
         Math.floor(Number($getUserPreference("parallelBatch") ?? "10")) || 10,
@@ -1017,15 +1211,15 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
             );
             if (isBadKind(kind)) {
               if (!excluded[key]) excluded[key] = {};
-              excluded[key][pid] = kind;
-              $storage.set(K_EXCLUDED, excluded);
+              excluded[key][pid] = { reason: kind, updatedAt: Date.now() };
+              setExcluded(excluded);
             }
           }
         }
         onProgress?.(probes);
       }
       scanningProviders.set(null);
-      $storage.set(K_EXCLUDED, excluded);
+      setExcluded(excluded);
       const result = buildResult(
         mediaId,
         {
@@ -1059,7 +1253,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           (Number($getUserPreference("ttlMinutes") ?? "60") || 60) * 60000;
         const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
         const now = Date.now();
-        const stored = $storage.get(K_RESULTS) ?? {};
+        const stored = getResults();
         const out = [...results.get()];
         const upsert = (row) => {
           const idx = out.findIndex((r) => r.mediaId === row.mediaId);
@@ -1076,6 +1270,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           const mediaId = Number(entry.mediaId ?? media.id);
           const key = String(mediaId);
           const read = Number(entry.listData?.progress ?? 0);
+          captureSourceRef(mediaId, media);
           const title = resolveTitle(media);
           const cover = media.coverImage?.large ?? media.coverImage?.extraLarge;
           scanStatus.set({
@@ -1090,7 +1285,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
             !force &&
             prior &&
             !isBadKind(prior.kind) &&
-            now - Number(prior.checkedAt) < ttlMs
+            now - Number(prior.updatedAt) < ttlMs
           ) {
             upsert({
               ...prior,
@@ -1111,7 +1306,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
               read,
               sources: 0,
               kind: "up-to-date",
-              checkedAt: now,
+              updatedAt: now,
               mediaId,
               isNew: false,
               fromCache: false,
@@ -1123,7 +1318,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
             read,
             gap,
             (partialProbes) => {
-              setProbes(mediaId, partialProbes);
+              setProbes2(mediaId, partialProbes);
               const partial = buildResult(
                 mediaId,
                 {
@@ -1143,9 +1338,9 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
               });
             },
           );
-          setProbes(mediaId, probes);
+          setProbes2(mediaId, probes);
           stored[key] = result;
-          $storage.set(K_RESULTS, stored);
+          setResults(stored);
           upsert({
             ...result,
             mediaId,
@@ -1154,7 +1349,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           });
           scanned++;
         }
-        $storage.set(K_RESULTS, stored);
+        setResults(stored);
         const newCount = out.filter((r) => r.isNew).length;
         const cancelled = cancelRequested.get();
         const summary = `${newCount} new · ${scanned} scanned · ${cached} cached`;
@@ -1217,12 +1412,13 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     });
     function clearExclusions(mediaId) {
       const next = clearedExclusions(
-        $storage.get(K_EXCLUDED) ?? {},
-        $storage.get(K_PINNED) ?? {},
+        getExcluded(),
+        getPinned(),
         mediaId,
+        Date.now(),
       );
-      $storage.set(K_EXCLUDED, next.excluded);
-      $storage.set(K_PINNED, next.pinned);
+      setExcluded(next.excluded);
+      setPinned(next.pinned);
     }
     ctx.registerEventHandler("msu-clear-excl", () => {
       if (rejectIfBusy()) return;
@@ -1255,9 +1451,9 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       return null;
     }
     function syncRow(mediaId, result) {
-      const stored = $storage.get(K_RESULTS) ?? {};
+      const stored = getResults();
       stored[String(mediaId)] = result;
-      $storage.set(K_RESULTS, stored);
+      setResults(stored);
       const row = {
         ...result,
         mediaId,
@@ -1283,7 +1479,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       if (scanning.get() || individualScanRunning()) return;
       const existing = probeCache.get()[mediaId] ?? {};
       const key = String(mediaId);
-      const excluded = $storage.get(K_EXCLUDED) ?? {};
+      const excluded = getExcludedView();
       const providers = ctx.manga.getProviders();
       const providerIds = Object.keys(existing).length
         ? Object.keys(existing)
@@ -1309,7 +1505,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         }
       }
       if (!changed) return;
-      setProbes(mediaId, next);
+      setProbes2(mediaId, next);
       const cur = results.get().find((r) => r.mediaId === mediaId);
       if (cur) {
         rebuildStoredRow(mediaId, cur.read);
@@ -1325,6 +1521,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       try {
         const found = await findEntry(mediaId);
         if (!found) return;
+        captureSourceRef(mediaId, found.media);
         const title = resolveTitle(found.media);
         detailTitle.set(title);
         detailCover.set(
@@ -1343,7 +1540,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           found.read,
           gap,
           (probes) =>
-            setProbes(mediaId, { ...probeCache.get()[mediaId], ...probes }),
+            setProbes2(mediaId, { ...probeCache.get()[mediaId], ...probes }),
         );
         syncRow(mediaId, result);
         ctx.toast.success(`${result.sources} sources have ${title}`);
@@ -1376,7 +1573,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           ...(probeCache.get()[mediaId] ?? {}),
           [provider]: probe,
         };
-        setProbes(mediaId, merged);
+        setProbes2(mediaId, merged);
         syncRow(
           mediaId,
           buildResult(
@@ -1424,21 +1621,27 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       if (id == null || probingId.get() === id) return;
       probeMangaDetail(id);
     }
-    function setExcluded(mediaId, provider, exclude, reason = "other") {
+    function setExcluded2(mediaId, provider, exclude, reason = "other") {
       const key = String(mediaId);
-      const excluded = $storage.get(K_EXCLUDED) ?? {};
-      const pinned = $storage.get(K_PINNED) ?? {};
+      const excluded = getExcluded();
+      const pinned = getPinned();
       if (exclude) {
         if (!excluded[key]) excluded[key] = {};
-        excluded[key][provider] = reason;
-      } else if (excluded[key]) {
-        delete excluded[key][provider];
+        excluded[key][provider] = { reason, updatedAt: Date.now() };
+      } else {
+        const prev = excluded[key]?.[provider];
+        if (prev) {
+          excluded[key][provider] = {
+            ...prev,
+            updatedAt: Date.now(),
+            deletedAt: Date.now(),
+          };
+        }
       }
-      const set = pinned[key] ?? [];
-      if (!set.includes(provider)) set.push(provider);
-      pinned[key] = set;
-      $storage.set(K_EXCLUDED, excluded);
-      $storage.set(K_PINNED, pinned);
+      if (!pinned[key]) pinned[key] = {};
+      pinned[key][provider] = { updatedAt: Date.now() };
+      setExcluded(excluded);
+      setPinned(pinned);
       ctx.toast.info(exclude ? "Excluded source" : "Included source");
       if (!exclude && detailId.get() === mediaId) {
         scanOneProvider(mediaId, provider);
@@ -1521,7 +1724,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       if (id == null) return null;
       const key = String(id);
       const cur = results.get().find((r) => r.mediaId === id);
-      const excluded = $storage.get(K_EXCLUDED) ?? {};
+      const excluded = getExcludedView();
       const excludedForManga = excluded[key] ?? {};
       const probeByProvider = probeCache.get()[id] ?? {};
       const prog = scanProgress.get();
@@ -1639,7 +1842,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
                   {
                     onClick: ctx.eventHandler(
                       `msu-exc-${id}-${pid}-${rk}`,
-                      () => setExcluded(id, pid, true, rk),
+                      () => setExcluded2(id, pid, true, rk),
                     ),
                   },
                 ),
@@ -1658,7 +1861,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           actions: [
             tray.button("Include", {
               onClick: ctx.eventHandler(`msu-inc-${id}-${pid}`, () =>
-                setExcluded(id, pid, false),
+                setExcluded2(id, pid, false),
               ),
               size: "sm",
               intent: "primary-subtle",
@@ -1802,7 +2005,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         }
       }
       const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
-      const stored = $storage.get(K_RESULTS) ?? {};
+      const stored = getResults();
       const probesById = probeCache.get();
       let changed = false;
       const next = results.get().map((r) => {
@@ -1842,12 +2045,12 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           sources,
           newSources,
           kind,
-          checkedAt: row.checkedAt,
+          updatedAt: row.updatedAt,
         };
         return row;
       });
       if (changed) {
-        $storage.set(K_RESULTS, stored);
+        setResults(stored);
         results.set(next);
       }
     }
@@ -1986,7 +2189,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       if (fromHeader != null) read = fromHeader;
       const key = String(mediaId);
       const probes = probeCache.get()[mediaId] ?? {};
-      const excluded = $storage.get(K_EXCLUDED)?.[key] ?? {};
+      const excluded = getExcludedView()[key] ?? {};
       const providers = ctx.manga.getProviders();
       const items = Object.keys(probes)
         .filter(
@@ -2104,11 +2307,31 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         if (isManualMatchConfirmDialog(html)) return;
         const sig = mappingSigFromHtml(html);
         if (sig === null) return;
+        const provider = await readSelectedProvider(ctx);
+        if (!provider) return;
+        const now = Date.now();
+        const matches = getMatches();
+        const action = resolveMatchAction(
+          sig,
+          matches[String(mediaId)]?.[provider],
+        );
+        if (action.type === "tombstone") {
+          setMatches(tombstoneMatch(matches, mediaId, provider, now));
+        } else if (action.type === "upsert") {
+          setMatches(
+            upsertMatch(
+              matches,
+              mediaId,
+              provider,
+              action.mappedId,
+              myInstanceId,
+              now,
+            ),
+          );
+        }
         const prev = lastMappingSigByMedia[mediaId];
         lastMappingSigByMedia[mediaId] = sig;
         if (prev === undefined || prev === sig) return;
-        const provider = await readSelectedProvider(ctx);
-        if (!provider) return;
         scanOneProvider(mediaId, provider).then(() => {
           dm.refresh();
           redecorateBar();
