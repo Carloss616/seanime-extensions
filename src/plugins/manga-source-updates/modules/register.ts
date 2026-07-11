@@ -6,11 +6,17 @@ import { trayHeader } from "../../../_components/tray-header";
 import { GistClient } from "../../../_utils/gist/client";
 import { createLogger } from "../../../_utils/logger";
 import scanPanelHtml from "../assets/scan-panel.html";
+import {
+  type DeviceCodeStart,
+  interpretDeviceCode,
+  interpretTokenResponse,
+} from "../utils/auth";
 import { readCardAttrs } from "../utils/card-dom";
 import { makeProbe, unreadChapters } from "../utils/chapters";
 import { classify, isBadKind, isNoMatchError } from "../utils/classify";
 import { readingEntries } from "../utils/collection";
 import {
+  GITHUB_CLIENT_ID,
   K_GIST_ID,
   K_OAUTH_TOKEN,
   K_SYNCED_AT,
@@ -167,6 +173,11 @@ export const register = (ctx: $ui.Context) => {
 
   const syncing = ctx.state<boolean>(false);
   const syncedAt = ctx.state<number>($storage.get<number>(K_SYNCED_AT) ?? 0);
+  // GitHub OAuth Device Flow connect state: `connecting` guards against a
+  // double-click starting two flows; `deviceStart` drives the "enter this code"
+  // view in renderSyncSection while a flow is in progress.
+  const connecting = ctx.state<boolean>(false);
+  const deviceStart = ctx.state<DeviceCodeStart | null>(null);
 
   // Resolve this instance's extId for a manifest: local K_SOURCES index first
   // (free), then a probe seeded with a known localId from the remote records.
@@ -297,6 +308,88 @@ export const register = (ctx: $ui.Context) => {
       if (!silent) ctx.toast.error(`Sync failed: ${(e as Error).message}`);
     } finally {
       syncing.set(false);
+    }
+  }
+
+  // GitHub OAuth Device Flow. POST device/code → show user_code + link → poll
+  // access_token at `interval` until granted/expired. All fetches carry
+  // `Accept: application/json` so GitHub returns JSON (not form-encoded).
+  // ponytail: the poll loop BLOCKS the UI runtime via $sleep between polls
+  // (there is no setTimeout). Bounded by expires_in so it can't hang forever;
+  // acceptable for a user-initiated one-time connect. Upgrade path: drive the
+  // poll from cron ticks if the block ever bothers a user.
+  async function connectGitHub(): Promise<void> {
+    if (connecting.get()) return;
+    if (GITHUB_CLIENT_ID.indexOf("REPLACE_WITH") === 0) {
+      ctx.toast.error(
+        "Browser login isn't configured yet — paste a GitHub PAT (gist scope) in the plugin config instead.",
+      );
+      return;
+    }
+    connecting.set(true);
+    try {
+      const startRes = await ctx.fetch("https://github.com/login/device/code", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ client_id: GITHUB_CLIENT_ID, scope: "gist" }),
+      });
+      const parsed = interpretDeviceCode(startRes.json());
+      if (!parsed.ok) {
+        ctx.toast.error(`GitHub login failed: ${parsed.message}`);
+        return;
+      }
+      const start = parsed.start;
+      deviceStart.set(start);
+
+      let interval = Math.max(1, start.interval);
+      const deadline = Date.now() + start.expiresIn * 1000;
+      while (Date.now() < deadline) {
+        $sleep(interval * 1000);
+        const pollRes = await ctx.fetch(
+          "https://github.com/login/oauth/access_token",
+          {
+            method: "POST",
+            headers: {
+              Accept: "application/json",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              client_id: GITHUB_CLIENT_ID,
+              device_code: start.deviceCode,
+              grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+            }),
+          },
+        );
+        const result = interpretTokenResponse(pollRes.json());
+        if (result.type === "token") {
+          $storage.set(K_OAUTH_TOKEN, result.token);
+          deviceStart.set(null);
+          ctx.toast.success("Connected to GitHub");
+          void syncNow("connected", true);
+          return;
+        }
+        if (result.type === "slow_down") {
+          interval = Math.max(interval + 5, result.interval);
+          continue;
+        }
+        if (result.type === "error") {
+          ctx.toast.error(`GitHub login failed: ${result.message}`);
+          deviceStart.set(null);
+          return;
+        }
+        // pending → keep polling
+      }
+      ctx.toast.error("GitHub login timed out — try again");
+      deviceStart.set(null);
+    } catch (e) {
+      log.warn("connectGitHub failed:", e);
+      ctx.toast.error(`GitHub login failed: ${(e as Error).message}`);
+      deviceStart.set(null);
+    } finally {
+      connecting.set(false);
     }
   }
 
@@ -791,6 +884,10 @@ export const register = (ctx: $ui.Context) => {
     void syncNow("manual", false);
   });
 
+  ctx.registerEventHandler("msu-connect", () => {
+    void connectGitHub();
+  });
+
   ctx.registerEventHandler("msu-sync-disconnect", () => {
     $storage.set(K_OAUTH_TOKEN, "");
     // Keep K_GIST_ID so re-connecting re-uses the same gist; clearing the token
@@ -1197,11 +1294,42 @@ export const register = (ctx: $ui.Context) => {
   }
 
   // Sync status + controls — a self-contained section composed as a page-stack
-  // block (see the tray spacing convention). Not-connected state shows a single
-  // "Connect GitHub" button whose device-flow handler lands in a follow-up task;
-  // the PAT config field is the working auth path until then.
+  // block (see the tray spacing convention). Not-connected state shows a
+  // "Connect GitHub" button that starts the device flow; while a flow is in
+  // progress this section is replaced entirely by the device-code prompt
+  // (user code + "Open GitHub" link) so the user isn't shown stale controls.
+  // The PAT config field remains a working auth path alongside device flow.
   function renderSyncSection(): unknown {
     const connected = hasSync();
+
+    const start = deviceStart.get();
+    if (start) {
+      return tray.stack(
+        [
+          tray.flex(
+            [
+              tray.text("Enter this code at GitHub", { style: LABEL_STYLE }),
+              tray.text(start.userCode, {
+                style: {
+                  fontSize: "1.25rem",
+                  fontWeight: "700",
+                  letterSpacing: "0.15em",
+                },
+              }),
+            ],
+            { direction: "column", gap: 1 },
+          ),
+          tray.anchor({
+            text: "Open GitHub ↗",
+            href: start.verificationUri,
+            target: "_blank",
+          }),
+          tray.text("Waiting for authorization…", { style: CAPTION_STYLE }),
+        ],
+        { gap: 2 },
+      );
+    }
+
     const via = oauthToken() ? "GitHub login" : patToken() ? "PAT" : "";
     const last = syncedAt.get();
     // Named to avoid shadowing the outer register-scope `status` scan-status
@@ -1239,11 +1367,15 @@ export const register = (ctx: $ui.Context) => {
         }),
       );
     } else {
-      // Device-flow connect (a follow-up task wires msu-connect + the code
-      // view). Even with no OAuth App yet, the PAT config field lights up
-      // `connected`.
+      // Starts the device flow (connectGitHub); the placeholder-guard toasts
+      // instead if no OAuth App client_id is configured yet. The PAT config
+      // field lights up `connected` on its own either way.
       actions.push(
-        tray.button("Connect GitHub", { onClick: "msu-connect", size: "sm" }),
+        tray.button("Connect GitHub", {
+          onClick: "msu-connect",
+          size: "sm",
+          disabled: connecting.get(),
+        }),
       );
     }
     rows.push(tray.flex(actions, { gap: 2 }));

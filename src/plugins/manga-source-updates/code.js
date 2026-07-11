@@ -676,6 +676,46 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
 </script>
 </body></html>
 `;
+  function interpretDeviceCode(json) {
+    const j = json ?? {};
+    const deviceCode = typeof j.device_code === "string" ? j.device_code : "";
+    const userCode = typeof j.user_code === "string" ? j.user_code : "";
+    const verificationUri =
+      typeof j.verification_uri === "string" ? j.verification_uri : "";
+    if (!deviceCode || !userCode || !verificationUri) {
+      const msg =
+        typeof j.error === "string"
+          ? j.error
+          : "malformed device-code response";
+      return { ok: false, message: msg };
+    }
+    return {
+      ok: true,
+      start: {
+        deviceCode,
+        userCode,
+        verificationUri,
+        interval: typeof j.interval === "number" ? j.interval : 5,
+        expiresIn: typeof j.expires_in === "number" ? j.expires_in : 900,
+      },
+    };
+  }
+  function interpretTokenResponse(json) {
+    const j = json ?? {};
+    if (typeof j.access_token === "string" && j.access_token.length > 0) {
+      return { type: "token", token: j.access_token };
+    }
+    const err = typeof j.error === "string" ? j.error : "";
+    if (err === "authorization_pending") return { type: "pending" };
+    if (err === "slow_down") {
+      return {
+        type: "slow_down",
+        interval: typeof j.interval === "number" ? j.interval : 5,
+      };
+    }
+    if (err) return { type: "error", message: err };
+    return { type: "error", message: "unexpected token response" };
+  }
   async function readCardAttrs(el) {
     const fromAttr = Number((await domAttr(el, "data-media-id")) ?? 0);
     let progress = 0;
@@ -751,6 +791,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   var K_GIST_ID = "gistId";
   var K_SYNCED_AT = "syncedAt";
   var SYNC_FILENAME = "msu-sync.json";
+  var GITHUB_CLIENT_ID = "REPLACE_WITH_OAUTH_APP_CLIENT_ID";
   var REASONS = {
     outdated: { menu: "Behind / outdated", badge: "behind", intent: "warning" },
     "bad-numbering": {
@@ -1519,6 +1560,8 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       new GistClient(syncToken(), (u, i) => ctx.fetch(u, i));
     const syncing = ctx.state(false);
     const syncedAt = ctx.state($storage.get(K_SYNCED_AT) ?? 0);
+    const connecting = ctx.state(false);
+    const deviceStart = ctx.state(null);
     function makeExtIdResolver(neededLocalIdByManifest) {
       const index = buildManifestExtIdIndex(getSources());
       const cache = { ...index };
@@ -1624,6 +1667,84 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         if (!silent) ctx.toast.error(`Sync failed: ${e.message}`);
       } finally {
         syncing.set(false);
+      }
+    }
+    async function connectGitHub() {
+      if (connecting.get()) return;
+      if (GITHUB_CLIENT_ID.indexOf("REPLACE_WITH") === 0) {
+        ctx.toast.error(
+          "Browser login isn't configured yet — paste a GitHub PAT (gist scope) in the plugin config instead.",
+        );
+        return;
+      }
+      connecting.set(true);
+      try {
+        const startRes = await ctx.fetch(
+          "https://github.com/login/device/code",
+          {
+            method: "POST",
+            headers: {
+              Accept: "application/json",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              client_id: GITHUB_CLIENT_ID,
+              scope: "gist",
+            }),
+          },
+        );
+        const parsed = interpretDeviceCode(startRes.json());
+        if (!parsed.ok) {
+          ctx.toast.error(`GitHub login failed: ${parsed.message}`);
+          return;
+        }
+        const start = parsed.start;
+        deviceStart.set(start);
+        let interval = Math.max(1, start.interval);
+        const deadline = Date.now() + start.expiresIn * 1000;
+        while (Date.now() < deadline) {
+          $sleep(interval * 1000);
+          const pollRes = await ctx.fetch(
+            "https://github.com/login/oauth/access_token",
+            {
+              method: "POST",
+              headers: {
+                Accept: "application/json",
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                client_id: GITHUB_CLIENT_ID,
+                device_code: start.deviceCode,
+                grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+              }),
+            },
+          );
+          const result = interpretTokenResponse(pollRes.json());
+          if (result.type === "token") {
+            $storage.set(K_OAUTH_TOKEN, result.token);
+            deviceStart.set(null);
+            ctx.toast.success("Connected to GitHub");
+            syncNow("connected", true);
+            return;
+          }
+          if (result.type === "slow_down") {
+            interval = Math.max(interval + 5, result.interval);
+            continue;
+          }
+          if (result.type === "error") {
+            ctx.toast.error(`GitHub login failed: ${result.message}`);
+            deviceStart.set(null);
+            return;
+          }
+        }
+        ctx.toast.error("GitHub login timed out — try again");
+        deviceStart.set(null);
+      } catch (e) {
+        log.warn("connectGitHub failed:", e);
+        ctx.toast.error(`GitHub login failed: ${e.message}`);
+        deviceStart.set(null);
+      } finally {
+        connecting.set(false);
       }
     }
     function reconcileInactiveProviders() {
@@ -2005,6 +2126,9 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     ctx.registerEventHandler("msu-sync-now", () => {
       syncNow("manual", false);
     });
+    ctx.registerEventHandler("msu-connect", () => {
+      connectGitHub();
+    });
     ctx.registerEventHandler("msu-sync-disconnect", () => {
       $storage.set(K_OAUTH_TOKEN, "");
       syncedAt.set(0);
@@ -2323,6 +2447,33 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     function renderSyncSection() {
       const connected = hasSync();
+      const start = deviceStart.get();
+      if (start) {
+        return tray.stack(
+          [
+            tray.flex(
+              [
+                tray.text("Enter this code at GitHub", { style: LABEL_STYLE }),
+                tray.text(start.userCode, {
+                  style: {
+                    fontSize: "1.25rem",
+                    fontWeight: "700",
+                    letterSpacing: "0.15em",
+                  },
+                }),
+              ],
+              { direction: "column", gap: 1 },
+            ),
+            tray.anchor({
+              text: "Open GitHub ↗",
+              href: start.verificationUri,
+              target: "_blank",
+            }),
+            tray.text("Waiting for authorization…", { style: CAPTION_STYLE }),
+          ],
+          { gap: 2 },
+        );
+      }
       const via = oauthToken() ? "GitHub login" : patToken() ? "PAT" : "";
       const last = syncedAt.get();
       const syncStatusLabel = !connected
@@ -2357,7 +2508,11 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         );
       } else {
         actions.push(
-          tray.button("Connect GitHub", { onClick: "msu-connect", size: "sm" }),
+          tray.button("Connect GitHub", {
+            onClick: "msu-connect",
+            size: "sm",
+            disabled: connecting.get(),
+          }),
         );
       }
       rows.push(tray.flex(actions, { gap: 2 }));
