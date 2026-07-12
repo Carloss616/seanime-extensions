@@ -1,11 +1,13 @@
 <div align="center">
 
+<img src="https://raw.githubusercontent.com/5rahim/seanime/main/docs/images/seanime-logo.png" width="96" alt="seanime logo" />
+
 # 🧩 seanime-extensions
 
-![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)
-![Built with Bun](https://img.shields.io/badge/built%20with-Bun-14151a?style=for-the-badge&logo=bun&logoColor=white)
-![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
-![Extensions](https://img.shields.io/badge/extensions-6-blue?style=for-the-badge)
+![Built with Bun](https://shieldcn.dev/badge/built%20with-Bun-14151a.svg?logo=bun&variant=secondary)
+![TypeScript](https://shieldcn.dev/badge/TypeScript.svg?logo=typescript&color=3178C6&variant=secondary)
+![Extensions](https://shieldcn.dev/badge/extensions-6-blue.svg?variant=secondary)
+[![License](https://shieldcn.dev/github/license/Carloss616/seanime-extensions.svg?variant=secondary)](LICENSE)
 
 **A personal collection of [seanime](https://github.com/5rahim/seanime) custom-sources and plugins — track manga that isn't on AniList, mirror your reads to MangaUpdates, and tune the library grid.**
 
@@ -19,7 +21,7 @@
 
 ## 💡 Concept
 
-> seanime supports third-party extensions — TypeScript bundles it fetches and runs in a sandboxed [goja](https://github.com/dop251/goja) runtime.
+> seanime supports [third-party extensions](https://seanime.gitbook.io/seanime-extensions) — TypeScript bundles it fetches and runs in a sandboxed [goja](https://github.com/dop251/goja) runtime.
 
 This repo is a small, manga-focused set of them. Each extension is a `code.ts` entry plus a `manifest.json`; the build transpiles it to a sibling `code.js` that seanime loads from a raw GitHub URL. Source and built payload are both committed, and a generated `marketplace.json` lets you install the whole set from the seanime UI.
 
@@ -27,14 +29,14 @@ This repo is a small, manga-focused set of them. Each extension is a `code.ts` e
 
 ## 🧩 Extensions
 
-| Extension | Type | What it does |
-| --------- | ---- | ------------ |
-| [Local Catalog](src/custom-source/local-catalog/) | custom-source | Serve a self-curated manga catalog for titles not on AniList / MangaUpdates. |
-| [Local Catalog Manager](src/plugins/local-catalog-manager/) | plugin | Add/edit/delete the local catalog from inside seanime and sync it (plus reading progress) to a GitHub Gist. |
-| [MangaUpdates](src/custom-source/mangaupdates/) | custom-source | Add MangaUpdates as a search & details metadata source. |
-| [MangaUpdates Sync](src/plugins/mangaupdates-sync/) | plugin | Push your reading progress, status and score to MangaUpdates. |
-| [Library Grid Layout](src/plugins/library-grid-layout/) | plugin | Set cards-per-row of the library grids, per screen size. |
-| [Manga Source Updates](src/plugins/manga-source-updates/) | plugin | Scan your reading list across all providers to find which sources have new chapters. |
+| | Extension | Type | What it does |
+| :-: | --------- | ---- | ------------ |
+| <img src="src/custom-source/local-catalog/assets/icon.png" width="28" alt="" /> | [Local Catalog](src/custom-source/local-catalog/) | custom-source | Serve a self-curated manga catalog for titles not on AniList / MangaUpdates. |
+| <img src="src/plugins/local-catalog-manager/assets/icon.png" width="28" alt="" /> | [Local Catalog Manager](src/plugins/local-catalog-manager/) | plugin | Add/edit/delete the local catalog from inside seanime and sync it (plus reading progress) to a GitHub Gist. |
+| <img src="src/custom-source/mangaupdates/assets/icon.png" width="28" alt="" /> | [MangaUpdates](src/custom-source/mangaupdates/) | custom-source | Add MangaUpdates as a search & details metadata source. |
+| <img src="src/plugins/mangaupdates-sync/assets/icon.png" width="28" alt="" /> | [MangaUpdates Sync](src/plugins/mangaupdates-sync/) | plugin | Push your reading progress, status and score to MangaUpdates. |
+| <img src="src/plugins/library-grid-layout/assets/icon.png" width="28" alt="" /> | [Library Grid Layout](src/plugins/library-grid-layout/) | plugin | Set cards-per-row of the library grids, per screen size. |
+| <img src="src/plugins/manga-source-updates/assets/icon.png" width="28" alt="" /> | [Manga Source Updates](src/plugins/manga-source-updates/) | plugin | Scan your reading list across all providers to find which sources have new chapters. |
 
 Two are pairs: **Local Catalog** + **Local Catalog Manager** (the plugin curates the catalog the source serves), and **MangaUpdates** + **MangaUpdates Sync** (the source finds titles, the plugin tracks them). **Library Grid Layout** and **Manga Source Updates** are standalone.
 
@@ -73,19 +75,21 @@ Each extension's own README covers its configuration.
 <summary>Repository layout</summary>
 
 ```
-src/
-  <type>/<id>/
-    code.ts        entry source — registers hooks / UI
-    code.js        built payload, the payloadURI target (generated)
-    manifest.json  source-of-truth manifest
-    assets/icon.png
-    modules/       one file per goja-isolated callback (optional)
-    utils/         helpers imported by modules (optional)
-    README.md
-  _utils/  _components/   code shared across extensions
-types/            .d.ts surface for the goja runtime
-scripts/build.ts  build all + regen marketplace.json
-marketplace.json  generated index — never edit by hand
+.
+├── src/
+│   ├── <type>/<id>/           one folder per extension
+│   │   ├── code.ts            entry source — registers hooks / UI
+│   │   ├── code.js            built payload, the payloadURI target (generated)
+│   │   ├── manifest.json      source-of-truth manifest
+│   │   ├── assets/icon.png
+│   │   ├── modules/           one file per goja-isolated callback (optional)
+│   │   ├── utils/             helpers imported by modules (optional)
+│   │   └── README.md
+│   ├── _utils/                code shared across extensions
+│   └── _components/           declarative $ui builders
+├── types/                     .d.ts surface for the goja runtime
+├── scripts/build.ts           build all + regen marketplace.json
+└── marketplace.json           generated index — never edit by hand
 ```
 
 `<type>` is one of `custom-source`, `manga-provider`, `anime-torrent-provider`, `onlinestream-provider`, `plugin`.
@@ -136,7 +140,7 @@ A custom-source isn't serialized per-callback, so it can be a single `code.ts` �
 
 ## 🤝 Contributing
 
-Fork → branch (`feature/your-change`) → `bun run build && bun run typecheck && bun run test` → open a PR. New extensions go under `src/<type>/<id>/`; see the [bundling notes](#️-development) above and [CLAUDE.md](CLAUDE.md) for the runtime constraints.
+Fork → branch (`feature/your-change`) → `bun run build && bun run typecheck && bun run test` → open a PR. New extensions go under `src/<type>/<id>/`; see the [bundling notes](#-development) above and [CLAUDE.md](CLAUDE.md) for the runtime constraints.
 
 ---
 

@@ -4,9 +4,9 @@
 
 # 🔎 MangaUpdates
 
-![Type](https://img.shields.io/badge/type-custom--source-8b5cf6?style=for-the-badge)
-![Version](https://img.shields.io/badge/version-1.0.1-22c55e?style=for-the-badge)
-![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![Type](https://shieldcn.dev/badge/type-custom--source-8b5cf6.svg?variant=secondary)
+![Version](https://shieldcn.dev/badge/version-1.0.1-22c55e.svg?variant=secondary)
+![TypeScript](https://shieldcn.dev/badge/TypeScript.svg?logo=typescript&color=3178C6&variant=secondary)
 
 **Adds [MangaUpdates](https://www.mangaupdates.com/) as a metadata source for seanime.**
 
@@ -33,7 +33,7 @@
 | **Details** — `getMangaDetails(id)` | `GET /v1/series/{id}` |
 | **Batch fetch** — `getManga(ids)` | parallel `GET /v1/series/{id}` |
 
-Anime methods (`listAnime`, `getAnime`, …) are stubbed. seanime does **not** gate calls on `supportsAnime` — the stubs are reachable in practice (e.g. the library scanner may call `getAnimeWithRelations`), so they stay defined even though `getSettings()` reports `supportsAnime: false`.
+Anime methods (`listAnime`, `getAnime`, …) are stubbed. seanime doesn't gate calls on `supportsAnime`, so they can still be reached (e.g. by the library scanner) — they stay defined but return empty.
 
 ---
 

@@ -4,9 +4,9 @@
 
 # 🔁 MangaUpdates Sync
 
-![Type](https://img.shields.io/badge/type-plugin-3b82f6?style=for-the-badge)
-![Version](https://img.shields.io/badge/version-1.2.1-22c55e?style=for-the-badge)
-![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![Type](https://shieldcn.dev/badge/type-plugin-3b82f6.svg?variant=secondary)
+![Version](https://shieldcn.dev/badge/version-1.2.1-22c55e.svg?variant=secondary)
+![TypeScript](https://shieldcn.dev/badge/TypeScript.svg?logo=typescript&color=3178C6&variant=secondary)
 
 **Pushes your manga reading state to [MangaUpdates](https://www.mangaupdates.com/) whenever seanime updates an entry.**
 
@@ -18,7 +18,7 @@
 
 ## 💡 Concept
 
-> Both chapter "+1" bumps and full manual edits (status, score, progress). Plugin extension — no seanime core changes required.
+> Every change in seanime — a chapter `+1` bump or a manual edit to status, score or progress — is mirrored to MangaUpdates. Pure plugin, no seanime core changes.
 
 ---
 
@@ -65,7 +65,7 @@ Two hook pairs run inside `init()`:
 
 | Trigger in seanime | Pre hook | Post hook |
 | ------------------ | -------- | --------- |
-| Chapter "+1" / reader marks chapter | `onPreUpdateEntryProgress` captures `{progress, status}` | `onPostUpdateEntryProgress` pushes to MU after AniList OK |
+| Chapter `+1` / reader marks chapter | `onPreUpdateEntryProgress` captures `{progress, status}` | `onPostUpdateEntryProgress` pushes to MU after AniList OK |
 | Manual edit (status / score / progress) | `onPreUpdateEntry` captures `{status, progress, scoreRaw}` | `onPostUpdateEntry` pushes to MU after AniList OK |
 
 The payload captured in **Pre** is stashed in `$store` (cross-runtime, in-memory) and consumed by the matching **Post**. The Post only fires when AniList accepted the update, so MU stays in lock-step.
@@ -101,30 +101,25 @@ If none resolve, the plugin logs a warning and skips the push.
 <details>
 <summary>Linking AniList entries explicitly</summary>
 
-A **🔓** button renders on every manga entry page that isn't from the `mangaupdates` custom-source. Once linked it relabels to **🔗**.
+A **🔓** button appears on every manga page that isn't from the `mangaupdates` custom-source; once linked it becomes **🔗**.
 
-**Opening the linker**
+**Open the linker** two ways:
 
-- Click **🔓** on the manga page (seeds the search input; auto-runs MU search only when the entry isn't linked yet).
-- Pin the plugin tray icon (top-right of the seanime navbar) and open it — on a manga entry page the tray jumps straight to that entry's **detail** view.
+- Click **🔓** on the manga page — seeds the search box (and auto-searches MU if the entry isn't linked yet).
+- Pin the plugin's tray icon and open it — on a manga page it jumps straight to that entry's **detail** view.
 
 > [!IMPORTANT]
-> **`tray.open()` requires the tray to be pinned** — a documented seanime limitation. If it isn't pinned, the page button shows a toast asking you to pin it.
+> `tray.open()` only works when the tray is pinned (a seanime limitation). Unpinned, the page button shows a toast asking you to pin it.
 
-**List view** (tray opened elsewhere, or after **← Back** from detail):
+**List view** — a filterable list of every linked entry; **⚙️** on a row opens its detail view.
 
-- Filterable **LINKED** list of every `mu_link_<mediaId>` mapping.
-- **⚙️** on a row opens that entry's detail view.
+**Detail view** (one manga):
 
-**Detail view** (one manga at a time):
+1. **AniList header** — cover, title, link badge, **← Back**.
+2. **LINKED WITH** — the MU series row (cover, title, status pill, external link, **Unlink**), or a short note if not linked yet. **Open →** jumps to the seanime entry.
+3. **LINK TO / RELINK TO** — search MangaUpdates (with **Search as** shortcuts for alternate titles) and pick a result. That stores the link and mirrors your current progress to MU immediately.
 
-1. **AniList header** — cover, title, link badge (`🔗 Linked` / `🔓 Not linked`), **← Back**.
-2. **LINKED WITH** — when linked, the MU series row (cover/title/year, **MangaUpdates** status pill, external link, **Unlink**); **Open →** opens the seanime entry page. When not linked yet, the section shows a short note with the same **Open →** shortcut.
-3. **LINK TO** / **RELINK TO** — MU title search (`Search on MangaUpdates` input, **Search as** shortcuts for alternate titles, **RESULTS** picker). Picking a result stores `mu_link_<mediaId>` and mirrors current list data to MU immediately.
-
-To remove a link, use **Unlink** (⛔) on the MU row in detail view or on a list row.
-
-If a link was set by the opt-in **auto-match fallback** (not the picker), verify it in detail view and relink if the title search picked the wrong series.
+**Unlink** (⛔) from either the detail MU row or a list row. If a link came from the opt-in auto-match fallback, check it here and relink if it picked the wrong series.
 
 </details>
 

@@ -4,9 +4,9 @@
 
 # 🗂️ Local Catalog Manager
 
-![Type](https://img.shields.io/badge/type-plugin-3b82f6?style=for-the-badge)
-![Version](https://img.shields.io/badge/version-2.2.1-22c55e?style=for-the-badge)
-![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![Type](https://shieldcn.dev/badge/type-plugin-3b82f6.svg?variant=secondary)
+![Version](https://shieldcn.dev/badge/version-2.2.1-22c55e.svg?variant=secondary)
+![TypeScript](https://shieldcn.dev/badge/TypeScript.svg?logo=typescript&color=3178C6&variant=secondary)
 
 **Manage your [Local Catalog](../../custom-source/local-catalog/) from inside seanime — add, edit, delete entries — and sync it to a GitHub Gist.**
 
@@ -51,14 +51,17 @@ Two operating modes:
 <details>
 <summary>Managing the gist binding (from the tray)</summary>
 
-The tray has a **🔗 GIST BINDING** section with three states / actions:
+The **🔗 GIST BINDING** section in the tray has two states:
 
-- **Not linked:** **🆕 Create new gist** (auto-creates a secret gist seeded with an empty catalog) or paste a URL/ID into the **Link** input.
-- **Linked:** **📋 Show raw URL** (toast with the raw URL — copy from there), **🔓 Unlink** (forget the gist locally, leave it on GitHub, clears local progress cache), **🗑 Delete remotely** (two-click confirm: first click arms the button, second runs `DELETE /gists/:id` on GitHub and clears local state).
+- **Not linked** — **🆕 Create new gist** (makes a secret gist seeded with an empty catalog), or paste a URL/ID into the **Link** input.
+- **Linked** — three actions:
+  - **📋 Show raw URL** — toast with the raw URL to copy.
+  - **🔓 Unlink** — forgets the gist locally (leaves it on GitHub) and clears the local progress cache.
+  - **🗑 Delete remotely** — two-click confirm; the second click runs `DELETE /gists/:id` and clears local state.
 
 Accepted link formats: `https://gist.githubusercontent.com/<user>/<id>/raw/catalog.json`, `https://gist.github.com/<user>/<id>`, or the bare `<id>` hex string.
 
-Legacy installs with the old `gistUrl` config field set: the plugin migrates the value into local storage on first load — no action required.
+Legacy installs with the old `gistUrl` field: the plugin migrates it into local storage on first load — no action required.
 
 </details>
 
@@ -84,7 +87,7 @@ Legacy installs with the old `gistUrl` config field set: the plugin migrates the
 
 ## 🔧 How it works
 
-You add/edit/delete entries from the tray or the **🗂️** button on a local-catalog manga page. In **Gist mode** every change is pushed to `catalog.json` in a secret Gist that the `local-catalog` source reads; in **Local mode** you copy the serialized JSON into the source's *Inline catalog JSON* field by hand.
+You add/edit/delete entries from the tray or the **🗂️** button on a local-catalog manga page. In **Gist mode** each change pushes to `catalog.json` in the secret Gist the source reads; in **Local mode** you copy the JSON into the source's *Inline catalog JSON* field yourself.
 
 ### Tray UI
 

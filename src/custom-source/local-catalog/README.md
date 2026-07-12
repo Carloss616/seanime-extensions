@@ -4,9 +4,9 @@
 
 # 📚 Local Catalog
 
-![Type](https://img.shields.io/badge/type-custom--source-8b5cf6?style=for-the-badge)
-![Version](https://img.shields.io/badge/version-2.0.0-22c55e?style=for-the-badge)
-![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![Type](https://shieldcn.dev/badge/type-custom--source-8b5cf6.svg?variant=secondary)
+![Version](https://shieldcn.dev/badge/version-2.0.0-22c55e.svg?variant=secondary)
+![TypeScript](https://shieldcn.dev/badge/TypeScript.svg?logo=typescript&color=3178C6&variant=secondary)
 
 **A seanime custom-source that serves a manga catalog you curate yourself.**
 
@@ -20,7 +20,7 @@
 
 > For titles that aren't on AniList / MangaUpdates (or aren't uploaded yet).
 
-You curate the metadata; the titles then show up in your manga collection like any AniList media, and you read them with any installed manga provider (matched by title) or the built-in local reader.
+You curate the metadata; the titles then appear in your manga collection like any AniList media. Read them with any installed manga provider (matched by title) or the built-in local reader.
 
 > [!IMPORTANT]
 > This source provides **metadata only** — it does not host or serve chapter pages.
@@ -57,15 +57,15 @@ Set **one** catalog source:
 **Cache minutes** controls how long the parsed catalog is cached in memory (default `10`; `0` disables caching). Edits propagate after the TTL expires.
 
 > [!NOTE]
-> No token is supported. Truly private gists/repos that require auth are **not** reachable — the extension cannot send an `Authorization` header. Writing a catalog *back* to a Gist (which does need a token) is the job of the [Local Catalog Manager](../../plugins/local-catalog-manager/) plugin, not this source.
+> No token support — the source can't send an `Authorization` header, so truly private gists/repos are **not** reachable. Writing a catalog *back* to a Gist (which needs a token) is the [Local Catalog Manager](../../plugins/local-catalog-manager/) plugin's job.
 >
-> A custom-source also can't read a device-local file path directly (seanime only grants it `fetch` + config). Use a local HTTP server and point **Catalog URL** at it if you want a file on disk.
+> It also can't read a local file path directly (seanime grants it only `fetch` + config). For a file on disk, serve it over a local HTTP server and point **Catalog URL** at it.
 
 ---
 
 ## 🔧 How it works
 
-When you set a **Catalog URL**, the source fetches and parses that JSON (caching it for *Cache minutes*); otherwise it uses the **Inline catalog JSON**. Each record is normalized to seanime's native `AL_BaseManga` shape, so entries show up in your manga collection like any AniList media. When you open one, seanime calls your selected manga provider's search with the entry's title(s) and lists its chapters.
+The source loads its catalog from your **Catalog URL** (fetched and cached for *Cache minutes*), or from **Inline catalog JSON** if no URL is set. Each record is normalized to seanime's native `AL_BaseManga` shape, so entries appear in your collection like any AniList media. Open one and seanime searches your selected provider by title to list its chapters.
 
 ---
 

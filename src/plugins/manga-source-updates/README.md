@@ -4,9 +4,9 @@
 
 # 🔎 Manga Source Updates
 
-![Type](https://img.shields.io/badge/type-plugin-3b82f6?style=for-the-badge)
-![Version](https://img.shields.io/badge/version-1.8.0-22c55e?style=for-the-badge)
-![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![Type](https://shieldcn.dev/badge/type-plugin-3b82f6.svg?variant=secondary)
+![Version](https://shieldcn.dev/badge/version-1.8.0-22c55e.svg?variant=secondary)
+![TypeScript](https://shieldcn.dev/badge/TypeScript.svg?logo=typescript&color=3178C6&variant=secondary)
 
 **Scans your reading list against every installed manga provider and tells you which sources have new chapters — now synced across your devices.**
 
@@ -18,7 +18,9 @@
 
 ## 💡 Concept
 
-> One manga, many providers — but seanime shows only the one you read. This plugin re-checks every manga on your **CURRENT** list across *all* installed providers and flags the source furthest ahead, both in its own tray and on seanime's own pages. UI-only (no update hooks); optionally syncs across devices via a private GitHub Gist.
+> One manga, many providers — but seanime only shows the one you read.
+
+This plugin re-checks your **CURRENT** list across *all* installed providers and flags the source that's furthest ahead — in its own tray and on seanime's own pages. UI-only (no update hooks); optionally syncs across devices via a private GitHub Gist.
 
 ---
 
@@ -96,16 +98,26 @@ Everything lives in `$storage`, so a reload shows the last scan instantly. Cost 
 
 ## 🔄 Sync
 
-Five local maps — **digest** (row summaries), **exclusions**, **pins**, **probes**, **matches** — sync across your instances via one private GitHub Gist, one file per map (`seanime-msu-digest.json`, `-exclusions`, `-pins`, `-probes`, `-matches`; `digest` is the head file GitHub shows as the gist header). Every sync pulls + merges all files (one GET); the **push is selective** — an edit uploads only the file(s) it touched.
+Five local maps sync across your devices via one private GitHub Gist — one file each:
 
-- **Auto conflict resolution.** Each record carries `updatedAt`/`deletedAt`; the newer wins per-record (last-writer-wins), deletes are tombstone-aware. No manual conflict UI.
-- **Custom-source entries sync too** — identified by a stable `manifestId:localId` key, since their `mediaId` is randomized per install.
-- **Auth:** **Connect GitHub** (browser Device Flow — enter a code at `github.com/login/device`, no token typed in) or the **`githubPat`** field (PAT with `gist` scope; device-flow wins if both are set).
-- **Gist auto-discovered** by `seanime-msu-digest.json` under your account — created if absent, no link/unlink UI.
+| Map | Holds |
+|-----|-------|
+| `digest` | Row summaries (the gist's head file). |
+| `exclusions` | Sources excluded per manga. |
+| `pins` | Your manual exclude/include choices. |
+| `probes` | Per-source scan cache. |
+| `matches` | Manual source matches. |
+
+Every sync pulls and merges all five files in one request. Pushes are **selective** — an edit uploads only the file(s) it changed.
+
+- **Conflicts resolve automatically.** Each record carries `updatedAt`/`deletedAt`; the newest wins, deletes are tombstone-aware. No manual conflict UI.
+- **Custom-source entries sync too**, keyed by a stable `manifestId:localId` (their `mediaId` is randomized per install).
+- **Auth:** *Connect GitHub* (browser Device Flow — enter a code, no token typed) or the `githubPat` field (PAT with `gist` scope). Device Flow wins if both are set.
+- **The gist is auto-discovered** by its `digest` file — created if missing, no link/unlink UI.
 
 ### When it pulls / pushes
 
-Every trigger below **pulls + merges all five files** (one GET) — they differ only in **what** they push and **when**. Manual edits push live; scans push at the end (or on cancel); whole-account triggers push every changed file.
+Every trigger below **pulls + merges all five files**. They differ only in **what** they push and **when**: manual edits push live, scans push at the end (or on cancel), whole-account triggers push every changed file.
 
 | Trigger | When | Pushes |
 |---|---|---|
