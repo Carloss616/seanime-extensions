@@ -2,12 +2,13 @@
 var onGetMangaCollection = (...args) => {
   var SHARED_LIB_NAME = "local-catalog-manager";
   var PROGRESS_FILENAME = "seanime-local-progress.json";
-  var K_GIST = "lcm_gist_id";
-  var K_PROGRESS = "lcm_progress";
-  var K_PROGRESS_UPDATED = "lcm_progress_updated_at";
-  var K_SYNC_PAUSED = "lcm_sync_paused";
-  var K_EXT_ID = "lcm_ext_id";
-  var STORE_SILENT_SYNC_AT = "lcm:silent-sync-at";
+  var K_GIST_ID = "gistId";
+  var K_PROGRESS = "progress";
+  var K_PROGRESS_UPDATED_AT = "progressUpdatedAt";
+  var K_SYNC_PAUSED = "syncPaused";
+  var K_EXT_ID = "extId";
+  var K_OAUTH_TOKEN = "oauthToken";
+  var STORE_SILENT_SYNC_AT = "silentSyncAt";
   var SILENT_SYNC_COOLDOWN_MS = 1e4;
   function progressSkipKey(mediaId) {
     return `progress:skip:${mediaId}`;
@@ -235,6 +236,9 @@ var onGetMangaCollection = (...args) => {
     }
     return map;
   }
+  var oauthToken = () => ($storage.get(K_OAUTH_TOKEN) ?? "").trim();
+  var patToken = () => ($getUserPreference("githubToken") ?? "").trim();
+  var syncToken = () => oauthToken() || patToken();
   var onGetMangaCollection2 = (event) => {
     (async () => {
       const {
@@ -248,8 +252,8 @@ var onGetMangaCollection = (...args) => {
         const now = Date.now();
         if (now - lastAt < SILENT_SYNC_COOLDOWN_MS) return;
         $store.set(STORE_SILENT_SYNC_AT, now);
-        const token = ($getUserPreference("githubToken") ?? "").trim();
-        const gistId = $storage.get(K_GIST) ?? "";
+        const token = syncToken();
+        const gistId = $storage.get(K_GIST_ID) ?? "";
         if (!token || !gistId) return;
         if ($storage.get(K_SYNC_PAUSED)) return;
         const client = new GistClient(token, fetch);
@@ -283,7 +287,7 @@ var onGetMangaCollection = (...args) => {
             : {}),
         });
         $storage.set(K_PROGRESS, result.merged);
-        $storage.set(K_PROGRESS_UPDATED, now);
+        $storage.set(K_PROGRESS_UPDATED_AT, now);
         if (result.applied > 0) {
           try {
             $anilist.refreshMangaCollection();
@@ -313,11 +317,12 @@ var onGetMangaCollection = (...args) => {
 var onPostUpdateEntry = (...args) => {
   var SHARED_LIB_NAME = "local-catalog-manager";
   var PROGRESS_FILENAME = "seanime-local-progress.json";
-  var K_GIST = "lcm_gist_id";
-  var K_PROGRESS = "lcm_progress";
-  var K_PROGRESS_UPDATED = "lcm_progress_updated_at";
-  var K_SYNC_PAUSED = "lcm_sync_paused";
-  var STORE_DRIFT_NOTIFIED = "lcm:drift-notified";
+  var K_GIST_ID = "gistId";
+  var K_PROGRESS = "progress";
+  var K_PROGRESS_UPDATED_AT = "progressUpdatedAt";
+  var K_SYNC_PAUSED = "syncPaused";
+  var K_OAUTH_TOKEN = "oauthToken";
+  var STORE_DRIFT_NOTIFIED = "driftNotified";
   function progressSkipKey(mediaId) {
     return `progress:skip:${mediaId}`;
   }
@@ -332,6 +337,9 @@ var onPostUpdateEntry = (...args) => {
       $store.remove(progressSkipKey(mediaId));
     }
   }
+  var oauthToken = () => ($storage.get(K_OAUTH_TOKEN) ?? "").trim();
+  var patToken = () => ($getUserPreference("githubToken") ?? "").trim();
+  var syncToken = () => oauthToken() || patToken();
   var onPostUpdateEntry2 = (event) => {
     const {
       createLogger,
@@ -355,8 +363,8 @@ var onPostUpdateEntry = (...args) => {
       const localId = decodeLocalId(event.mediaId);
       const now = Date.now();
       const local = parseProgress($storage.get(K_PROGRESS), log);
-      const token = ($getUserPreference("githubToken") ?? "").trim();
-      const gistId = $storage.get(K_GIST) ?? "";
+      const token = syncToken();
+      const gistId = $storage.get(K_GIST_ID) ?? "";
       const syncPaused = $storage.get(K_SYNC_PAUSED) ?? false;
       const client =
         !syncPaused && token && gistId ? new GistClient(token, fetch) : null;
@@ -392,7 +400,7 @@ var onPostUpdateEntry = (...args) => {
         },
         persistLocal: (doc, updatedAt) => {
           $storage.set(K_PROGRESS, doc);
-          $storage.set(K_PROGRESS_UPDATED, updatedAt);
+          $storage.set(K_PROGRESS_UPDATED_AT, updatedAt);
         },
       }).catch((e) => {
         log.warn("post-update-entry sync failed:", e);
@@ -409,10 +417,15 @@ var onPostUpdateEntry = (...args) => {
 var onPostUpdateEntryProgress = (...args) => {
   var SHARED_LIB_NAME = "local-catalog-manager";
   var PROGRESS_FILENAME = "seanime-local-progress.json";
-  var K_GIST = "lcm_gist_id";
-  var K_PROGRESS = "lcm_progress";
-  var K_PROGRESS_UPDATED = "lcm_progress_updated_at";
-  var K_SYNC_PAUSED = "lcm_sync_paused";
+  var K_GIST_ID = "gistId";
+  var K_PROGRESS = "progress";
+  var K_PROGRESS_UPDATED_AT = "progressUpdatedAt";
+  var K_SYNC_PAUSED = "syncPaused";
+  var K_OAUTH_TOKEN = "oauthToken";
+  var STORE_DRIFT_NOTIFIED = "driftNotified";
+  var oauthToken = () => ($storage.get(K_OAUTH_TOKEN) ?? "").trim();
+  var patToken = () => ($getUserPreference("githubToken") ?? "").trim();
+  var syncToken = () => oauthToken() || patToken();
   var onPostUpdateEntryProgress2 = (event) => {
     const {
       createLogger,
@@ -437,16 +450,15 @@ var onPostUpdateEntryProgress = (...args) => {
       const localId = decodeLocalId(event.mediaId);
       const now = Date.now();
       const local = parseProgress($storage.get(K_PROGRESS), log);
-      const token = ($getUserPreference("githubToken") ?? "").trim();
-      const gistId = $storage.get(K_GIST) ?? "";
+      const token = syncToken();
+      const gistId = $storage.get(K_GIST_ID) ?? "";
       const syncPaused = $storage.get(K_SYNC_PAUSED) ?? false;
       const client =
         !syncPaused && token && gistId ? new GistClient(token, fetch) : null;
       const mediaId = event.mediaId;
       if (syncPaused && token && gistId) {
-        const notifiedKey = "lcm:drift-notified";
-        if (!$store.get(notifiedKey)) {
-          $store.set(notifiedKey, true);
+        if (!$store.get(STORE_DRIFT_NOTIFIED)) {
+          $store.set(STORE_DRIFT_NOTIFIED, true);
           log.warn(
             "catalog drift pending — saved locally only. Resolve in tray.",
           );
@@ -478,7 +490,7 @@ var onPostUpdateEntryProgress = (...args) => {
         },
         persistLocal: (doc, updatedAt) => {
           $storage.set(K_PROGRESS, doc);
-          $storage.set(K_PROGRESS_UPDATED, updatedAt);
+          $storage.set(K_PROGRESS_UPDATED_AT, updatedAt);
         },
       }).catch((e) => {
         log.warn("post-update-entry-progress sync failed:", e);
@@ -686,7 +698,7 @@ var register = (...args) => {
       }
       return initialsCover(tray, title);
     };
-    const SEG_BOX = {
+    const SEG_BOX2 = {
       display: "inline-flex",
       alignItems: "center",
       height: "1.2rem",
@@ -695,7 +707,7 @@ var register = (...args) => {
     const dotSep = () =>
       tray.span("·", {
         style: {
-          ...SEG_BOX,
+          ...SEG_BOX2,
           opacity: "0.35",
           fontSize: "0.75rem",
           margin: "0 2px",
@@ -706,7 +718,7 @@ var register = (...args) => {
       if (row.year != null) {
         segs.push(
           tray.span(String(row.year), {
-            style: { ...SEG_BOX, opacity: "0.55", fontSize: "0.75rem" },
+            style: { ...SEG_BOX2, opacity: "0.55", fontSize: "0.75rem" },
           }),
         );
       }
@@ -732,12 +744,12 @@ var register = (...args) => {
       if (row.chapter != null && row.chapter !== "") {
         segs.push(
           tray.span(`c.${row.chapter}`, {
-            style: { ...SEG_BOX, opacity: "0.7", fontSize: "0.75rem" },
+            style: { ...SEG_BOX2, opacity: "0.7", fontSize: "0.75rem" },
           }),
         );
       }
       const linkStyle = {
-        ...SEG_BOX,
+        ...SEG_BOX2,
         background: "transparent",
         border: "none",
         padding: "0",
@@ -899,6 +911,139 @@ var register = (...args) => {
     }
     return tray.stack(out, { gap: 2 });
   }
+  function connectStatus(o) {
+    if (!o.connected)
+      return {
+        badge: { label: "Not connected", intent: "gray" },
+        text: null,
+        via: "",
+      };
+    if (o.syncing) return { badge: null, text: "Syncing…", via: "" };
+    const label = o.lastSyncedAt && o.lastSyncedAt > 0 ? "Synced" : "Connected";
+    return {
+      badge: { label, intent: "success" },
+      text: null,
+      via: o.via ?? "",
+    };
+  }
+  var SEG_BOX = {
+    display: "inline-flex",
+    alignItems: "center",
+    height: "1.2rem",
+    lineHeight: "1",
+  };
+  function statusRow(tray, s) {
+    const segs = [];
+    if (s.badge) {
+      segs.push(
+        tray.badge(s.badge.label, { intent: s.badge.intent, size: "sm" }),
+      );
+    }
+    if (s.text) {
+      segs.push(
+        tray.span(s.text, {
+          style: { ...SEG_BOX, fontSize: "0.7rem", opacity: "0.7" },
+        }),
+      );
+    }
+    if (s.via) {
+      segs.push(
+        tray.span(`· via ${s.via}`, {
+          style: {
+            ...SEG_BOX,
+            fontSize: "0.7rem",
+            opacity: "0.55",
+            marginLeft: "6px",
+          },
+        }),
+      );
+    }
+    return tray.flex(segs, {
+      gap: 0,
+      style: { alignItems: "center", lineHeight: "1" },
+    });
+  }
+  function deviceCodePrompt(tray, start) {
+    return tray.stack(
+      [
+        tray.flex(
+          [
+            tray.text("Enter this code at GitHub", { style: CAPTION_STYLE }),
+            tray.text(start.userCode, {
+              style: {
+                fontSize: "1.25rem",
+                fontWeight: "700",
+                letterSpacing: "0.15em",
+              },
+            }),
+          ],
+          { direction: "column", gap: 1 },
+        ),
+        tray.anchor({
+          text: "Open GitHub ↗",
+          href: start.verificationUri,
+          target: "_blank",
+        }),
+        tray.text("Waiting for authorization…", { style: CAPTION_STYLE }),
+      ],
+      { gap: 2 },
+    );
+  }
+  function actionsMenu(tray, o) {
+    const items = (o.connectedActions ?? []).map((a) =>
+      tray.dropdownMenuItem(tray.text(a.label), {
+        onClick: a.onClick,
+        disabled: a.disabled,
+      }),
+    );
+    if (o.disconnectable ?? o.connected) {
+      items.push(
+        tray.dropdownMenuItem(tray.text("Disconnect"), {
+          onClick: o.disconnectEvent,
+        }),
+      );
+    }
+    if (!items.length) return null;
+    return tray.dropdownMenu({
+      trigger: tray.button("⋮", { size: "sm", intent: "gray-subtle" }),
+      items,
+    });
+  }
+  function githubConnect(tray, o) {
+    if (o.deviceStart) return deviceCodePrompt(tray, o.deviceStart);
+    const rows = [];
+    const status = o.status ? statusRow(tray, connectStatus(o.status)) : null;
+    const menu = o.connected ? actionsMenu(tray, o) : null;
+    if (o.title || status || menu) {
+      const header = [
+        tray.div(o.title ? [tray.text(o.title, { style: LABEL_STYLE })] : [], {
+          style: { flex: "1", alignSelf: "center" },
+        }),
+      ];
+      if (status) header.push(status);
+      if (menu) header.push(menu);
+      rows.push(tray.flex(header, { gap: 2, style: { alignItems: "center" } }));
+    }
+    if (!o.connected) {
+      rows.push(
+        tray.flex(
+          [
+            tray.button(o.connecting ? "Connecting…" : "Connect GitHub", {
+              onClick: o.connectEvent,
+              size: "sm",
+              intent: "primary",
+              loading: o.connecting,
+            }),
+          ],
+          { gap: 2 },
+        ),
+      );
+      if (o.connectHint) {
+        rows.push(tray.text(o.connectHint, { style: CAPTION_STYLE }));
+      }
+    }
+    return tray.stack(rows, { gap: 2 });
+  }
   var ICON_PX = 36;
   function trayHeader(tray, opts = {}) {
     const title = String(opts.title ?? "Local Catalog Manager");
@@ -976,6 +1121,97 @@ var register = (...args) => {
       intent: STATUS_INTENT[status] ?? "gray",
     };
   }
+  var GITHUB_CLIENT_ID = "Ov23li6KslJmP3EaLxXj";
+  function interpretDeviceCode(json) {
+    const j = json ?? {};
+    const deviceCode = typeof j.device_code === "string" ? j.device_code : "";
+    const userCode = typeof j.user_code === "string" ? j.user_code : "";
+    const verificationUri =
+      typeof j.verification_uri === "string" ? j.verification_uri : "";
+    if (!deviceCode || !userCode || !verificationUri) {
+      const msg =
+        typeof j.error === "string"
+          ? j.error
+          : "malformed device-code response";
+      return { ok: false, message: msg };
+    }
+    return {
+      ok: true,
+      start: {
+        deviceCode,
+        userCode,
+        verificationUri,
+        interval: typeof j.interval === "number" ? j.interval : 5,
+        expiresIn: typeof j.expires_in === "number" ? j.expires_in : 900,
+      },
+    };
+  }
+  function interpretTokenResponse(json) {
+    const j = json ?? {};
+    if (typeof j.access_token === "string" && j.access_token.length > 0) {
+      return { type: "token", token: j.access_token };
+    }
+    const err = typeof j.error === "string" ? j.error : "";
+    if (err === "authorization_pending") return { type: "pending" };
+    if (err === "slow_down") {
+      return {
+        type: "slow_down",
+        interval: typeof j.interval === "number" ? j.interval : 5,
+      };
+    }
+    if (err) return { type: "error", message: err };
+    return { type: "error", message: "unexpected token response" };
+  }
+
+  class DeviceFlowClient {
+    constructor(clientId, fetchFn) {
+      this.clientId = clientId;
+      this.fetchFn = fetchFn;
+    }
+    headers() {
+      return { Accept: "application/json", "Content-Type": "application/json" };
+    }
+    async requestDeviceCode(scope) {
+      const res = await this.fetchFn("https://github.com/login/device/code", {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ client_id: this.clientId, scope }),
+      });
+      return interpretDeviceCode(res.json());
+    }
+    async pollAccessToken(deviceCode) {
+      const res = await this.fetchFn(
+        "https://github.com/login/oauth/access_token",
+        {
+          method: "POST",
+          headers: this.headers(),
+          body: JSON.stringify({
+            client_id: this.clientId,
+            device_code: deviceCode,
+            grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+          }),
+        },
+      );
+      return interpretTokenResponse(res.json());
+    }
+    async pollUntilToken(start, deps) {
+      let interval = Math.max(1, start.interval);
+      const deadline = Date.now() + start.expiresIn * 1000;
+      while (Date.now() < deadline) {
+        deps.sleep(interval * 1000);
+        const result = await this.pollAccessToken(start.deviceCode);
+        if (result.type === "token")
+          return { type: "token", token: result.token };
+        if (result.type === "error") {
+          return { type: "error", message: result.message };
+        }
+        if (result.type === "slow_down") {
+          interval = Math.max(interval + 5, result.interval);
+        }
+      }
+      return { type: "timeout" };
+    }
+  }
   var clientCacheQueryKeys = (opts) => {
     const keys = [];
     if (opts.catalog) {
@@ -995,19 +1231,21 @@ var register = (...args) => {
   var CATALOG_FILENAME = "seanime-local-catalog.json";
   var PROGRESS_FILENAME = "seanime-local-progress.json";
   var GIST_DESCRIPTION = "Seanime local catalog and progress sync";
-  var K_GIST = "lcm_gist_id";
-  var K_OWNER = "lcm_owner";
-  var K_RAW = "lcm_raw_url";
-  var K_CATALOG = "lcm_catalog";
-  var K_UPDATED = "lcm_updated_at";
-  var K_NEXT_ID = "lcm_next_id";
-  var K_PROGRESS = "lcm_progress";
-  var K_PROGRESS_UPDATED = "lcm_progress_updated_at";
-  var K_SYNC_PAUSED = "lcm_sync_paused";
-  var K_DRIFT_REMOTE = "lcm_drift_remote";
-  var K_DRIFT_FRESH_GIST = "lcm_drift_fresh_gist";
-  var K_PROGRESS_DRIFT_REMOTE = "lcm_progress_drift_remote";
-  var K_EXT_ID = "lcm_ext_id";
+  var K_GIST_ID = "gistId";
+  var K_OWNER = "owner";
+  var K_RAW_URL = "rawUrl";
+  var K_CATALOG = "catalog";
+  var K_UPDATED_AT = "updatedAt";
+  var K_NEXT_ID = "nextId";
+  var K_PROGRESS = "progress";
+  var K_PROGRESS_UPDATED_AT = "progressUpdatedAt";
+  var K_SYNC_PAUSED = "syncPaused";
+  var K_DRIFT_REMOTE = "driftRemote";
+  var K_DRIFT_FRESH_GIST = "driftFreshGist";
+  var K_PROGRESS_DRIFT_REMOTE = "progressDriftRemote";
+  var K_EXT_ID = "extId";
+  var K_OAUTH_TOKEN = "oauthToken";
+  var STORE_DRIFT_NOTIFIED = "driftNotified";
   var SILENT_SYNC_COOLDOWN_MS = 1e4;
   function progressSkipKey(mediaId) {
     return `progress:skip:${mediaId}`;
@@ -1320,6 +1558,32 @@ var register = (...args) => {
     if (obj.entries && typeof obj.entries === "object") return "progress";
     return "invalid";
   };
+  var LEGACY_TO_CURRENT = {
+    lcm_gist_id: "gistId",
+    lcm_owner: "owner",
+    lcm_raw_url: "rawUrl",
+    lcm_catalog: "catalog",
+    lcm_updated_at: "updatedAt",
+    lcm_next_id: "nextId",
+    lcm_progress: "progress",
+    lcm_progress_updated_at: "progressUpdatedAt",
+    lcm_sync_paused: "syncPaused",
+    lcm_drift_remote: "driftRemote",
+    lcm_drift_fresh_gist: "driftFreshGist",
+    lcm_progress_drift_remote: "progressDriftRemote",
+    lcm_ext_id: "extId",
+    lcm_oauth_token: "oauthToken",
+  };
+  function migrateStorageKeys() {
+    for (const oldKey of Object.keys(LEGACY_TO_CURRENT)) {
+      if (!$storage.has(oldKey)) continue;
+      const newKey = LEGACY_TO_CURRENT[oldKey];
+      if (!$storage.has(newKey)) {
+        $storage.set(newKey, $storage.get(oldKey));
+      }
+      $storage.remove(oldKey);
+    }
+  }
   function wrapUpdateEntryWithSkip(mediaId, fn) {
     $store.set(progressSkipKey(mediaId), true);
     try {
@@ -1546,6 +1810,8 @@ var register = (...args) => {
       pushed,
     };
   }
+  var oauthToken = () => ($storage.get(K_OAUTH_TOKEN) ?? "").trim();
+  var patToken = () => ($getUserPreference("githubToken") ?? "").trim();
   var register2 = (ctx) => {
     const {
       createLogger: createLogger2,
@@ -1576,6 +1842,7 @@ var register = (...args) => {
       diffProgress,
     } = $shared.use(SHARED_LIB_NAME);
     const log2 = createLogger2();
+    migrateStorageKeys();
     const tray = ctx.newTray({
       iconUrl:
         "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/local-catalog-manager/assets/icon.png",
@@ -1587,12 +1854,12 @@ var register = (...args) => {
       $storage.set(K_NEXT_ID, nextId(entries.get()) - 1);
     }
     const editingId = ctx.state(0);
-    const rawUrl = ctx.state($storage.get(K_RAW) ?? "");
+    const rawUrl = ctx.state($storage.get(K_RAW_URL) ?? "");
     const status = ctx.state("");
     const loadProgressDoc = () =>
       parseProgress2($storage.get(K_PROGRESS), log2);
     const progress = ctx.state(loadProgressDoc());
-    const progressUpdated = ctx.state($storage.get(K_PROGRESS_UPDATED) ?? 0);
+    const progressUpdated = ctx.state($storage.get(K_PROGRESS_UPDATED_AT) ?? 0);
     const progressStatus = ctx.state("");
     const localEntryCount = () => Object.keys(progress.get().manga).length;
     const orphanCount = () => {
@@ -1623,7 +1890,7 @@ var register = (...args) => {
           progress.set(merged);
           progressUpdated.set(now);
           $storage.set(K_PROGRESS, merged);
-          $storage.set(K_PROGRESS_UPDATED, now);
+          $storage.set(K_PROGRESS_UPDATED_AT, now);
           progressStatus.set(
             `Pushed ${Object.keys(merged.manga).length} entries`,
           );
@@ -1668,7 +1935,7 @@ var register = (...args) => {
           progress.set(merged);
           progressUpdated.set(now);
           $storage.set(K_PROGRESS, merged);
-          $storage.set(K_PROGRESS_UPDATED, now);
+          $storage.set(K_PROGRESS_UPDATED_AT, now);
           progressStatus.set(
             `Pulled — applied ${res.applied}${res.skipped ? `, skipped ${res.skipped} orphan(s)` : ""}`,
           );
@@ -1697,7 +1964,7 @@ var register = (...args) => {
           const now = Date.now();
           const merged = mergeCatalog(entries.get(), remote);
           if (catalogsEqual(merged, remote)) {
-            persistLocal(merged, $storage.get(K_UPDATED) ?? now);
+            persistLocal(merged, $storage.get(K_UPDATED_AT) ?? now);
           } else {
             persistLocal(merged, now);
             await client().updateGistFile(
@@ -1750,7 +2017,7 @@ var register = (...args) => {
       progress.set(result.merged);
       progressUpdated.set(now);
       $storage.set(K_PROGRESS, result.merged);
-      $storage.set(K_PROGRESS_UPDATED, now);
+      $storage.set(K_PROGRESS_UPDATED_AT, now);
       if (result.applied > 0) {
         try {
           $anilist.refreshMangaCollection();
@@ -1827,7 +2094,7 @@ var register = (...args) => {
       progress.set(next);
       progressUpdated.set(updatedAt);
       $storage.set(K_PROGRESS, next);
-      $storage.set(K_PROGRESS_UPDATED, updatedAt);
+      $storage.set(K_PROGRESS_UPDATED_AT, updatedAt);
       const gistId = effectiveGistId();
       if (hasToken() && gistId && !hasDrift()) {
         pushProgress(
@@ -2037,7 +2304,7 @@ var register = (...args) => {
         $storage.set(K_SYNC_PAUSED, true);
       } else {
         $storage.remove(K_SYNC_PAUSED);
-        $store.remove("lcm:drift-notified");
+        $store.remove(STORE_DRIFT_NOTIFIED);
       }
     };
     const pauseSync = (remote, opts = {}) => {
@@ -2079,6 +2346,9 @@ var register = (...args) => {
       }
     }
     const busyAction = ctx.state("");
+    const connecting = ctx.state(false);
+    const deviceStart = ctx.state(null);
+    const oauthTok = ctx.state(oauthToken());
     const runBusy = async (tag, fn) => {
       if (busyAction.get()) {
         ctx.toast.info("Another operation is running — try again in a moment");
@@ -2091,26 +2361,59 @@ var register = (...args) => {
         busyAction.set("");
       }
     };
-    const token = () => ($getUserPreference("githubToken") ?? "").trim();
-    const hasToken = () => token().length > 0;
-    const client = () => new GistClient(token(), (u, i) => ctx.fetch(u, i));
+    const effToken = () => oauthTok.get() || patToken();
+    const hasToken = () => effToken().length > 0;
+    const client = () => new GistClient(effToken(), (u, i) => ctx.fetch(u, i));
     const legacyGistUrl = ($getUserPreference("gistUrl") ?? "").trim();
-    if (legacyGistUrl && !$storage.get(K_GIST)) {
+    if (legacyGistUrl && !$storage.get(K_GIST_ID)) {
       const parsed = parseGistId(legacyGistUrl);
       if (parsed) {
-        $storage.set(K_GIST, parsed);
+        $storage.set(K_GIST_ID, parsed);
         log2.log("migrated legacy gistUrl config to $storage");
       }
     }
-    const effectiveGistId = () => $storage.get(K_GIST) ?? "";
+    const effectiveGistId = () => $storage.get(K_GIST_ID) ?? "";
+    async function connectGitHub() {
+      if (connecting.get()) return;
+      connecting.set(true);
+      try {
+        const auth = new DeviceFlowClient(GITHUB_CLIENT_ID, (u, i) =>
+          ctx.fetch(u, i),
+        );
+        const parsed = await auth.requestDeviceCode("gist");
+        if (!parsed.ok) {
+          ctx.toast.error(`GitHub login failed: ${parsed.message}`);
+          return;
+        }
+        deviceStart.set(parsed.start);
+        const result = await auth.pollUntilToken(parsed.start, {
+          sleep: (ms) => $sleep(ms),
+        });
+        if (result.type === "token") {
+          $storage.set(K_OAUTH_TOKEN, result.token);
+          oauthTok.set(result.token);
+          ctx.toast.success("Connected to GitHub");
+        } else if (result.type === "error") {
+          ctx.toast.error(`GitHub login failed: ${result.message}`);
+        } else {
+          ctx.toast.error("GitHub login timed out — try again");
+        }
+      } catch (e) {
+        log2.warn("connectGitHub failed:", e);
+        ctx.toast.error(`GitHub login failed: ${e.message}`);
+      } finally {
+        deviceStart.set(null);
+        connecting.set(false);
+      }
+    }
     const disarmDelete = () => {
       if (deleteGistArmed.get()) deleteGistArmed.set(false);
       if (deleteArmedId.get() !== 0) deleteArmedId.set(0);
     };
     const clearGistLocalState = () => {
-      $storage.remove(K_GIST);
+      $storage.remove(K_GIST_ID);
       $storage.remove(K_OWNER);
-      $storage.remove(K_RAW);
+      $storage.remove(K_RAW_URL);
       rawUrl.set("");
     };
     async function createGistNow() {
@@ -2132,9 +2435,9 @@ var register = (...args) => {
             initial,
             GIST_DESCRIPTION,
           );
-          $storage.set(K_GIST, info.id);
+          $storage.set(K_GIST_ID, info.id);
           $storage.set(K_OWNER, info.owner);
-          $storage.set(K_RAW, info.rawUrl);
+          $storage.set(K_RAW_URL, info.rawUrl);
           rawUrl.set(info.rawUrl);
           if (localEntries.length > 0) {
             pendingDrift.set({ local: localEntries, remote: [] });
@@ -2167,9 +2470,9 @@ var register = (...args) => {
         return;
       }
       await runBusy("link-gist", async () => {
-        $storage.set(K_GIST, parsed);
+        $storage.set(K_GIST_ID, parsed);
         $storage.set(K_OWNER, "");
-        $storage.set(K_RAW, "");
+        $storage.set(K_RAW_URL, "");
         rawUrl.set("");
         fGistLink.setValue("");
         let remote = [];
@@ -2179,7 +2482,7 @@ var register = (...args) => {
             CATALOG_FILENAME,
           );
           $storage.set(K_OWNER, info.owner);
-          $storage.set(K_RAW, info.rawUrl);
+          $storage.set(K_RAW_URL, info.rawUrl);
           rawUrl.set(info.rawUrl);
           remote = parseCatalog(info.content, log2).manga;
         } catch (e) {
@@ -2354,9 +2657,9 @@ var register = (...args) => {
       const gistId = effectiveGistId();
       pendingDrift.set(null);
       pauseSync(null);
-      $storage.remove(K_GIST);
+      $storage.remove(K_GIST_ID);
       $storage.remove(K_OWNER);
-      $storage.remove(K_RAW);
+      $storage.remove(K_RAW_URL);
       rawUrl.set("");
       if (wasFresh && gistId) {
         client()
@@ -2396,7 +2699,7 @@ var register = (...args) => {
     function persistLocal(next, updatedAt) {
       entries.set(next);
       $storage.set(K_CATALOG, next);
-      $storage.set(K_UPDATED, updatedAt);
+      $storage.set(K_UPDATED_AT, updatedAt);
       const hw = $storage.get(K_NEXT_ID) ?? 0;
       $storage.set(K_NEXT_ID, Math.max(hw, nextId(next) - 1));
       invalidateClientCaches({ catalog: true });
@@ -2428,9 +2731,9 @@ var register = (...args) => {
               json,
               GIST_DESCRIPTION,
             );
-            $storage.set(K_GIST, info.id);
+            $storage.set(K_GIST_ID, info.id);
             $storage.set(K_OWNER, info.owner);
-            $storage.set(K_RAW, info.rawUrl);
+            $storage.set(K_RAW_URL, info.rawUrl);
             rawUrl.set(info.rawUrl);
             gistId = info.id;
             ctx.toast.success(
@@ -2449,7 +2752,7 @@ var register = (...args) => {
     }
     async function pull() {
       const gistId = effectiveGistId();
-      if (!token() || !gistId) {
+      if (!effToken() || !gistId) {
         ctx.toast.info(
           "Nothing to pull yet — add an entry to create the Gist.",
         );
@@ -2574,6 +2877,18 @@ var register = (...args) => {
     ctx.registerEventHandler("lcm-toggle-binding", () => {
       disarmDelete();
       bindingExpanded.set(!bindingExpanded.get());
+    });
+    ctx.registerEventHandler("lcm-connect-github", () => {
+      connectGitHub();
+    });
+    ctx.registerEventHandler("lcm-disconnect-github", () => {
+      $storage.set(K_OAUTH_TOKEN, "");
+      oauthTok.set("");
+      ctx.toast.info(
+        patToken()
+          ? "GitHub login cleared (still connected via PAT config)"
+          : "Disconnected from GitHub",
+      );
     });
     ctx.registerEventHandler("lcm-toggle-orphans", () => {
       disarmDelete();
@@ -2712,10 +3027,12 @@ var register = (...args) => {
       if (linked) {
         headerActions.push(
           tray.button(
-            busyAction.get() === "reload-progress"
-              ? "⏳ Reloading…"
-              : "↻ Reload",
-            { onClick: "lcm-reload-progress", size: "sm" },
+            busyAction.get() === "reload-progress" ? "Reloading…" : "↻ Reload",
+            {
+              onClick: "lcm-reload-progress",
+              size: "sm",
+              loading: busyAction.get() === "reload-progress",
+            },
           ),
         );
       }
@@ -2778,11 +3095,12 @@ var register = (...args) => {
                 { style: { flex: "1", alignSelf: "center", minWidth: "0" } },
               ),
               tray.tooltip(
-                tray.button(applyBusy ? "⏳" : "\uD83D\uDCE4", {
+                tray.button(applyBusy ? "…" : "\uD83D\uDCE4", {
                   onClick: ctx.eventHandler(`lcm-apply-progress-${id}`, () => {
                     applyProgress(id);
                   }),
                   size: "sm",
+                  loading: applyBusy,
                 }),
                 {
                   text: "Try to apply this progress to seanime (works if catalog entry was re-added with same id)",
@@ -2836,6 +3154,23 @@ var register = (...args) => {
         );
       }
       return tray.stack(sub, { gap: 2 });
+    }
+    function renderConnect() {
+      const start = deviceStart.get();
+      const oauth = oauthTok.get();
+      const connected = hasToken();
+      const via = oauth ? "GitHub login" : patToken() ? "PAT" : "";
+      return githubConnect(tray, {
+        deviceStart: start,
+        title: "\uD83C\uDF10 Sync",
+        connecting: connecting.get(),
+        connected,
+        disconnectable: !!oauth,
+        connectEvent: "lcm-connect-github",
+        disconnectEvent: "lcm-disconnect-github",
+        status: { connected, via },
+        connectHint: "or set a GitHub PAT in the plugin config",
+      });
     }
     function renderSync() {
       if (hasToken()) {
@@ -2900,7 +3235,7 @@ var register = (...args) => {
                   tray.tooltip(
                     tray.button(
                       deleteBusy
-                        ? "⏳"
+                        ? "…"
                         : deleteGistArmed.get()
                           ? "⚠️️ Confirm"
                           : "⛔",
@@ -2910,6 +3245,7 @@ var register = (...args) => {
                           : "lcm-delete-gist-arm",
                         size: "sm",
                         disabled: drifting,
+                        loading: deleteBusy,
                       },
                     ),
                     {
@@ -2935,14 +3271,12 @@ var register = (...args) => {
             items2.push(
               tray.flex(
                 [
-                  tray.button(
-                    createBusy ? "⏳ Creating…" : "+ Create new gist",
-                    {
-                      onClick: "lcm-create-gist",
-                      intent: "primary",
-                      size: "sm",
-                    },
-                  ),
+                  tray.button(createBusy ? "Creating…" : "+ Create new gist", {
+                    onClick: "lcm-create-gist",
+                    intent: "primary",
+                    size: "sm",
+                    loading: createBusy,
+                  }),
                 ],
                 {},
               ),
@@ -2958,9 +3292,13 @@ var register = (...args) => {
                   ),
                   tray.button(
                     busyAction.get() === "link-gist"
-                      ? "⏳ Linking…"
+                      ? "Linking…"
                       : "\uD83D\uDD17 Link",
-                    { onClick: "lcm-link-gist", size: "sm" },
+                    {
+                      onClick: "lcm-link-gist",
+                      size: "sm",
+                      loading: busyAction.get() === "link-gist",
+                    },
                   ),
                 ],
                 { gap: 2, style: { alignItems: "end" } },
@@ -2974,7 +3312,7 @@ var register = (...args) => {
       const localCount = entries.get().length;
       const jsonOut = serializeCatalog(
         entries.get(),
-        $storage.get(K_UPDATED) ?? Date.now(),
+        $storage.get(K_UPDATED_AT) ?? Date.now(),
       );
       const expanded = bindingExpanded.get();
       const items = [];
@@ -2983,7 +3321,7 @@ var register = (...args) => {
           tray.alert({
             title: "Plugin and custom-source can't sync directly",
             description:
-              "seanime sandboxes extensions. Copy the JSON below into the custom-source's Inline catalog JSON field after every edit. \uD83D\uDCA1 Tip: set a GitHub token in the plugin config to switch to Gist mode — automatic sync, no copy-paste.",
+              "Seanime sandboxes extensions, so the plugin can't push to the source for you. Copy the JSON below into the custom-source's Inline catalog JSON field after each edit. \uD83D\uDCA1 Or Connect GitHub above for Gist mode — automatic sync, no copy-paste.",
             intent: "info",
           }),
         );
@@ -3190,7 +3528,7 @@ var register = (...args) => {
                 : `Add to your list + push local progress · ${progSummary || "(no data)"}`;
               actions.push(
                 tray.tooltip(
-                  tray.button(applyRowBusy ? "⏳" : "\uD83D\uDCE4", {
+                  tray.button(applyRowBusy ? "…" : "\uD83D\uDCE4", {
                     onClick: ctx.eventHandler(
                       `lcm-apply-progress-${e.id}`,
                       () => {
@@ -3198,6 +3536,7 @@ var register = (...args) => {
                       },
                     ),
                     size: "sm",
+                    loading: applyRowBusy,
                   }),
                   { text: applyTooltip },
                 ),
@@ -3257,10 +3596,12 @@ var register = (...args) => {
       if (!drifting && hasToken() && effectiveGistId()) {
         inlineActions.push(
           tray.button(
-            busyAction.get() === "reload-catalog"
-              ? "⏳ Reloading…"
-              : "↻ Reload",
-            { onClick: "lcm-reload-catalog", size: "sm" },
+            busyAction.get() === "reload-catalog" ? "Reloading…" : "↻ Reload",
+            {
+              onClick: "lcm-reload-catalog",
+              size: "sm",
+              loading: busyAction.get() === "reload-catalog",
+            },
           ),
         );
       }
@@ -3327,10 +3668,11 @@ var register = (...args) => {
                   tray.flex(
                     [
                       tray.button(
-                        resolveBusy ? "⏳ Working…" : "\uD83D\uDD00 Merge",
+                        resolveBusy ? "Merging…" : "\uD83D\uDD00 Merge",
                         {
                           onClick: "lcm-drift-merge",
                           intent: "primary",
+                          loading: resolveBusy,
                         },
                       ),
                       tray.button("↑ Local wins", {
@@ -3374,10 +3716,11 @@ var register = (...args) => {
                   tray.flex(
                     [
                       tray.button(
-                        resolveProgBusy ? "⏳ Working…" : "\uD83D\uDD00 Merge",
+                        resolveProgBusy ? "Merging…" : "\uD83D\uDD00 Merge",
                         {
                           onClick: "lcm-progress-drift-merge",
                           intent: "primary",
+                          loading: resolveProgBusy,
                         },
                       ),
                       tray.button("↑ Local wins", {
@@ -3403,6 +3746,8 @@ var register = (...args) => {
             ),
           );
         }
+        const connect = renderConnect();
+        if (connect) layers.push(connect);
         const sync = renderSync();
         if (sync) layers.push(sync);
         if (!drift && !progressDrift) {
@@ -3414,6 +3759,7 @@ var register = (...args) => {
       const localSync = renderSync();
       return tray.stack(
         joinDividers(tray, [
+          renderConnect(),
           localSync,
           renderProgressSection(),
           entriesSection,
@@ -3473,12 +3819,13 @@ var register = (...args) => {
             : "Open in seanime · resolves on click";
         headerActions.push(
           tray.tooltip(
-            tray.button(openBusy ? "⏳" : "Open →", {
+            tray.button(openBusy ? "Opening…" : "Open →", {
               onClick: ctx.eventHandler(`lcm-form-open-manga-${id}`, () => {
                 navigateToMangaEntry(id);
               }),
               size: "sm",
               intent: "gray-subtle",
+              loading: openBusy,
             }),
             { text: openTooltip },
           ),
@@ -3487,12 +3834,13 @@ var register = (...args) => {
       if (showApply) {
         headerActions.push(
           tray.tooltip(
-            tray.button(applyBusy ? "⏳" : "\uD83D\uDCE4 Apply", {
+            tray.button(applyBusy ? "Applying…" : "\uD83D\uDCE4 Apply", {
               onClick: ctx.eventHandler(`lcm-form-apply-progress-${id}`, () => {
                 applyProgress(id);
               }),
               size: "sm",
               intent: "primary-subtle",
+              loading: applyBusy,
             }),
             { text: "Push local progress to seanime" },
           ),
@@ -3818,7 +4166,7 @@ var register = (...args) => {
     }
     tray.onOpen(() => {
       progress.set(loadProgressDoc());
-      progressUpdated.set($storage.get(K_PROGRESS_UPDATED) ?? 0);
+      progressUpdated.set($storage.get(K_PROGRESS_UPDATED_AT) ?? 0);
       (async () => {
         try {
           const collection = await ctx.manga.getCollection();
@@ -3890,7 +4238,7 @@ var register = (...args) => {
             ),
           ]
         : [
-            tray.badge("\uD83D\uDCBB this device only", { intent: "gray" }),
+            tray.badge("\uD83D\uDCBB Device only", { intent: "gray" }),
             tray.tooltip(
               tray.button(expanded ? "△" : "⚠️", {
                 onClick: "lcm-toggle-binding",

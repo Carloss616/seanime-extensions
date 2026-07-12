@@ -1,8 +1,8 @@
 import {
   K_EXT_ID,
-  K_GIST,
+  K_GIST_ID,
   K_PROGRESS,
-  K_PROGRESS_UPDATED,
+  K_PROGRESS_UPDATED_AT,
   K_SYNC_PAUSED,
   PROGRESS_FILENAME,
   SHARED_LIB_NAME,
@@ -14,6 +14,7 @@ import {
   buildEncodedMediaIdLookup,
   syncProgressRoundTrip,
 } from "../utils/progress-roundtrip";
+import { syncToken } from "../utils/token";
 import type { sharedLib } from "./shared-lib";
 
 // Fires every time seanime fetches the user's manga collection — manga
@@ -31,8 +32,8 @@ export const onGetMangaCollection = (event: $app.GetMangaCollectionEvent) => {
       const now = Date.now();
       if (now - lastAt < SILENT_SYNC_COOLDOWN_MS) return;
       $store.set(STORE_SILENT_SYNC_AT, now);
-      const token = ($getUserPreference("githubToken") ?? "").trim();
-      const gistId = $storage.get<string>(K_GIST) ?? "";
+      const token = syncToken();
+      const gistId = $storage.get<string>(K_GIST_ID) ?? "";
       if (!token || !gistId) return;
       if ($storage.get<boolean>(K_SYNC_PAUSED)) return;
       const client = new GistClient(token, fetch);
@@ -71,7 +72,7 @@ export const onGetMangaCollection = (event: $app.GetMangaCollectionEvent) => {
           : {}),
       });
       $storage.set(K_PROGRESS, result.merged);
-      $storage.set(K_PROGRESS_UPDATED, now);
+      $storage.set(K_PROGRESS_UPDATED_AT, now);
       if (result.applied > 0) {
         try {
           $anilist.refreshMangaCollection();

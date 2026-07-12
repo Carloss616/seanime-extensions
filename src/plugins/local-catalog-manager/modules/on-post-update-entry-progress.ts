@@ -1,11 +1,13 @@
 import {
-  K_GIST,
+  K_GIST_ID,
   K_PROGRESS,
-  K_PROGRESS_UPDATED,
+  K_PROGRESS_UPDATED_AT,
   K_SYNC_PAUSED,
   PROGRESS_FILENAME,
   SHARED_LIB_NAME,
+  STORE_DRIFT_NOTIFIED,
 } from "../utils/constants";
+import { syncToken } from "../utils/token";
 import type { sharedLib } from "./shared-lib";
 
 // Same logic as onPostUpdateEntry; separate file because seanime registers
@@ -38,17 +40,16 @@ export const onPostUpdateEntryProgress = (
     const localId = decodeLocalId(event.mediaId);
     const now = Date.now();
     const local = parseProgress($storage.get<LocalProgress>(K_PROGRESS), log);
-    const token = ($getUserPreference("githubToken") ?? "").trim();
-    const gistId = $storage.get<string>(K_GIST) ?? "";
+    const token = syncToken();
+    const gistId = $storage.get<string>(K_GIST_ID) ?? "";
     const syncPaused = $storage.get<boolean>(K_SYNC_PAUSED) ?? false;
     // When drift is pending, force local-only writes by nulling the client.
     const client =
       !syncPaused && token && gistId ? new GistClient(token, fetch) : null;
     const mediaId = event.mediaId;
     if (syncPaused && token && gistId) {
-      const notifiedKey = "lcm:drift-notified";
-      if (!$store.get<boolean>(notifiedKey)) {
-        $store.set(notifiedKey, true);
+      if (!$store.get<boolean>(STORE_DRIFT_NOTIFIED)) {
+        $store.set(STORE_DRIFT_NOTIFIED, true);
         log.warn(
           "catalog drift pending — saved locally only. Resolve in tray.",
         );
@@ -81,7 +82,7 @@ export const onPostUpdateEntryProgress = (
       },
       persistLocal: (doc: LocalProgress, updatedAt: number) => {
         $storage.set(K_PROGRESS, doc);
-        $storage.set(K_PROGRESS_UPDATED, updatedAt);
+        $storage.set(K_PROGRESS_UPDATED_AT, updatedAt);
       },
     }).catch((e: unknown) => {
       log.warn("post-update-entry-progress sync failed:", e);

@@ -5,7 +5,7 @@
 # 🗂️ Local Catalog Manager
 
 ![Type](https://shieldcn.dev/badge/type-plugin-3b82f6.svg?variant=secondary)
-![Version](https://shieldcn.dev/badge/version-2.2.1-22c55e.svg?variant=secondary)
+![Version](https://shieldcn.dev/badge/version-2.3.0-22c55e.svg?variant=secondary)
 ![TypeScript](https://shieldcn.dev/badge/TypeScript.svg?logo=typescript&color=3178C6&variant=secondary)
 
 **Manage your [Local Catalog](../../custom-source/local-catalog/) from inside seanime — add, edit, delete entries — and sync it to a GitHub Gist.**
@@ -22,8 +22,8 @@
 
 Two operating modes:
 
-- **Gist mode** (GitHub token configured) — changes are auto-pushed to a secret GitHub Gist; the custom-source reads from the Gist's raw URL and the catalog syncs across devices.
-- **Local mode** (no token) — changes are kept in plugin storage on this device; copy the serialized JSON into the source's **Inline catalog JSON** field by hand.
+- **Gist mode** (GitHub connected via device-flow login or a PAT) — changes are auto-pushed to a secret GitHub Gist; the custom-source reads from the Gist's raw URL and the catalog syncs across devices.
+- **Local mode** (not connected) — changes are kept in plugin storage on this device; copy the serialized JSON into the source's **Inline catalog JSON** field by hand.
 
 ---
 
@@ -44,7 +44,9 @@ Two operating modes:
 ### Gist mode (recommended for multi-device)
 
 1. Install from the [marketplace](../../../README.md#-quick-start), or paste this extension's `manifest.json` raw URL into seanime → *Add Extension*.
-2. Create a GitHub **Personal Access Token** with the `gist` scope and paste it into this plugin's **GitHub token** config field; save.
+2. Connect GitHub, either way:
+   - **Connect GitHub** button in the tray — a browser device-flow login (enter a short code at github.com/login/device, no token typed into seanime), or
+   - a **GitHub token** config field for a Personal Access Token with the `gist` scope (fallback).
 3. Open the plugin tray. On first save it creates a secret Gist and shows its **raw URL** — copy it into the `local-catalog` source's **Catalog URL**.
 4. Manage entries from the tray (or the **🗂️** button on a local-catalog manga page). Changes push to the Gist automatically.
 
@@ -68,7 +70,7 @@ Legacy installs with the old `gistUrl` field: the plugin migrates it into local 
 <details>
 <summary>Local mode (single device, inline JSON)</summary>
 
-1. Leave the **GitHub token** field empty.
+1. Don't connect GitHub (skip **Connect GitHub** and leave the **GitHub token** field empty).
 2. Open the plugin tray. Add/edit/delete entries — they persist in plugin storage on this device.
 3. Copy the **Catalog JSON (copy)** input into the `local-catalog` source's **Inline catalog JSON** field. Repeat after each batch of edits.
 4. To seed the plugin from an existing inline catalog, paste it into the **Paste catalog JSON to import** field and click **Import**.
@@ -79,7 +81,7 @@ Legacy installs with the old `gistUrl` field: the plugin migrates it into local 
 
 | Field | Notes |
 | ----- | ----- |
-| `GitHub token` | PAT with the `gist` scope. Empty → Local mode. |
+| `GitHub token` | PAT with the `gist` scope — optional fallback if you prefer not to use the in-app **Connect GitHub** browser login. Not connected either way → Local mode. |
 | `Auto-sync` | Off by default. Periodically pull the catalog (and progress) from the Gist. Only runs once a Gist exists and a token is configured. |
 | `Auto-sync interval (minutes)` | Pull interval when Auto-sync is on (default `30`). |
 

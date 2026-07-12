@@ -1,7 +1,7 @@
 import {
-  K_GIST,
+  K_GIST_ID,
   K_PROGRESS,
-  K_PROGRESS_UPDATED,
+  K_PROGRESS_UPDATED_AT,
   K_SYNC_PAUSED,
   PROGRESS_FILENAME,
   progressPayloadKey,
@@ -9,6 +9,7 @@ import {
   STORE_DRIFT_NOTIFIED,
 } from "../utils/constants";
 import { wrapUpdateEntryWithSkip } from "../utils/progress-capture";
+import { syncToken } from "../utils/token";
 import type { sharedLib } from "./shared-lib";
 
 // Persist captured payload + sync with the gist (source of truth).
@@ -41,8 +42,8 @@ export const onPostUpdateEntry = (event: $app.PostUpdateEntryEvent) => {
     const localId = decodeLocalId(event.mediaId);
     const now = Date.now();
     const local = parseProgress($storage.get<LocalProgress>(K_PROGRESS), log);
-    const token = ($getUserPreference("githubToken") ?? "").trim();
-    const gistId = $storage.get<string>(K_GIST) ?? "";
+    const token = syncToken();
+    const gistId = $storage.get<string>(K_GIST_ID) ?? "";
     const syncPaused = $storage.get<boolean>(K_SYNC_PAUSED) ?? false;
     const client =
       !syncPaused && token && gistId ? new GistClient(token, fetch) : null;
@@ -79,7 +80,7 @@ export const onPostUpdateEntry = (event: $app.PostUpdateEntryEvent) => {
       },
       persistLocal: (doc: LocalProgress, updatedAt: number) => {
         $storage.set(K_PROGRESS, doc);
-        $storage.set(K_PROGRESS_UPDATED, updatedAt);
+        $storage.set(K_PROGRESS_UPDATED_AT, updatedAt);
       },
     }).catch((e: unknown) => {
       log.warn("post-update-entry sync failed:", e);

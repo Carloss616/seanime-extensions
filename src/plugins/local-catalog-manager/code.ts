@@ -8,6 +8,10 @@ import { sharedLib } from "./modules/shared-lib";
 import { SHARED_LIB_NAME } from "./utils/constants";
 
 export function init() {
+  // NOTE: the v2.2→v2.3 $storage key migration (migrateStorageKeys) can't run
+  // here — init() is the loader VM and has no $storage. It runs instead at the
+  // top of the register callback + each hook (the runtimes that DO have it).
+
   // $shared.define MUST come before any hook / UI registration (per the docs)
   // — every callback later does $shared.use(SHARED_LIB_NAME).
   $shared.define(SHARED_LIB_NAME, sharedLib);

@@ -17,13 +17,13 @@ Extension types: `custom-source` (a metadata provider for the collection) and `p
    - Entries use seanime's native AL_BaseManga shape. `id` + non-empty `title` required; the rest optional. v2 replaced the old flat shape (cover/banner/year/country).
    - Configurable in-memory cache TTL (Cache minutes).
 
-2. Local Catalog Manager (plugin, v2.2.1)
+2. Local Catalog Manager (plugin, v2.3.0)
    - Companion to Local Catalog: add/edit/delete entries from the tray or the 🗂️ manga-page button.
    - Tray UI: **list view** (sync controls, reading-progress section, searchable entry list) and **form view** (contextual cover+title header, reading-progress cards with seanime drift compare + Apply, full AL_BaseManga fields). Opening the tray on a local-catalog manga page auto-jumps into that entry's form.
-   - Gist mode (GitHub PAT with `gist` scope): pushes catalog.json to a secret Gist the source reads; supports manual Pull and scheduled Auto-sync (interval configurable, default 30 min, uses the `cron` scope).
-   - Local mode (no token): entries persist in plugin storage; user copies serialized JSON into the source's Inline catalog JSON field.
+   - Gist mode (GitHub connected): pushes catalog.json to a secret Gist the source reads; supports manual Pull and scheduled Auto-sync (interval configurable, default 30 min, uses the `cron` scope). Auth is either a device-flow OAuth token (tray "Connect GitHub" button, shared _utils/gist/device-flow.ts + GITHUB_CLIENT_ID) or the `githubToken` PAT config field; utils/token.ts's syncToken() resolves oauth-wins-over-PAT for both register and the hooks (K_OAUTH_TOKEN in $storage, local-only, never synced).
+   - Local mode (not connected): entries persist in plugin storage; user copies serialized JSON into the source's Inline catalog JSON field.
    - Reading-progress sync (Gist mode): captures chapter/status/score via onPre/PostUpdateEntry + onPre/PostUpdateEntryProgress hooks, pushes to progress.json in the same Gist, and restores on other devices via $anilist.updateEntry. Per-entry last-write-wins by updatedAt; orphan-progress cleanup button.
-   - Permissions: storage, anilist, cron; networkAccess to api.github.com + gist.githubusercontent.com.
+   - Permissions: storage, anilist, cron; networkAccess to api.github.com + github.com (device-flow login) + gist.githubusercontent.com.
 
 3. MangaUpdates (custom-source, v1.0.2)
    - Adds MangaUpdates as a search & details metadata source via the public MangaUpdates API. No API key required.

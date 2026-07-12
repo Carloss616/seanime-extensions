@@ -1,8 +1,14 @@
 import { divider, joinDividers } from "../../../_components/divider";
 import { type EntryListRow, entryList } from "../../../_components/entry-list";
+import { githubConnect } from "../../../_components/github-connect";
 import { CAPTION_STYLE, LABEL_STYLE } from "../../../_components/text";
 import { trayHeader } from "../../../_components/tray-header";
 import { statusToPill } from "../../../_utils/anilist-status";
+import { GITHUB_CLIENT_ID } from "../../../_utils/gist/constants";
+import {
+  type DeviceCodeStart,
+  DeviceFlowClient,
+} from "../../../_utils/gist/device-flow";
 import {
   type ClientCacheScope,
   clientCacheQueryKeys,
@@ -14,19 +20,21 @@ import {
   K_DRIFT_FRESH_GIST,
   K_DRIFT_REMOTE,
   K_EXT_ID,
-  K_GIST,
+  K_GIST_ID,
   K_NEXT_ID,
+  K_OAUTH_TOKEN,
   K_OWNER,
   K_PROGRESS,
   K_PROGRESS_DRIFT_REMOTE,
-  K_PROGRESS_UPDATED,
-  K_RAW,
+  K_PROGRESS_UPDATED_AT,
+  K_RAW_URL,
   K_SYNC_PAUSED,
-  K_UPDATED,
+  K_UPDATED_AT,
   PROGRESS_FILENAME,
   SHARED_LIB_NAME,
   SILENT_SYNC_COOLDOWN_MS,
   SOURCE_PREFIX,
+  STORE_DRIFT_NOTIFIED,
 } from "../utils/constants";
 import {
   discoverExtId as discoverExtIdImpl,
@@ -50,12 +58,14 @@ import {
 import { ent, formatListStatus, formatTs } from "../utils/format";
 import { parseGistId } from "../utils/gist-parse";
 import { detectImportKind } from "../utils/import-detect";
+import { migrateStorageKeys } from "../utils/migrate";
 import { wrapUpdateEntryWithSkip } from "../utils/progress-capture";
 import {
   hasEntryProgressDrift as entryHasProgressDrift,
   type SeanimeListData,
 } from "../utils/progress-drift";
 import { syncProgressRoundTrip } from "../utils/progress-roundtrip";
+import { oauthToken, patToken } from "../utils/token";
 import type { sharedLib } from "./shared-lib";
 
 export const register = (ctx: $ui.Context) => {
@@ -92,6 +102,10 @@ export const register = (ctx: $ui.Context) => {
   } = $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);
   const log = createLogger();
 
+  // TEMPORARY (see utils/migrate.ts): carry v2.2's lcm_ keys forward. First
+  // thing, before any $storage read below.
+  migrateStorageKeys();
+
   const tray = ctx.newTray({ iconUrl: __MANIFEST_ICON__, withContent: true });
 
   const view = ctx.state<"list" | "form" | "setup">("list");
@@ -104,7 +118,7 @@ export const register = (ctx: $ui.Context) => {
     $storage.set(K_NEXT_ID, nextId(entries.get()) - 1);
   }
   const editingId = ctx.state<number>(0);
-  const rawUrl = ctx.state<string>($storage.get<string>(K_RAW) ?? "");
+  const rawUrl = ctx.state<string>($storage.get<string>(K_RAW_URL) ?? "");
   const status = ctx.state<string>("");
 
   // Single normalization path: parseProgress handles the null cache (→ empty
@@ -113,7 +127,7 @@ export const register = (ctx: $ui.Context) => {
     parseProgress($storage.get<LocalProgress>(K_PROGRESS), log);
   const progress = ctx.state<LocalProgress>(loadProgressDoc());
   const progressUpdated = ctx.state<number>(
-    $storage.get<number>(K_PROGRESS_UPDATED) ?? 0,
+    $storage.get<number>(K_PROGRESS_UPDATED_AT) ?? 0,
   );
   const progressStatus = ctx.state<string>("");
 
@@ -146,7 +160,7 @@ export const register = (ctx: $ui.Context) => {
         progress.set(merged);
         progressUpdated.set(now);
         $storage.set(K_PROGRESS, merged);
-        $storage.set(K_PROGRESS_UPDATED, now);
+        $storage.set(K_PROGRESS_UPDATED_AT, now);
         progressStatus.set(
           `Pushed ${Object.keys(merged.manga).length} entries`,
         );
@@ -192,7 +206,7 @@ export const register = (ctx: $ui.Context) => {
         progress.set(merged);
         progressUpdated.set(now);
         $storage.set(K_PROGRESS, merged);
-        $storage.set(K_PROGRESS_UPDATED, now);
+        $storage.set(K_PROGRESS_UPDATED_AT, now);
         progressStatus.set(
           `Pulled — applied ${res.applied}${res.skipped ? `, skipped ${res.skipped} orphan(s)` : ""}`,
         );
@@ -229,9 +243,9 @@ export const register = (ctx: $ui.Context) => {
         // envelope updatedAt — what autoSync produced on every tick. Mirrors
         // the progressMangaEquals guard in syncProgressInner.
         if (catalogsEqual(merged, remote)) {
-          // Keep local in sync with remote without bumping K_UPDATED, so the
+          // Keep local in sync with remote without bumping K_UPDATED_AT, so the
           // next manual push doesn't re-serialize a newer date for free.
-          persistLocal(merged, $storage.get<number>(K_UPDATED) ?? now);
+          persistLocal(merged, $storage.get<number>(K_UPDATED_AT) ?? now);
         } else {
           persistLocal(merged, now);
           await client().updateGistFile(
@@ -301,7 +315,7 @@ export const register = (ctx: $ui.Context) => {
     progress.set(result.merged);
     progressUpdated.set(now);
     $storage.set(K_PROGRESS, result.merged);
-    $storage.set(K_PROGRESS_UPDATED, now);
+    $storage.set(K_PROGRESS_UPDATED_AT, now);
     if (result.applied > 0) {
       try {
         $anilist.refreshMangaCollection();
@@ -402,7 +416,7 @@ export const register = (ctx: $ui.Context) => {
     progress.set(next);
     progressUpdated.set(updatedAt);
     $storage.set(K_PROGRESS, next);
-    $storage.set(K_PROGRESS_UPDATED, updatedAt);
+    $storage.set(K_PROGRESS_UPDATED_AT, updatedAt);
     const gistId = effectiveGistId();
     if (hasToken() && gistId && !hasDrift()) {
       pushProgress(client(), gistId, PROGRESS_FILENAME, next, updatedAt).catch(
@@ -709,7 +723,7 @@ export const register = (ctx: $ui.Context) => {
       $storage.remove(K_SYNC_PAUSED);
       // Clear the "drift toast notified" flag so the next drift session
       // gets one fresh notification.
-      $store.remove("lcm:drift-notified");
+      $store.remove(STORE_DRIFT_NOTIFIED);
     }
   };
 
@@ -777,6 +791,15 @@ export const register = (ctx: $ui.Context) => {
   // their label to a loading text when their tag matches; second-click while
   // busy short-circuits with a toast so we don't queue duplicate ops.
   const busyAction = ctx.state<string>("");
+  // GitHub OAuth Device Flow connect state: `connecting` guards a double-click
+  // starting two flows; `deviceStart` drives the "enter this code" view while a
+  // flow is in progress.
+  const connecting = ctx.state<boolean>(false);
+  const deviceStart = ctx.state<DeviceCodeStart | null>(null);
+  // Reactive mirror of the device-flow token: $storage reads aren't reactive,
+  // so connect/disconnect update this state to re-render the tray. $storage
+  // stays authoritative for the hooks (separate runtimes) — both are written.
+  const oauthTok = ctx.state<string>(oauthToken());
   const runBusy = async (tag: string, fn: () => Promise<void>) => {
     if (busyAction.get()) {
       ctx.toast.info("Another operation is running — try again in a moment");
@@ -790,9 +813,12 @@ export const register = (ctx: $ui.Context) => {
     }
   };
 
-  const token = () => ($getUserPreference("githubToken") ?? "").trim();
-  const hasToken = () => token().length > 0;
-  const client = () => new GistClient(token(), (u, i) => ctx.fetch(u, i));
+  // Effective token: reactive device-flow OAuth mirror wins, else the PAT
+  // config field. Reads oauthTok (state) so the render reacts to connect/
+  // disconnect; equivalent to utils/token.ts's syncToken() the hooks use.
+  const effToken = () => oauthTok.get() || patToken();
+  const hasToken = () => effToken().length > 0;
+  const client = () => new GistClient(effToken(), (u, i) => ctx.fetch(u, i));
 
   // Accept a Gist raw URL, share URL, or a bare hex id; return the gist id
   // (or null if the input doesn't look like a gist).
@@ -801,16 +827,56 @@ export const register = (ctx: $ui.Context) => {
   // id into $storage so the modern code path picks it up. New installs hit
   // the empty branch and stay there.
   const legacyGistUrl = ($getUserPreference("gistUrl") ?? "").trim();
-  if (legacyGistUrl && !$storage.get<string>(K_GIST)) {
+  if (legacyGistUrl && !$storage.get<string>(K_GIST_ID)) {
     const parsed = parseGistId(legacyGistUrl);
     if (parsed) {
-      $storage.set(K_GIST, parsed);
+      $storage.set(K_GIST_ID, parsed);
       log.log("migrated legacy gistUrl config to $storage");
     }
   }
   // Gist binding lives entirely in $storage now (managed from the tray —
   // create / link / unlink / delete remotely).
-  const effectiveGistId = (): string => $storage.get<string>(K_GIST) ?? "";
+  const effectiveGistId = (): string => $storage.get<string>(K_GIST_ID) ?? "";
+
+  // GitHub OAuth Device Flow: ask DeviceFlowClient for a code → show user_code +
+  // link → poll for the token at `interval` until granted/expired. The HTTP
+  // POSTs live in DeviceFlowClient; this owns the poll cadence + UI state.
+  // ponytail: the poll loop BLOCKS the UI runtime via $sleep between polls
+  // (there is no setTimeout). Bounded by expires_in so it can't hang forever —
+  // acceptable for a user-initiated one-time connect.
+  async function connectGitHub(): Promise<void> {
+    if (connecting.get()) return;
+    connecting.set(true);
+    try {
+      const auth = new DeviceFlowClient(GITHUB_CLIENT_ID, (u, i) =>
+        ctx.fetch(u, i),
+      );
+      const parsed = await auth.requestDeviceCode("gist");
+      if (!parsed.ok) {
+        ctx.toast.error(`GitHub login failed: ${parsed.message}`);
+        return;
+      }
+      deviceStart.set(parsed.start);
+      const result = await auth.pollUntilToken(parsed.start, {
+        sleep: (ms) => $sleep(ms),
+      });
+      if (result.type === "token") {
+        $storage.set(K_OAUTH_TOKEN, result.token);
+        oauthTok.set(result.token);
+        ctx.toast.success("Connected to GitHub");
+      } else if (result.type === "error") {
+        ctx.toast.error(`GitHub login failed: ${result.message}`);
+      } else {
+        ctx.toast.error("GitHub login timed out — try again");
+      }
+    } catch (e) {
+      log.warn("connectGitHub failed:", e);
+      ctx.toast.error(`GitHub login failed: ${(e as Error).message}`);
+    } finally {
+      deviceStart.set(null);
+      connecting.set(false);
+    }
+  }
 
   // Reset the armed "Delete remotely" state. Called from every other event
   // handler so accidental arms don't linger.
@@ -824,9 +890,9 @@ export const register = (ctx: $ui.Context) => {
   // not gist-derived — both survive an unlink or remote delete so the user
   // can re-link to a different gist later without losing their work.
   const clearGistLocalState = () => {
-    $storage.remove(K_GIST);
+    $storage.remove(K_GIST_ID);
     $storage.remove(K_OWNER);
-    $storage.remove(K_RAW);
+    $storage.remove(K_RAW_URL);
     rawUrl.set("");
   };
 
@@ -850,9 +916,9 @@ export const register = (ctx: $ui.Context) => {
           initial,
           GIST_DESCRIPTION,
         );
-        $storage.set(K_GIST, info.id);
+        $storage.set(K_GIST_ID, info.id);
         $storage.set(K_OWNER, info.owner);
-        $storage.set(K_RAW, info.rawUrl);
+        $storage.set(K_RAW_URL, info.rawUrl);
         rawUrl.set(info.rawUrl);
         if (localEntries.length > 0) {
           // Local data exists — the new gist is empty, so the next push would
@@ -893,9 +959,9 @@ export const register = (ctx: $ui.Context) => {
       // Fetch remote to detect drift vs local. We bind the gist BEFORE the
       // fetch so users can see "linked" state even if the fetch errors;
       // they can then use Pull / Unlink as appropriate.
-      $storage.set(K_GIST, parsed);
+      $storage.set(K_GIST_ID, parsed);
       $storage.set(K_OWNER, "");
-      $storage.set(K_RAW, "");
+      $storage.set(K_RAW_URL, "");
       rawUrl.set("");
       fGistLink.setValue("");
 
@@ -903,14 +969,14 @@ export const register = (ctx: $ui.Context) => {
       try {
         // getGistFileWithInfo returns owner + computed raw URL in the same
         // GET we'd already be making — persist them so "Show raw catalog
-        // URL" works right away (the empty K_RAW from the pre-fetch bind
+        // URL" works right away (the empty K_RAW_URL from the pre-fetch bind
         // was the cause of "Raw URL not stored yet" after every link).
         const info = await client().getGistFileWithInfo(
           parsed,
           CATALOG_FILENAME,
         );
         $storage.set(K_OWNER, info.owner);
-        $storage.set(K_RAW, info.rawUrl);
+        $storage.set(K_RAW_URL, info.rawUrl);
         rawUrl.set(info.rawUrl);
         remote = parseCatalog(info.content, log).manga;
       } catch (e) {
@@ -1144,9 +1210,9 @@ export const register = (ctx: $ui.Context) => {
     const gistId = effectiveGistId();
     pendingDrift.set(null);
     pauseSync(null);
-    $storage.remove(K_GIST);
+    $storage.remove(K_GIST_ID);
     $storage.remove(K_OWNER);
-    $storage.remove(K_RAW);
+    $storage.remove(K_RAW_URL);
     rawUrl.set("");
     if (wasFresh && gistId) {
       // Fire-and-forget delete; user can clean up manually if it fails.
@@ -1189,7 +1255,7 @@ export const register = (ctx: $ui.Context) => {
   function persistLocal(next: MangaCatalogEntry[], updatedAt: number) {
     entries.set(next);
     $storage.set(K_CATALOG, next);
-    $storage.set(K_UPDATED, updatedAt);
+    $storage.set(K_UPDATED_AT, updatedAt);
     // Keep the high-water mark ahead of every id ever persisted (covers
     // imports and pulls), so it never regresses when entries are deleted.
     const hw = $storage.get<number>(K_NEXT_ID) ?? 0;
@@ -1229,9 +1295,9 @@ export const register = (ctx: $ui.Context) => {
             json,
             GIST_DESCRIPTION,
           );
-          $storage.set(K_GIST, info.id);
+          $storage.set(K_GIST_ID, info.id);
           $storage.set(K_OWNER, info.owner);
-          $storage.set(K_RAW, info.rawUrl);
+          $storage.set(K_RAW_URL, info.rawUrl);
           rawUrl.set(info.rawUrl);
           gistId = info.id;
           ctx.toast.success("Created Gist. Copy the raw URL into the source.");
@@ -1251,7 +1317,7 @@ export const register = (ctx: $ui.Context) => {
 
   async function pull() {
     const gistId = effectiveGistId();
-    if (!token() || !gistId) {
+    if (!effToken() || !gistId) {
       ctx.toast.info("Nothing to pull yet — add an entry to create the Gist.");
       return;
     }
@@ -1381,6 +1447,21 @@ export const register = (ctx: $ui.Context) => {
   ctx.registerEventHandler("lcm-toggle-binding", () => {
     disarmDelete();
     bindingExpanded.set(!bindingExpanded.get());
+  });
+  ctx.registerEventHandler("lcm-connect-github", () => {
+    void connectGitHub();
+  });
+  ctx.registerEventHandler("lcm-disconnect-github", () => {
+    // Clear the device-flow token only. If a PAT is also set the plugin stays
+    // in Gist mode via that; the gist binding is untouched so re-connecting
+    // re-uses it. oauthTok.set drives the re-render ($storage isn't reactive).
+    $storage.set(K_OAUTH_TOKEN, "");
+    oauthTok.set("");
+    ctx.toast.info(
+      patToken()
+        ? "GitHub login cleared (still connected via PAT config)"
+        : "Disconnected from GitHub",
+    );
   });
   ctx.registerEventHandler("lcm-toggle-orphans", () => {
     disarmDelete();
@@ -1533,8 +1614,12 @@ export const register = (ctx: $ui.Context) => {
     if (linked) {
       headerActions.push(
         tray.button(
-          busyAction.get() === "reload-progress" ? "⏳ Reloading…" : "↻ Reload",
-          { onClick: "lcm-reload-progress", size: "sm" },
+          busyAction.get() === "reload-progress" ? "Reloading…" : "↻ Reload",
+          {
+            onClick: "lcm-reload-progress",
+            size: "sm",
+            loading: busyAction.get() === "reload-progress",
+          },
         ),
       );
     }
@@ -1597,11 +1682,12 @@ export const register = (ctx: $ui.Context) => {
               { style: { flex: "1", alignSelf: "center", minWidth: "0" } },
             ),
             tray.tooltip(
-              tray.button(applyBusy ? "⏳" : "📤", {
+              tray.button(applyBusy ? "…" : "📤", {
                 onClick: ctx.eventHandler(`lcm-apply-progress-${id}`, () => {
                   void applyProgress(id);
                 }),
                 size: "sm",
+                loading: applyBusy,
               }),
               {
                 text: "Try to apply this progress to seanime (works if catalog entry was re-added with same id)",
@@ -1655,6 +1741,29 @@ export const register = (ctx: $ui.Context) => {
       );
     }
     return tray.stack(sub, { gap: 2 });
+  }
+
+  // GitHub connect/disconnect block (shared githubConnect flow). Connected via
+  // device-flow OAuth or the PAT config field; Disconnect clears the OAuth
+  // token (a PAT is cleared in config — the disconnect toast says so).
+  function renderConnect(): unknown {
+    const start = deviceStart.get();
+    const oauth = oauthTok.get(); // reactive
+    const connected = hasToken();
+    const via = oauth ? "GitHub login" : patToken() ? "PAT" : "";
+    return githubConnect(tray, {
+      deviceStart: start,
+      title: "🌐 Sync",
+      connecting: connecting.get(),
+      connected,
+      // Only a device-flow token is clearable from the tray; a PAT lives in
+      // config, so PAT-only shows the status but no Disconnect button.
+      disconnectable: !!oauth,
+      connectEvent: "lcm-connect-github",
+      disconnectEvent: "lcm-disconnect-github",
+      status: { connected, via },
+      connectHint: "or set a GitHub PAT in the plugin config",
+    });
   }
 
   function renderSync() {
@@ -1725,7 +1834,7 @@ export const register = (ctx: $ui.Context) => {
                 tray.tooltip(
                   tray.button(
                     deleteBusy
-                      ? "⏳"
+                      ? "…"
                       : deleteGistArmed.get()
                         ? "⚠️️ Confirm"
                         : "⛔",
@@ -1735,6 +1844,7 @@ export const register = (ctx: $ui.Context) => {
                         : "lcm-delete-gist-arm",
                       size: "sm",
                       disabled: drifting,
+                      loading: deleteBusy,
                     },
                   ),
                   {
@@ -1760,10 +1870,11 @@ export const register = (ctx: $ui.Context) => {
           items.push(
             tray.flex(
               [
-                tray.button(createBusy ? "⏳ Creating…" : "+ Create new gist", {
+                tray.button(createBusy ? "Creating…" : "+ Create new gist", {
                   onClick: "lcm-create-gist",
                   intent: "primary",
                   size: "sm",
+                  loading: createBusy,
                 }),
               ],
               {},
@@ -1779,8 +1890,12 @@ export const register = (ctx: $ui.Context) => {
                   { style: { flex: "1", minWidth: "0" } },
                 ),
                 tray.button(
-                  busyAction.get() === "link-gist" ? "⏳ Linking…" : "🔗 Link",
-                  { onClick: "lcm-link-gist", size: "sm" },
+                  busyAction.get() === "link-gist" ? "Linking…" : "🔗 Link",
+                  {
+                    onClick: "lcm-link-gist",
+                    size: "sm",
+                    loading: busyAction.get() === "link-gist",
+                  },
                 ),
               ],
               { gap: 2, style: { alignItems: "end" } },
@@ -1798,7 +1913,7 @@ export const register = (ctx: $ui.Context) => {
     const localCount = entries.get().length;
     const jsonOut = serializeCatalog(
       entries.get(),
-      $storage.get<number>(K_UPDATED) ?? Date.now(),
+      $storage.get<number>(K_UPDATED_AT) ?? Date.now(),
     );
     const expanded = bindingExpanded.get();
     // The mode/badge/toggle row is rendered by the top trayHeader now.
@@ -1808,7 +1923,7 @@ export const register = (ctx: $ui.Context) => {
         tray.alert({
           title: "Plugin and custom-source can't sync directly",
           description:
-            "seanime sandboxes extensions. Copy the JSON below into the custom-source's Inline catalog JSON field after every edit. 💡 Tip: set a GitHub token in the plugin config to switch to Gist mode — automatic sync, no copy-paste.",
+            "Seanime sandboxes extensions, so the plugin can't push to the source for you. Copy the JSON below into the custom-source's Inline catalog JSON field after each edit. 💡 Or Connect GitHub above for Gist mode — automatic sync, no copy-paste.",
           intent: "info",
         }),
       );
@@ -2036,7 +2151,7 @@ export const register = (ctx: $ui.Context) => {
           // Keep the button visible during the busy window even when drift
           // resolves to false mid-flight (applyProgress refreshes the lookup
           // synchronously after updateEntry — without this guard the loading
-          // ⏳ would disappear before the user notices it).
+          // spinner would disappear before the user notices it).
           if (hasDriftRow || applyRowBusy) {
             const progSummary = [
               rowProgress.status?.toLowerCase(),
@@ -2052,7 +2167,7 @@ export const register = (ctx: $ui.Context) => {
               : `Add to your list + push local progress · ${progSummary || "(no data)"}`;
             actions.push(
               tray.tooltip(
-                tray.button(applyRowBusy ? "⏳" : "📤", {
+                tray.button(applyRowBusy ? "…" : "📤", {
                   onClick: ctx.eventHandler(
                     `lcm-apply-progress-${e.id}`,
                     () => {
@@ -2060,6 +2175,7 @@ export const register = (ctx: $ui.Context) => {
                     },
                   ),
                   size: "sm",
+                  loading: applyRowBusy,
                 }),
                 { text: applyTooltip },
               ),
@@ -2120,8 +2236,12 @@ export const register = (ctx: $ui.Context) => {
     if (!drifting && hasToken() && effectiveGistId()) {
       inlineActions.push(
         tray.button(
-          busyAction.get() === "reload-catalog" ? "⏳ Reloading…" : "↻ Reload",
-          { onClick: "lcm-reload-catalog", size: "sm" },
+          busyAction.get() === "reload-catalog" ? "Reloading…" : "↻ Reload",
+          {
+            onClick: "lcm-reload-catalog",
+            size: "sm",
+            loading: busyAction.get() === "reload-catalog",
+          },
         ),
       );
     }
@@ -2189,9 +2309,10 @@ export const register = (ctx: $ui.Context) => {
               actionBox([
                 tray.flex(
                   [
-                    tray.button(resolveBusy ? "⏳ Working…" : "🔀 Merge", {
+                    tray.button(resolveBusy ? "Merging…" : "🔀 Merge", {
                       onClick: "lcm-drift-merge",
                       intent: "primary",
+                      loading: resolveBusy,
                     }),
                     tray.button("↑ Local wins", {
                       onClick: "lcm-drift-local-wins",
@@ -2236,9 +2357,10 @@ export const register = (ctx: $ui.Context) => {
               actionBox([
                 tray.flex(
                   [
-                    tray.button(resolveProgBusy ? "⏳ Working…" : "🔀 Merge", {
+                    tray.button(resolveProgBusy ? "Merging…" : "🔀 Merge", {
                       onClick: "lcm-progress-drift-merge",
                       intent: "primary",
+                      loading: resolveProgBusy,
                     }),
                     tray.button("↑ Local wins", {
                       onClick: "lcm-progress-drift-local-wins",
@@ -2263,6 +2385,8 @@ export const register = (ctx: $ui.Context) => {
           ),
         );
       }
+      const connect = renderConnect();
+      if (connect) layers.push(connect);
       const sync = renderSync();
       if (sync) layers.push(sync);
       // READING PROGRESS goes BEFORE entries — it's the "live state"
@@ -2283,7 +2407,12 @@ export const register = (ctx: $ui.Context) => {
     // renderSync() may be null → joinDividers skips it (no stray divider).
     const localSync = renderSync();
     return tray.stack(
-      joinDividers(tray, [localSync, renderProgressSection(), entriesSection]),
+      joinDividers(tray, [
+        renderConnect(),
+        localSync,
+        renderProgressSection(),
+        entriesSection,
+      ]),
       { gap: 3 },
     );
   }
@@ -2343,12 +2472,13 @@ export const register = (ctx: $ui.Context) => {
           : "Open in seanime · resolves on click";
       headerActions.push(
         tray.tooltip(
-          tray.button(openBusy ? "⏳" : "Open →", {
+          tray.button(openBusy ? "Opening…" : "Open →", {
             onClick: ctx.eventHandler(`lcm-form-open-manga-${id}`, () => {
               void navigateToMangaEntry(id);
             }),
             size: "sm",
             intent: "gray-subtle",
+            loading: openBusy,
           }),
           { text: openTooltip },
         ),
@@ -2357,12 +2487,13 @@ export const register = (ctx: $ui.Context) => {
     if (showApply) {
       headerActions.push(
         tray.tooltip(
-          tray.button(applyBusy ? "⏳" : "📤 Apply", {
+          tray.button(applyBusy ? "Applying…" : "📤 Apply", {
             onClick: ctx.eventHandler(`lcm-form-apply-progress-${id}`, () => {
               void applyProgress(id);
             }),
             size: "sm",
             intent: "primary-subtle",
+            loading: applyBusy,
           }),
           { text: "Push local progress to seanime" },
         ),
@@ -2712,7 +2843,7 @@ export const register = (ctx: $ui.Context) => {
   // until we re-read here.
   tray.onOpen(() => {
     progress.set(loadProgressDoc());
-    progressUpdated.set($storage.get<number>(K_PROGRESS_UPDATED) ?? 0);
+    progressUpdated.set($storage.get<number>(K_PROGRESS_UPDATED_AT) ?? 0);
     // Refresh localId → mediaId cache + discover extId if needed. goja's
     // Promise interop supports `await` on getCollection / discoverExtId
     // but the values they return do NOT expose `.then()` directly —
@@ -2807,7 +2938,7 @@ export const register = (ctx: $ui.Context) => {
           ),
         ]
       : [
-          tray.badge("💻 this device only", { intent: "gray" }),
+          tray.badge("💻 Device only", { intent: "gray" }),
           tray.tooltip(
             tray.button(expanded ? "△" : "⚠️", {
               onClick: "lcm-toggle-binding",
