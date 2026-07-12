@@ -9,7 +9,7 @@
 // what it HAS (year / status / chapter / external link / in-place open) and
 // the component renders the present pieces, dot-separated, in a fixed order:
 //
-//   {year} · {status pill} · c.{chapter} · Open ↗ · Open →
+//   {year} · {status pill} · {warn pill} · c.{chapter} · Open ↗ · Open →
 //
 // Trailing `actions` (edit / delete / unlink / apply buttons) are still passed
 // pre-built, because their onClick handlers close over per-plugin state.
@@ -25,6 +25,9 @@ export interface EntryListRow {
   year?: number;
   // Rendered as a native tray.badge. `intent` drives the color.
   status?: { label: string; intent?: $ui.BadgeComponentIntent };
+  // Optional warning pill after `status` (e.g. a cross-device manual-match
+  // divergence). Same sub-line, defaults to `warning` intent.
+  warn?: { label: string; tooltip?: string; intent?: $ui.BadgeComponentIntent };
   // Rendered as "c.{chapter}".
   chapter?: number | string;
   // "Open ↗" underlined external link (new tab) with an optional tooltip.
@@ -138,6 +141,17 @@ export function entryList(tray: $ui.Tray, cfg: EntryListConfig): unknown {
           intent: row.status.intent ?? "gray",
           size: "sm",
         }),
+      );
+    }
+    if (row.warn) {
+      const badge = tray.badge(row.warn.label, {
+        intent: row.warn.intent ?? "warning",
+        size: "sm",
+      });
+      segs.push(
+        row.warn.tooltip
+          ? tray.tooltip(badge, { text: row.warn.tooltip })
+          : badge,
       );
     }
     if (row.chapter != null && row.chapter !== "") {

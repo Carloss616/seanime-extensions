@@ -284,6 +284,17 @@ var register = (...args) => {
           }),
         );
       }
+      if (row.warn) {
+        const badge = tray.badge(row.warn.label, {
+          intent: row.warn.intent ?? "warning",
+          size: "sm",
+        });
+        segs.push(
+          row.warn.tooltip
+            ? tray.tooltip(badge, { text: row.warn.tooltip })
+            : badge,
+        );
+      }
       if (row.chapter != null && row.chapter !== "") {
         segs.push(
           tray.span(`c.${row.chapter}`, {

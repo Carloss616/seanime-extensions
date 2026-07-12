@@ -32,7 +32,9 @@ export interface LocalMaps {
   exclusions: Record<string, Record<string, ExcludedRecord>>;
   pins: Record<string, Record<string, PinRecord>>;
   probes: Record<string, Record<string, ProviderProbe>>;
-  matches: Record<string, Record<string, ManualMatch>>;
+  // 3-level: mediaId → provider → instanceId → record (per-instance, not merged
+  // into one shared value — see utils/matches.ts).
+  matches: Record<string, Record<string, Record<string, ManualMatch>>>;
 }
 export type WireMaps = LocalMaps;
 
@@ -49,15 +51,54 @@ export function emptyLocalMaps(): LocalMaps {
 export const SYNC_FILES: Array<{
   section: keyof LocalMaps;
   file: string;
-  level: 1 | 2;
+  level: 1 | 2 | 3;
 }> = [
   { section: "digest", file: SYNC_FILE_DIGEST, level: 1 },
   { section: "exclusions", file: SYNC_FILE_EXCLUSIONS, level: 2 },
   { section: "pins", file: SYNC_FILE_PINS, level: 2 },
   { section: "probes", file: SYNC_FILE_PROBES, level: 2 },
-  { section: "matches", file: SYNC_FILE_MATCHES, level: 2 },
+  { section: "matches", file: SYNC_FILE_MATCHES, level: 3 },
 ];
 export const ALL_SYNC_FILES = SYNC_FILES.map((s) => s.file);
+
+// Split/rejoin specific (mediaId, provider) cells of a 2-level map by a
+// `${mediaId}\0${provider}` key set (mediaId/provider never contain \0).
+// `omitCells` drops those cells (used to keep instance-relative probes OFF the
+// wire); `reinjectCells` restores them from a source snapshot into the merged
+// result (so the write-back doesn't lose/overwrite this instance's own values).
+export function omitCells<T>(
+  map: Record<string, Record<string, T>>,
+  pairs: Set<string>,
+): Record<string, Record<string, T>> {
+  if (pairs.size === 0) return map;
+  const out: Record<string, Record<string, T>> = {};
+  for (const [mid, inner] of Object.entries(map)) {
+    const keep: Record<string, T> = {};
+    for (const [pid, v] of Object.entries(inner)) {
+      if (!pairs.has(`${mid}\0${pid}`)) keep[pid] = v;
+    }
+    out[mid] = keep;
+  }
+  return out;
+}
+
+export function reinjectCells<T>(
+  target: Record<string, Record<string, T>>,
+  source: Record<string, Record<string, T>>,
+  pairs: Set<string>,
+): Record<string, Record<string, T>> {
+  if (pairs.size === 0) return target;
+  const out: Record<string, Record<string, T>> = { ...target };
+  for (const pair of pairs) {
+    const sep = pair.indexOf("\0");
+    const mid = pair.slice(0, sep);
+    const pid = pair.slice(sep + 1);
+    const val = source[mid]?.[pid];
+    if (val === undefined) continue;
+    out[mid] = { ...(out[mid] ?? {}), [pid]: val };
+  }
+  return out;
+}
 
 // A record's effective merge timestamp: the later of its edit and its tombstone.
 // So a delete newer than an edit wins, and an edit newer than a tombstone
@@ -101,13 +142,27 @@ function mergeTwoLevel<T extends TimestampMeta>(
   return out;
 }
 
+// mediaId → provider → instanceId → record. Each instance only ever writes its
+// own instanceId leaf, so the per-leaf LWW never clobbers another instance's
+// match — a delete on device A survives device B re-asserting its own leaf.
+function mergeThreeLevel<T extends TimestampMeta>(
+  local: Record<string, Record<string, Record<string, T>>>,
+  remote: Record<string, Record<string, Record<string, T>>>,
+): Record<string, Record<string, Record<string, T>>> {
+  const out: Record<string, Record<string, Record<string, T>>> = {};
+  for (const k of new Set([...Object.keys(local), ...Object.keys(remote)])) {
+    out[k] = mergeTwoLevel(local[k] ?? {}, remote[k] ?? {});
+  }
+  return out;
+}
+
 export function mergeMaps(local: WireMaps, remote: WireMaps): WireMaps {
   return {
     digest: mergeOneLevel(local.digest, remote.digest),
     exclusions: mergeTwoLevel(local.exclusions, remote.exclusions),
     pins: mergeTwoLevel(local.pins, remote.pins),
     probes: mergeTwoLevel(local.probes, remote.probes),
-    matches: mergeTwoLevel(local.matches, remote.matches),
+    matches: mergeThreeLevel(local.matches, remote.matches),
   };
 }
 
@@ -138,11 +193,27 @@ function sortMap(
   return out;
 }
 
-function serializeSection(map: unknown, level: 1 | 2): string {
+// 3-level canonical sort (mediaId → provider → instanceId → record), dropping
+// empties at each level so an absent key and an empty map serialize the same.
+function sortMap3(
+  m: Record<string, Record<string, Record<string, unknown>>>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(m).sort()) {
+    const inner = sortMap(m[k]);
+    if (Object.keys(inner).length === 0) continue;
+    out[k] = inner;
+  }
+  return out;
+}
+
+function serializeSection(map: unknown, level: 1 | 2 | 3): string {
   const canon =
-    level === 2
-      ? sortMap(map as Record<string, Record<string, unknown>>)
-      : sortObj(map as Record<string, unknown>);
+    level === 3
+      ? sortMap3(map as Record<string, Record<string, Record<string, unknown>>>)
+      : level === 2
+        ? sortMap(map as Record<string, Record<string, unknown>>)
+        : sortObj(map as Record<string, unknown>);
   // Indented for readability in the GitHub gist UI; canonical key order keeps
   // byte-equal pushes no-op on GitHub.
   return JSON.stringify(canon, null, 2);
@@ -195,6 +266,20 @@ export function wireMapsToFiles(maps: WireMaps): Record<string, string> {
   return out;
 }
 
+// Normalize ONE untrusted record: force a numeric updatedAt and drop a
+// non-numeric deletedAt (so it reads as live, not NaN). Shared by every parser.
+function normalizeRecord<T extends TimestampMeta>(rec: object): T {
+  const r = rec as { updatedAt?: unknown; deletedAt?: unknown };
+  const parsed = {
+    ...rec,
+    updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
+  } as T;
+  if (r.deletedAt !== undefined && typeof r.deletedAt !== "number") {
+    delete (parsed as { deletedAt?: number }).deletedAt;
+  }
+  return parsed;
+}
+
 function parseMap(src: unknown): Record<string, Record<string, TimestampMeta>> {
   const out: Record<string, Record<string, TimestampMeta>> = {};
   if (!src || typeof src !== "object") return out;
@@ -202,18 +287,45 @@ function parseMap(src: unknown): Record<string, Record<string, TimestampMeta>> {
     if (!inner || typeof inner !== "object") continue;
     const innerOut: Record<string, TimestampMeta> = {};
     for (const [pid, rec] of Object.entries(inner as Record<string, unknown>)) {
-      if (!rec || typeof rec !== "object") continue;
-      const r = rec as { updatedAt?: unknown; deletedAt?: unknown };
-      const parsed: TimestampMeta = {
-        ...(rec as object),
-        updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
-      } as TimestampMeta;
-      if (r.deletedAt !== undefined && typeof r.deletedAt !== "number") {
-        delete parsed.deletedAt; // untrusted gist content — drop so it reads as live, not NaN
-      }
-      innerOut[pid] = parsed;
+      if (rec && typeof rec === "object") innerOut[pid] = normalizeRecord(rec);
     }
     out[k] = innerOut;
+  }
+  return out;
+}
+
+// 3-level parse for the matches map (mediaId → provider → instanceId → record).
+function parseMatches(
+  src: unknown,
+): Record<string, Record<string, Record<string, ManualMatch>>> {
+  const out: Record<string, Record<string, Record<string, ManualMatch>>> = {};
+  if (!src || typeof src !== "object") return out;
+  for (const [mid, providers] of Object.entries(
+    src as Record<string, unknown>,
+  )) {
+    if (!providers || typeof providers !== "object") continue;
+    const provOut: Record<string, Record<string, ManualMatch>> = {};
+    for (const [pid, byInst] of Object.entries(
+      providers as Record<string, unknown>,
+    )) {
+      if (!byInst || typeof byInst !== "object") continue;
+      const instOut: Record<string, ManualMatch> = {};
+      for (const [iid, rec] of Object.entries(
+        byInst as Record<string, unknown>,
+      )) {
+        // Only a real leaf (object with a string mappedId). Drops pre-3-level
+        // records and the char-exploded corruption they produced.
+        if (
+          rec &&
+          typeof rec === "object" &&
+          typeof (rec as { mappedId?: unknown }).mappedId === "string"
+        ) {
+          instOut[iid] = normalizeRecord(rec);
+        }
+      }
+      if (Object.keys(instOut).length > 0) provOut[pid] = instOut;
+    }
+    if (Object.keys(provOut).length > 0) out[mid] = provOut;
   }
   return out;
 }
@@ -222,16 +334,7 @@ function parseResults(src: unknown): Record<string, StoredResult> {
   const out: Record<string, StoredResult> = {};
   if (!src || typeof src !== "object") return out;
   for (const [k, rec] of Object.entries(src as Record<string, unknown>)) {
-    if (!rec || typeof rec !== "object") continue;
-    const r = rec as { updatedAt?: unknown; deletedAt?: unknown };
-    const parsed: StoredResult = {
-      ...(rec as object),
-      updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
-    } as StoredResult;
-    if (r.deletedAt !== undefined && typeof r.deletedAt !== "number") {
-      delete parsed.deletedAt; // untrusted gist content — drop so it reads as live, not NaN
-    }
-    out[k] = parsed;
+    if (rec && typeof rec === "object") out[k] = normalizeRecord(rec);
   }
   return out;
 }
@@ -258,9 +361,7 @@ export function filesToWireMaps(files: Record<string, string>): WireMaps {
     probes: parseMap(
       parseJsonObj(files[SYNC_FILE_PROBES] ?? ""),
     ) as WireMaps["probes"],
-    matches: parseMap(
-      parseJsonObj(files[SYNC_FILE_MATCHES] ?? ""),
-    ) as WireMaps["matches"],
+    matches: parseMatches(parseJsonObj(files[SYNC_FILE_MATCHES] ?? "")),
   };
 }
 

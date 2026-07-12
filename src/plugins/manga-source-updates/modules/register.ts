@@ -34,6 +34,8 @@ import {
 } from "../utils/manual-match";
 import {
   getMatches,
+  liveLocalMatchPairs,
+  matchDivergence,
   resolveMatchAction,
   setMatches,
   tombstoneMatch,
@@ -63,7 +65,13 @@ import {
   snapshotLocalMaps,
   writeLocalMaps,
 } from "../utils/store";
-import { ensureGist, type SyncSection, syncMsu } from "../utils/sync";
+import {
+  ensureGist,
+  omitCells,
+  reinjectCells,
+  type SyncSection,
+  syncMsu,
+} from "../utils/sync";
 import { collectTitles, resolveTitle } from "../utils/titles";
 import type {
   ExcludeReason,
@@ -211,16 +219,25 @@ export const register = (ctx: $ui.Context) => {
     silent: boolean,
   ): Promise<void> {
     const client = syncClient();
+    // Providers this instance manually matched → their scan probe reflects a
+    // manually-chosen series, so it's instance-relative. Keep those probes OUT
+    // of the wire (and un-overwritten on pull) or two devices that matched a
+    // provider differently ping-pong latest/count through probes.json forever.
+    const matchedPairs = liveLocalMatchPairs(getMatches(), myInstanceId);
     const roundTrip = async () => {
       const gistId = await ensureGist({
         client,
         getGistId: () => $storage.get<string>(K_GIST_ID) ?? undefined,
         setGistId: (id) => $storage.set(K_GIST_ID, id),
       });
-      return await syncMsu({
+      const fullLocal = snapshotLocalMaps();
+      const res = await syncMsu({
         client,
         gistId,
-        local: snapshotLocalMaps(),
+        local: {
+          ...fullLocal,
+          probes: omitCells(fullLocal.probes, matchedPairs),
+        },
         sources: getSources(),
         // The resolver probes using the localId of the record being localized,
         // so no separate remote pre-read is needed to seed it.
@@ -228,6 +245,18 @@ export const register = (ctx: $ui.Context) => {
         log,
         pushSections: pushSections ? new Set(pushSections) : undefined,
       });
+      // Restore this instance's own matched-provider probes into the write-back.
+      return {
+        ...res,
+        writeBack: {
+          ...res.writeBack,
+          probes: reinjectCells(
+            res.writeBack.probes,
+            fullLocal.probes,
+            matchedPairs,
+          ),
+        },
+      };
     };
     try {
       let res: Awaited<ReturnType<typeof roundTrip>>;
@@ -427,6 +456,7 @@ export const register = (ctx: $ui.Context) => {
         newSources: row.newSources,
         kind: row.kind,
         updatedAt: row.updatedAt,
+        lastScannedAt: r.lastScannedAt,
       };
       return row;
     });
@@ -531,6 +561,18 @@ export const register = (ctx: $ui.Context) => {
       ).length;
       kind = availableCount === 0 ? "all-excluded" : "not-matched";
     }
+    // `lastScannedAt` bumps every scan (drives the TTL). `updatedAt` (the synced
+    // LWW clock) bumps ONLY when a synced field changed vs. the stored row, so a
+    // rescan that finds the same title/cover/read leaves the digest gist file
+    // byte-identical → no churn. (reconcile/refreshProgress cherry-pick fields
+    // and keep their own timestamps, so this stamp only lands on real scans.)
+    const prev = getResults()[key];
+    const now = Date.now();
+    const syncedSame =
+      prev != null &&
+      prev.title === media.title &&
+      String(prev.cover ?? "") === String(media.cover ?? "") &&
+      Number(prev.read ?? 0) === Number(read);
     return {
       title: media.title,
       cover: media.cover,
@@ -539,7 +581,8 @@ export const register = (ctx: $ui.Context) => {
       sources: matched.length,
       newSources,
       kind,
-      updatedAt: Date.now(),
+      updatedAt: syncedSame ? prev.updatedAt : now,
+      lastScannedAt: now,
     };
   }
 
@@ -719,7 +762,7 @@ export const register = (ctx: $ui.Context) => {
           !force &&
           prior &&
           !isBadKind(prior.kind) &&
-          now - Number(prior.updatedAt) < ttlMs
+          now - Number(prior.lastScannedAt ?? prior.updatedAt) < ttlMs
         ) {
           upsert({
             ...prior,
@@ -1405,6 +1448,24 @@ export const register = (ctx: $ui.Context) => {
     const excludedForManga = excluded[key] ?? {};
     // Probes for this manga, keyed by provider id (empty = never scanned).
     const probeByProvider = probeCache.get()[id] ?? {};
+    // Per-provider manual-match state across instances → an optional warn pill
+    // when this device disagrees with another (different series / removed here).
+    const matchesForManga = getMatches()[key] ?? {};
+    const matchWarn = (pid: string): EntryListRow["warn"] => {
+      const div = matchDivergence(matchesForManga[pid]);
+      if (!div.diverges) return undefined;
+      return div.reason === "different"
+        ? {
+            label: "⚠ match ≠",
+            tooltip:
+              "Matched to a different series on another device — this count may not line up.",
+          }
+        : {
+            label: "⚠ match ?",
+            tooltip:
+              "Manually matched on another device (not here) — this count may not line up.",
+          };
+    };
     // This manga is being scanned right now. probingId is set synchronously when
     // the manga scan starts (so the loading state shows on the first re-render,
     // before the awaits reach scanProgress); scanProgress carries done/total once
@@ -1521,6 +1582,7 @@ export const register = (ctx: $ui.Context) => {
       return {
         title: name,
         status: sourceStatus(p),
+        warn: matchWarn(pid),
         chapter: p?.matched ? p.latest : undefined,
         actions: [
           tray.tooltip(
@@ -1568,6 +1630,7 @@ export const register = (ctx: $ui.Context) => {
       return {
         title: name,
         status: { label: reasonLabel(reason), intent: reasonIntent(reason) },
+        warn: matchWarn(pid),
         actions: [
           tray.button("Include", {
             onClick: ctx.eventHandler(`msu-inc-${id}-${pid}`, () =>
@@ -1808,6 +1871,7 @@ export const register = (ctx: $ui.Context) => {
         newSources,
         kind,
         updatedAt: row.updatedAt,
+        lastScannedAt: r.lastScannedAt,
       };
       return row;
     });
@@ -2003,6 +2067,7 @@ export const register = (ctx: $ui.Context) => {
     const key = String(mediaId);
     const probes = probeCache.get()[mediaId] ?? {};
     const excluded = getExcludedView()[key] ?? {};
+    const matchesForManga = getMatches()[key] ?? {};
     const providers = ctx.manga.getProviders();
     const items = Object.keys(probes)
       .filter(
@@ -2015,11 +2080,13 @@ export const register = (ctx: $ui.Context) => {
         name: String(providers[x.pid] ?? x.p.providerName ?? x.pid),
         unread: unreadChapters(read, x.p.latest),
         latest: x.p.latest,
+        // "" | "different" | "missing" — marks the chip when instances disagree.
+        warn: matchDivergence(matchesForManga[x.pid]).reason,
       }))
       .sort((a, b) => b.latest - a.latest || a.name.localeCompare(b.name));
 
     const sig = items.length
-      ? `${selectedPid ?? ""}|${items.map((i) => `${i.pid}+${i.unread}`).join(",")}`
+      ? `${selectedPid ?? ""}|${items.map((i) => `${i.pid}+${i.unread}${i.warn ? `!${i.warn}` : ""}`).join(",")}`
       : "none";
 
     return { items, selectedPid, sig };
@@ -2054,8 +2121,11 @@ export const register = (ctx: $ui.Context) => {
           `<span class="text-sm text-[--muted]">New on:</span>` +
             items
               .map((i) => {
-                const title = `${escHtml(i.name)}: ${i.unread} unread chapter${i.unread === 1 ? "" : "s"}`;
-                const label = `${escHtml(i.name)} +${i.unread}`;
+                const warnNote = i.warn
+                  ? ` · manual match ${i.warn === "different" ? "differs" : "missing"} across your devices`
+                  : "";
+                const title = `${escHtml(i.name)}: ${i.unread} unread chapter${i.unread === 1 ? "" : "s"}${warnNote}`;
+                const label = `${escHtml(i.name)} +${i.unread}${i.warn ? " ⚠" : ""}`;
                 const intentClass = selectedPid?.includes(i.pid)
                   ? "text-green bg-green-50 border-green-500 dark:text-green-300"
                   : "text-blue bg-blue-50 border-blue-500 dark:text-blue-300";
@@ -2160,12 +2230,15 @@ export const register = (ctx: $ui.Context) => {
       // idempotent, so re-observing the same state writes nothing.
       const now = Date.now();
       const matches = getMatches();
+      // Compare against THIS instance's own leaf; each instance owns its slot.
       const action = resolveMatchAction(
         sig,
-        matches[String(mediaId)]?.[provider],
+        matches[String(mediaId)]?.[provider]?.[myInstanceId],
       );
       if (action.type === "tombstone") {
-        setMatches(tombstoneMatch(matches, mediaId, provider, now));
+        setMatches(
+          tombstoneMatch(matches, mediaId, provider, myInstanceId, now),
+        );
         livePush(["matches"]);
       } else if (action.type === "upsert") {
         setMatches(
@@ -2173,8 +2246,8 @@ export const register = (ctx: $ui.Context) => {
             matches,
             mediaId,
             provider,
-            action.mappedId,
             myInstanceId,
+            action.mappedId,
             now,
           ),
         );

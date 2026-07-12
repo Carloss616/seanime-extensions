@@ -193,6 +193,17 @@ var register = (...args) => {
           }),
         );
       }
+      if (row.warn) {
+        const badge = tray.badge(row.warn.label, {
+          intent: row.warn.intent ?? "warning",
+          size: "sm",
+        });
+        segs.push(
+          row.warn.tooltip
+            ? tray.tooltip(badge, { text: row.warn.tooltip })
+            : badge,
+        );
+      }
       if (row.chapter != null && row.chapter !== "") {
         segs.push(
           tray.span(`c.${row.chapter}`, {
@@ -993,17 +1004,27 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       },
     };
   }
-  function upsertMatch(map, mediaId, provider, mappedId, by, now) {
+  function upsertMatch(map, mediaId, provider, instanceId, mappedId, now) {
     const key = String(mediaId);
-    const rec = { mappedId, by, updatedAt: now };
-    return { ...map, [key]: { ...(map[key] ?? {}), [provider]: rec } };
+    const byInstance = {
+      ...(map[key]?.[provider] ?? {}),
+      [instanceId]: { mappedId, updatedAt: now },
+    };
+    return {
+      ...map,
+      [key]: { ...(map[key] ?? {}), [provider]: byInstance },
+    };
   }
-  function tombstoneMatch(map, mediaId, provider, now) {
+  function tombstoneMatch(map, mediaId, provider, instanceId, now) {
     const key = String(mediaId);
-    const inner = { ...(map[key] ?? {}) };
-    const prev = inner[provider];
-    if (prev) inner[provider] = { ...prev, updatedAt: now, deletedAt: now };
-    return { ...map, [key]: inner };
+    const byInstance = { ...(map[key]?.[provider] ?? {}) };
+    const prev = byInstance[instanceId];
+    if (prev)
+      byInstance[instanceId] = { ...prev, updatedAt: now, deletedAt: now };
+    return {
+      ...map,
+      [key]: { ...(map[key] ?? {}), [provider]: byInstance },
+    };
   }
   function resolveMatchAction(sig, existing) {
     const live = isLive(existing) ? existing : undefined;
@@ -1013,6 +1034,30 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     const mappedId = sig === "present" ? "" : sig;
     if (live && live.mappedId === mappedId) return { type: "none" };
     return { type: "upsert", mappedId };
+  }
+  var PRESENT_SENTINEL = "\x00present";
+  function matchDivergence(byInstance) {
+    if (!byInstance) return { diverges: false, reason: "" };
+    const liveIds = new Set();
+    let hasRemoved = false;
+    for (const rec of Object.values(byInstance)) {
+      if (isLive(rec))
+        liveIds.add(rec.mappedId === "" ? PRESENT_SENTINEL : rec.mappedId);
+      else hasRemoved = true;
+    }
+    if (liveIds.size >= 2) return { diverges: true, reason: "different" };
+    if (liveIds.size === 1 && hasRemoved)
+      return { diverges: true, reason: "missing" };
+    return { diverges: false, reason: "" };
+  }
+  function liveLocalMatchPairs(matches, instanceId) {
+    const out = new Set();
+    for (const [mid, providers] of Object.entries(matches)) {
+      for (const [pid, byInstance] of Object.entries(providers)) {
+        if (isLive(byInstance[instanceId])) out.add(`${mid}\x00${pid}`);
+      }
+    }
+    return out;
   }
   function getMatches() {
     const raw = $storage.get(K_MATCHES);
@@ -1279,9 +1324,34 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     { section: "exclusions", file: SYNC_FILE_EXCLUSIONS, level: 2 },
     { section: "pins", file: SYNC_FILE_PINS, level: 2 },
     { section: "probes", file: SYNC_FILE_PROBES, level: 2 },
-    { section: "matches", file: SYNC_FILE_MATCHES, level: 2 },
+    { section: "matches", file: SYNC_FILE_MATCHES, level: 3 },
   ];
   var ALL_SYNC_FILES = SYNC_FILES.map((s) => s.file);
+  function omitCells(map, pairs) {
+    if (pairs.size === 0) return map;
+    const out = {};
+    for (const [mid, inner] of Object.entries(map)) {
+      const keep = {};
+      for (const [pid, v] of Object.entries(inner)) {
+        if (!pairs.has(`${mid}\x00${pid}`)) keep[pid] = v;
+      }
+      out[mid] = keep;
+    }
+    return out;
+  }
+  function reinjectCells(target, source, pairs) {
+    if (pairs.size === 0) return target;
+    const out = { ...target };
+    for (const pair of pairs) {
+      const sep = pair.indexOf("\x00");
+      const mid = pair.slice(0, sep);
+      const pid = pair.slice(sep + 1);
+      const val = source[mid]?.[pid];
+      if (val === undefined) continue;
+      out[mid] = { ...(out[mid] ?? {}), [pid]: val };
+    }
+    return out;
+  }
   function effTs(rec) {
     return Math.max(rec.updatedAt ?? 0, rec.deletedAt ?? 0);
   }
@@ -1304,13 +1374,20 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     return out;
   }
+  function mergeThreeLevel(local, remote) {
+    const out = {};
+    for (const k of new Set([...Object.keys(local), ...Object.keys(remote)])) {
+      out[k] = mergeTwoLevel(local[k] ?? {}, remote[k] ?? {});
+    }
+    return out;
+  }
   function mergeMaps(local, remote) {
     return {
       digest: mergeOneLevel(local.digest, remote.digest),
       exclusions: mergeTwoLevel(local.exclusions, remote.exclusions),
       pins: mergeTwoLevel(local.pins, remote.pins),
       probes: mergeTwoLevel(local.probes, remote.probes),
-      matches: mergeTwoLevel(local.matches, remote.matches),
+      matches: mergeThreeLevel(local.matches, remote.matches),
     };
   }
   function sortObj(o) {
@@ -1331,8 +1408,18 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     return out;
   }
+  function sortMap3(m) {
+    const out = {};
+    for (const k of Object.keys(m).sort()) {
+      const inner = sortMap(m[k]);
+      if (Object.keys(inner).length === 0) continue;
+      out[k] = inner;
+    }
+    return out;
+  }
   function serializeSection(map, level) {
-    const canon = level === 2 ? sortMap(map) : sortObj(map);
+    const canon =
+      level === 3 ? sortMap3(map) : level === 2 ? sortMap(map) : sortObj(map);
     return JSON.stringify(canon, null, 2);
   }
   var DIGEST_WIRE_FIELDS = ["title", "cover", "read", "updatedAt", "deletedAt"];
@@ -1357,6 +1444,17 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     return out;
   }
+  function normalizeRecord(rec) {
+    const r = rec;
+    const parsed = {
+      ...rec,
+      updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
+    };
+    if (r.deletedAt !== undefined && typeof r.deletedAt !== "number") {
+      delete parsed.deletedAt;
+    }
+    return parsed;
+  }
   function parseMap(src) {
     const out = {};
     if (!src || typeof src !== "object") return out;
@@ -1364,18 +1462,34 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       if (!inner || typeof inner !== "object") continue;
       const innerOut = {};
       for (const [pid, rec] of Object.entries(inner)) {
-        if (!rec || typeof rec !== "object") continue;
-        const r = rec;
-        const parsed = {
-          ...rec,
-          updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
-        };
-        if (r.deletedAt !== undefined && typeof r.deletedAt !== "number") {
-          delete parsed.deletedAt;
-        }
-        innerOut[pid] = parsed;
+        if (rec && typeof rec === "object")
+          innerOut[pid] = normalizeRecord(rec);
       }
       out[k] = innerOut;
+    }
+    return out;
+  }
+  function parseMatches(src) {
+    const out = {};
+    if (!src || typeof src !== "object") return out;
+    for (const [mid, providers] of Object.entries(src)) {
+      if (!providers || typeof providers !== "object") continue;
+      const provOut = {};
+      for (const [pid, byInst] of Object.entries(providers)) {
+        if (!byInst || typeof byInst !== "object") continue;
+        const instOut = {};
+        for (const [iid, rec] of Object.entries(byInst)) {
+          if (
+            rec &&
+            typeof rec === "object" &&
+            typeof rec.mappedId === "string"
+          ) {
+            instOut[iid] = normalizeRecord(rec);
+          }
+        }
+        if (Object.keys(instOut).length > 0) provOut[pid] = instOut;
+      }
+      if (Object.keys(provOut).length > 0) out[mid] = provOut;
     }
     return out;
   }
@@ -1383,16 +1497,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     const out = {};
     if (!src || typeof src !== "object") return out;
     for (const [k, rec] of Object.entries(src)) {
-      if (!rec || typeof rec !== "object") continue;
-      const r = rec;
-      const parsed = {
-        ...rec,
-        updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
-      };
-      if (r.deletedAt !== undefined && typeof r.deletedAt !== "number") {
-        delete parsed.deletedAt;
-      }
-      out[k] = parsed;
+      if (rec && typeof rec === "object") out[k] = normalizeRecord(rec);
     }
     return out;
   }
@@ -1410,7 +1515,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       exclusions: parseMap(parseJsonObj(files[SYNC_FILE_EXCLUSIONS] ?? "")),
       pins: parseMap(parseJsonObj(files[SYNC_FILE_PINS] ?? "")),
       probes: parseMap(parseJsonObj(files[SYNC_FILE_PROBES] ?? "")),
-      matches: parseMap(parseJsonObj(files[SYNC_FILE_MATCHES] ?? "")),
+      matches: parseMatches(parseJsonObj(files[SYNC_FILE_MATCHES] ?? "")),
     };
   }
   function translateTwoLevel(m, key, dropped) {
@@ -1652,21 +1757,37 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     const SILENT_SYNC_COOLDOWN_MS = 1e4;
     async function performSync(pushSections, reason, silent) {
       const client = syncClient();
+      const matchedPairs = liveLocalMatchPairs(getMatches(), myInstanceId);
       const roundTrip = async () => {
         const gistId = await ensureGist({
           client,
           getGistId: () => $storage.get(K_GIST_ID) ?? undefined,
           setGistId: (id) => $storage.set(K_GIST_ID, id),
         });
-        return await syncMsu({
+        const fullLocal = snapshotLocalMaps();
+        const res = await syncMsu({
           client,
           gistId,
-          local: snapshotLocalMaps(),
+          local: {
+            ...fullLocal,
+            probes: omitCells(fullLocal.probes, matchedPairs),
+          },
           sources: getSources(),
           extIdForManifest: makeExtIdResolver(),
           log,
           pushSections: pushSections ? new Set(pushSections) : undefined,
         });
+        return {
+          ...res,
+          writeBack: {
+            ...res.writeBack,
+            probes: reinjectCells(
+              res.writeBack.probes,
+              fullLocal.probes,
+              matchedPairs,
+            ),
+          },
+        };
       };
       try {
         let res;
@@ -1813,6 +1934,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           newSources: row.newSources,
           kind: row.kind,
           updatedAt: row.updatedAt,
+          lastScannedAt: r.lastScannedAt,
         };
         return row;
       });
@@ -1887,6 +2009,13 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         ).length;
         kind = availableCount === 0 ? "all-excluded" : "not-matched";
       }
+      const prev = getResults()[key];
+      const now = Date.now();
+      const syncedSame =
+        prev != null &&
+        prev.title === media.title &&
+        String(prev.cover ?? "") === String(media.cover ?? "") &&
+        Number(prev.read ?? 0) === Number(read);
       return {
         title: media.title,
         cover: media.cover,
@@ -1895,7 +2024,8 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         sources: matched.length,
         newSources,
         kind,
-        updatedAt: Date.now(),
+        updatedAt: syncedSame ? prev.updatedAt : now,
+        lastScannedAt: now,
       };
     }
     function captureSourceRef(mediaId, media) {
@@ -2028,7 +2158,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
             !force &&
             prior &&
             !isBadKind(prior.kind) &&
-            now - Number(prior.updatedAt) < ttlMs
+            now - Number(prior.lastScannedAt ?? prior.updatedAt) < ttlMs
           ) {
             upsert({
               ...prior,
@@ -2561,6 +2691,22 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       const excluded = getExcludedView();
       const excludedForManga = excluded[key] ?? {};
       const probeByProvider = probeCache.get()[id] ?? {};
+      const matchesForManga = getMatches()[key] ?? {};
+      const matchWarn = (pid) => {
+        const div = matchDivergence(matchesForManga[pid]);
+        if (!div.diverges) return;
+        return div.reason === "different"
+          ? {
+              label: "⚠ match ≠",
+              tooltip:
+                "Matched to a different series on another device — this count may not line up.",
+            }
+          : {
+              label: "⚠ match ?",
+              tooltip:
+                "Manually matched on another device (not here) — this count may not line up.",
+            };
+      };
       const prog = scanProgress.get();
       const hasProg = prog != null && prog.mediaId === id;
       const scanningThis = probingId.get() === id || hasProg;
@@ -2652,6 +2798,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         return {
           title: name,
           status: sourceStatus(p),
+          warn: matchWarn(pid),
           chapter: p?.matched ? p.latest : undefined,
           actions: [
             tray.tooltip(
@@ -2692,6 +2839,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         return {
           title: name,
           status: { label: reasonLabel(reason), intent: reasonIntent(reason) },
+          warn: matchWarn(pid),
           actions: [
             tray.button("Include", {
               onClick: ctx.eventHandler(`msu-inc-${id}-${pid}`, () =>
@@ -2880,6 +3028,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           newSources,
           kind,
           updatedAt: row.updatedAt,
+          lastScannedAt: r.lastScannedAt,
         };
         return row;
       });
@@ -3025,6 +3174,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       const key = String(mediaId);
       const probes = probeCache.get()[mediaId] ?? {};
       const excluded = getExcludedView()[key] ?? {};
+      const matchesForManga = getMatches()[key] ?? {};
       const providers = ctx.manga.getProviders();
       const items = Object.keys(probes)
         .filter(
@@ -3037,10 +3187,11 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           name: String(providers[x.pid] ?? x.p.providerName ?? x.pid),
           unread: unreadChapters(read, x.p.latest),
           latest: x.p.latest,
+          warn: matchDivergence(matchesForManga[x.pid]).reason,
         }))
         .sort((a, b) => b.latest - a.latest || a.name.localeCompare(b.name));
       const sig = items.length
-        ? `${selectedPid ?? ""}|${items.map((i) => `${i.pid}+${i.unread}`).join(",")}`
+        ? `${selectedPid ?? ""}|${items.map((i) => `${i.pid}+${i.unread}${i.warn ? `!${i.warn}` : ""}`).join(",")}`
         : "none";
       return { items, selectedPid, sig };
     };
@@ -3074,8 +3225,11 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           node.setInnerHTML(
             `<span class="text-sm text-[--muted]">New on:</span>${items
               .map((i) => {
-                const title = `${escHtml(i.name)}: ${i.unread} unread chapter${i.unread === 1 ? "" : "s"}`;
-                const label = `${escHtml(i.name)} +${i.unread}`;
+                const warnNote = i.warn
+                  ? ` · manual match ${i.warn === "different" ? "differs" : "missing"} across your devices`
+                  : "";
+                const title = `${escHtml(i.name)}: ${i.unread} unread chapter${i.unread === 1 ? "" : "s"}${warnNote}`;
+                const label = `${escHtml(i.name)} +${i.unread}${i.warn ? " ⚠" : ""}`;
                 const intentClass = selectedPid?.includes(i.pid)
                   ? "text-green bg-green-50 border-green-500 dark:text-green-300"
                   : "text-blue bg-blue-50 border-blue-500 dark:text-blue-300";
@@ -3148,10 +3302,12 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         const matches = getMatches();
         const action = resolveMatchAction(
           sig,
-          matches[String(mediaId)]?.[provider],
+          matches[String(mediaId)]?.[provider]?.[myInstanceId],
         );
         if (action.type === "tombstone") {
-          setMatches(tombstoneMatch(matches, mediaId, provider, now));
+          setMatches(
+            tombstoneMatch(matches, mediaId, provider, myInstanceId, now),
+          );
           livePush(["matches"]);
         } else if (action.type === "upsert") {
           setMatches(
@@ -3159,8 +3315,8 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
               matches,
               mediaId,
               provider,
-              action.mappedId,
               myInstanceId,
+              action.mappedId,
               now,
             ),
           );

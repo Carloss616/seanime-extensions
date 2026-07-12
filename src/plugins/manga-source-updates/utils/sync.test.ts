@@ -19,6 +19,8 @@ import {
   localizeWireMaps,
   mergeLocalBack,
   mergeMaps,
+  omitCells,
+  reinjectCells,
   syncMsu,
   toWireMaps,
   type WireMaps,
@@ -467,5 +469,39 @@ describe("syncMsu round-trip (multi-file)", () => {
     expect(res.pushed).toBe(false);
     expect(res.changedFiles).toEqual([]);
     expect(calls.some((c) => c.method === "PATCH")).toBe(false);
+  });
+});
+
+describe("omitCells / reinjectCells", () => {
+  const map = {
+    "1": { asura: { latest: 100 }, comick: { latest: 5 } },
+    "2": { mangadex: { latest: 9 } },
+  };
+  const pairs = new Set(["1\0asura"]);
+
+  test("omitCells drops only the listed (mediaId, provider) cells", () => {
+    expect(omitCells(map, pairs)).toEqual({
+      "1": { comick: { latest: 5 } },
+      "2": { mangadex: { latest: 9 } },
+    });
+  });
+
+  test("omitCells with empty set returns the map untouched", () => {
+    expect(omitCells(map, new Set())).toBe(map);
+  });
+
+  test("reinjectCells restores omitted cells from the source, overwriting", () => {
+    const merged = {
+      "1": { asura: { latest: 50 }, comick: { latest: 5 } }, // asura came back wrong
+      "2": { mangadex: { latest: 9 } },
+    };
+    expect(reinjectCells(merged, map, pairs)["1"].asura).toEqual({
+      latest: 100,
+    });
+  });
+
+  test("reinjectCells skips a pair absent from the source", () => {
+    const merged = { "2": { mangadex: { latest: 9 } } };
+    expect(reinjectCells(merged, {}, pairs)).toEqual(merged);
   });
 });

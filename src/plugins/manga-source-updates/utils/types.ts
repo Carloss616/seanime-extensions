@@ -49,6 +49,11 @@ export interface StoredResult extends DigestWire {
   sources: number; // DERIVED — how many sources have this manga (matched, non-excluded)
   newSources?: number; // DERIVED — of those, how many have unread chapters (drives the M in "+N · M")
   kind: ResultKind; // DERIVED
+  // LOCAL — ms epoch of the last scan, drives the TTL skip. Kept OUT of
+  // DigestWire so it never syncs: `updatedAt` (synced) bumps only when a synced
+  // field (title/cover/read) changes, while this bumps every scan. Splitting
+  // them stops the digest gist file from churning on every scan.
+  lastScannedAt?: number;
 }
 
 export type ResultRowMedia = Pick<StoredResult, "title" | "cover">;
