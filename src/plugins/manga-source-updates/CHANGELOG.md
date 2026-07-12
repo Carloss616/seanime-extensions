@@ -5,6 +5,24 @@ All notable changes to this extension are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-07-12
+
+### Added
+- Manual-match divergence: when two devices matched the same source to different series (or one removed the match), the plugin now **surfaces** the disagreement instead of silently forcing one side to win — a warn pill on the source detail rows and a ⚠ on the chapter-list "New on" chips. seanime's match state is per-install and can't converge, so matches are no longer merged into one shared value.
+
+### Changed
+- Live sync: manual edits (exclude / include / clear exclusions / match) now push to the Gist the instant you make them, and scans push their maps at the end (or on cancel) — no longer only on a full sync. Pulls still merge every file.
+- Manual matches are tracked per-device: removing a match on one machine is no longer resurrected by another machine that still holds its own match.
+- The scan-summaries Gist file was renamed `seanime-msu-summaries.json` → `seanime-msu-digest.json` (now the head/discovery file), and only the device-invariant fields (title / cover / read) sync — a machine with a different provider set no longer churns the Gist on every scan.
+- "Force rescan" and "Clear exclusions" now go through the same confirmation prompt as a full scan.
+
+### Fixed
+- Device-flow "Connect GitHub" login now works out of the box (shared public OAuth client) and shows a loading state while signing in — it was inert behind a placeholder client id.
+- Library-card badges could stay invisible after scrolling: seanime remounts a card as a new element in its lazy grid, and the badge was appended to the detached node. The badge now targets the current card element.
+- Sub-line badges and links (status pill, ⚠, Open ↗ / Open →) drifted below plain items in tray rows; they now align on a single centered baseline.
+- A single-source rescan showed a progress bar frozen at 0% until it snapped to 100%; it now animates an indeterminate bar.
+- A deleted sync Gist self-heals (re-provisions on the next sync) instead of erroring.
+
 ## [1.7.0] - 2026-07-11
 
 ### Added
