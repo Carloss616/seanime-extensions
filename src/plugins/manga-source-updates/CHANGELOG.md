@@ -5,6 +5,15 @@ All notable changes to this extension are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-07-12
+
+### Changed
+- The Sync section now shows connection state as a badge (Connected / Synced · via GitHub login | PAT) beside the "Sync" label, and its actions ("Sync now", Disconnect) moved into a ⋮ menu to the right of the status.
+
+### Fixed
+- Disconnect now updates the tray immediately — it previously appeared to do nothing until you closed and reopened the tray.
+- Disconnect is no longer offered when connected only via a PAT (a PAT is cleared in the config field, not from the tray).
+
 ## [1.8.0] - 2026-07-12
 
 ### Added

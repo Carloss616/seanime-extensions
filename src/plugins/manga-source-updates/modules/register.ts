@@ -1,7 +1,7 @@
 import { joinDividers } from "../../../_components/divider";
 import { createDomDecorator } from "../../../_components/dom-decorator";
 import { type EntryListRow, entryList } from "../../../_components/entry-list";
-import { CAPTION_STYLE, LABEL_STYLE } from "../../../_components/text";
+import { githubConnect } from "../../../_components/github-connect";
 import { trayHeader } from "../../../_components/tray-header";
 import { GistClient } from "../../../_utils/gist/client";
 import { GITHUB_CLIENT_ID } from "../../../_utils/gist/constants";
@@ -172,8 +172,14 @@ export const register = (ctx: $ui.Context) => {
   const myInstanceId = getInstanceId();
 
   // --- Phase 2 sync state ----------------------------------------------------
+  // Reactive mirror of the device-flow token so connect/disconnect re-render
+  // the tray ($storage reads aren't reactive). $storage stays authoritative for
+  // the hooks (separate runtimes) — both are written on connect/disconnect.
+  const oauthTok = ctx.state<string>(
+    ($storage.get<string>(K_OAUTH_TOKEN) ?? "").trim(),
+  );
   // Effective token: device-flow OAuth token wins, else the PAT config field.
-  const oauthToken = () => ($storage.get<string>(K_OAUTH_TOKEN) ?? "").trim();
+  const oauthToken = () => oauthTok.get();
   const patToken = () => ($getUserPreference("githubPat") ?? "").trim();
   const syncToken = () => oauthToken() || patToken();
   const hasSync = () => syncToken().length > 0;
@@ -404,6 +410,7 @@ export const register = (ctx: $ui.Context) => {
       });
       if (result.type === "token") {
         $storage.set(K_OAUTH_TOKEN, result.token);
+        oauthTok.set(result.token);
         ctx.toast.success("Connected to GitHub");
         void requestSync("all", "connected", true);
       } else if (result.type === "error") {
@@ -970,6 +977,7 @@ export const register = (ctx: $ui.Context) => {
 
   ctx.registerEventHandler("msu-sync-disconnect", () => {
     $storage.set(K_OAUTH_TOKEN, "");
+    oauthTok.set(""); // reactive: re-render even if syncedAt was already 0
     // Keep K_GIST_ID so re-connecting re-uses the same gist; clearing the token
     // is enough to stop syncing. (PAT is a config field the user manages.)
     syncedAt.set(0);
@@ -1386,91 +1394,34 @@ export const register = (ctx: $ui.Context) => {
   // (user code + "Open GitHub" link) so the user isn't shown stale controls.
   // The PAT config field remains a working auth path alongside device flow.
   function renderSyncSection(): unknown {
-    const connected = hasSync();
-
     const start = deviceStart.get();
-    if (start) {
-      return tray.stack(
-        [
-          tray.flex(
-            [
-              tray.text("Enter this code at GitHub", { style: LABEL_STYLE }),
-              tray.text(start.userCode, {
-                style: {
-                  fontSize: "1.25rem",
-                  fontWeight: "700",
-                  letterSpacing: "0.15em",
-                },
-              }),
-            ],
-            { direction: "column", gap: 1 },
-          ),
-          tray.anchor({
-            text: "Open GitHub ↗",
-            href: start.verificationUri,
-            target: "_blank",
-          }),
-          tray.text("Waiting for authorization…", { style: CAPTION_STYLE }),
-        ],
-        { gap: 2 },
-      );
-    }
-
+    const connected = hasSync();
     const via = oauthToken() ? "GitHub login" : patToken() ? "PAT" : "";
-    const last = syncedAt.get();
-    // Named to avoid shadowing the outer register-scope `status` scan-status
-    // state (this is the sync section's own status line).
-    const syncStatusLabel = !connected
-      ? "Not connected"
-      : syncing.get()
-        ? "Syncing…"
-        : last > 0
-          ? `Synced · via ${via}`
-          : `Connected · via ${via}`;
 
-    const rows: unknown[] = [
-      tray.flex(
-        [
-          tray.text("Sync", { style: LABEL_STYLE }),
-          tray.text(syncStatusLabel, { style: CAPTION_STYLE }),
-        ],
-        { direction: "column", gap: 1 },
-      ),
-    ];
-
-    const actions: unknown[] = [];
-    if (connected) {
-      actions.push(
-        tray.button(syncing.get() ? "⏳ Syncing…" : "↻ Sync now", {
+    // Shared connect flow; "Sync now" rides along as a connected-state action.
+    return githubConnect(tray, {
+      deviceStart: start,
+      title: "🌐 Sync",
+      connecting: connecting.get(),
+      connected,
+      // Only the device-flow token is clearable here; a PAT lives in config.
+      disconnectable: !!oauthToken(),
+      connectEvent: "msu-connect",
+      disconnectEvent: "msu-sync-disconnect",
+      status: {
+        connected,
+        syncing: syncing.get(),
+        lastSyncedAt: syncedAt.get(),
+        via,
+      },
+      connectedActions: [
+        {
+          label: syncing.get() ? "Syncing…" : "Sync now",
           onClick: "msu-sync-now",
-          size: "sm",
           disabled: syncing.get(),
-        }),
-        tray.button("Disconnect", {
-          onClick: "msu-sync-disconnect",
-          size: "sm",
-          intent: "alert-subtle",
-        }),
-      );
-    } else {
-      // Starts the device flow (connectGitHub), which then swaps this section
-      // to the device-code view with a working "Open GitHub ↗" anchor. We
-      // can't auto-open the tab on this click: an anchor's href is suppressed
-      // when it also carries onClick, seanime has no open-URL API, and a
-      // deferred popup after the async device-code fetch would be blocked.
-      // The placeholder-guard toasts instead if no OAuth App client_id is
-      // configured yet; the PAT config field lights up `connected` either way.
-      actions.push(
-        tray.button(connecting.get() ? "⏳ Connecting…" : "Connect GitHub", {
-          onClick: "msu-connect",
-          size: "sm",
-          disabled: connecting.get(),
-        }),
-      );
-    }
-    rows.push(tray.flex(actions, { gap: 2 }));
-
-    return tray.stack(rows, { gap: 2 });
+        },
+      ],
+    });
   }
 
   // Per-manga detail view: every probed source split into AVAILABLE / EXCLUDED

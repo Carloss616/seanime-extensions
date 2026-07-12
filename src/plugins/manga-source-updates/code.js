@@ -176,7 +176,7 @@ var register = (...args) => {
       }
       return initialsCover(tray, title);
     };
-    const SEG_BOX = {
+    const SEG_BOX2 = {
       display: "inline-flex",
       alignItems: "center",
       height: "1.2rem",
@@ -185,7 +185,7 @@ var register = (...args) => {
     const dotSep = () =>
       tray.span("·", {
         style: {
-          ...SEG_BOX,
+          ...SEG_BOX2,
           opacity: "0.35",
           fontSize: "0.75rem",
           margin: "0 2px",
@@ -196,7 +196,7 @@ var register = (...args) => {
       if (row.year != null) {
         segs.push(
           tray.span(String(row.year), {
-            style: { ...SEG_BOX, opacity: "0.55", fontSize: "0.75rem" },
+            style: { ...SEG_BOX2, opacity: "0.55", fontSize: "0.75rem" },
           }),
         );
       }
@@ -222,12 +222,12 @@ var register = (...args) => {
       if (row.chapter != null && row.chapter !== "") {
         segs.push(
           tray.span(`c.${row.chapter}`, {
-            style: { ...SEG_BOX, opacity: "0.7", fontSize: "0.75rem" },
+            style: { ...SEG_BOX2, opacity: "0.7", fontSize: "0.75rem" },
           }),
         );
       }
       const linkStyle = {
-        ...SEG_BOX,
+        ...SEG_BOX2,
         background: "transparent",
         border: "none",
         padding: "0",
@@ -388,6 +388,139 @@ var register = (...args) => {
       for (const row of cfg.rows) out.push(entryRow(row));
     }
     return tray.stack(out, { gap: 2 });
+  }
+  function connectStatus(o) {
+    if (!o.connected)
+      return {
+        badge: { label: "Not connected", intent: "gray" },
+        text: null,
+        via: "",
+      };
+    if (o.syncing) return { badge: null, text: "Syncing…", via: "" };
+    const label = o.lastSyncedAt && o.lastSyncedAt > 0 ? "Synced" : "Connected";
+    return {
+      badge: { label, intent: "success" },
+      text: null,
+      via: o.via ?? "",
+    };
+  }
+  var SEG_BOX = {
+    display: "inline-flex",
+    alignItems: "center",
+    height: "1.2rem",
+    lineHeight: "1",
+  };
+  function statusRow(tray, s) {
+    const segs = [];
+    if (s.badge) {
+      segs.push(
+        tray.badge(s.badge.label, { intent: s.badge.intent, size: "sm" }),
+      );
+    }
+    if (s.text) {
+      segs.push(
+        tray.span(s.text, {
+          style: { ...SEG_BOX, fontSize: "0.7rem", opacity: "0.7" },
+        }),
+      );
+    }
+    if (s.via) {
+      segs.push(
+        tray.span(`· via ${s.via}`, {
+          style: {
+            ...SEG_BOX,
+            fontSize: "0.7rem",
+            opacity: "0.55",
+            marginLeft: "6px",
+          },
+        }),
+      );
+    }
+    return tray.flex(segs, {
+      gap: 0,
+      style: { alignItems: "center", lineHeight: "1" },
+    });
+  }
+  function deviceCodePrompt(tray, start) {
+    return tray.stack(
+      [
+        tray.flex(
+          [
+            tray.text("Enter this code at GitHub", { style: CAPTION_STYLE }),
+            tray.text(start.userCode, {
+              style: {
+                fontSize: "1.25rem",
+                fontWeight: "700",
+                letterSpacing: "0.15em",
+              },
+            }),
+          ],
+          { direction: "column", gap: 1 },
+        ),
+        tray.anchor({
+          text: "Open GitHub ↗",
+          href: start.verificationUri,
+          target: "_blank",
+        }),
+        tray.text("Waiting for authorization…", { style: CAPTION_STYLE }),
+      ],
+      { gap: 2 },
+    );
+  }
+  function actionsMenu(tray, o) {
+    const items = (o.connectedActions ?? []).map((a) =>
+      tray.dropdownMenuItem(tray.text(a.label), {
+        onClick: a.onClick,
+        disabled: a.disabled,
+      }),
+    );
+    if (o.disconnectable ?? o.connected) {
+      items.push(
+        tray.dropdownMenuItem(tray.text("Disconnect"), {
+          onClick: o.disconnectEvent,
+        }),
+      );
+    }
+    if (!items.length) return null;
+    return tray.dropdownMenu({
+      trigger: tray.button("⋮", { size: "sm", intent: "gray-subtle" }),
+      items,
+    });
+  }
+  function githubConnect(tray, o) {
+    if (o.deviceStart) return deviceCodePrompt(tray, o.deviceStart);
+    const rows = [];
+    const status = o.status ? statusRow(tray, connectStatus(o.status)) : null;
+    const menu = o.connected ? actionsMenu(tray, o) : null;
+    if (o.title || status || menu) {
+      const header = [
+        tray.div(o.title ? [tray.text(o.title, { style: LABEL_STYLE })] : [], {
+          style: { flex: "1", alignSelf: "center" },
+        }),
+      ];
+      if (status) header.push(status);
+      if (menu) header.push(menu);
+      rows.push(tray.flex(header, { gap: 2, style: { alignItems: "center" } }));
+    }
+    if (!o.connected) {
+      rows.push(
+        tray.flex(
+          [
+            tray.button(o.connecting ? "Connecting…" : "Connect GitHub", {
+              onClick: o.connectEvent,
+              size: "sm",
+              intent: "primary",
+              loading: o.connecting,
+            }),
+          ],
+          { gap: 2 },
+        ),
+      );
+      if (o.connectHint) {
+        rows.push(tray.text(o.connectHint, { style: CAPTION_STYLE }));
+      }
+    }
+    return tray.stack(rows, { gap: 2 });
   }
   var ICON_PX = 36;
   function trayHeader(tray, opts = {}) {
@@ -1754,7 +1887,8 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     const pendingConfirm = ctx.state(null);
     const lastMappingSigByMedia = {};
     const myInstanceId = getInstanceId();
-    const oauthToken = () => ($storage.get(K_OAUTH_TOKEN) ?? "").trim();
+    const oauthTok = ctx.state(($storage.get(K_OAUTH_TOKEN) ?? "").trim());
+    const oauthToken = () => oauthTok.get();
     const patToken = () => ($getUserPreference("githubPat") ?? "").trim();
     const syncToken = () => oauthToken() || patToken();
     const hasSync = () => syncToken().length > 0;
@@ -1906,6 +2040,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         });
         if (result.type === "token") {
           $storage.set(K_OAUTH_TOKEN, result.token);
+          oauthTok.set(result.token);
           ctx.toast.success("Connected to GitHub");
           requestSync("all", "connected", true);
         } else if (result.type === "error") {
@@ -2344,6 +2479,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     });
     ctx.registerEventHandler("msu-sync-disconnect", () => {
       $storage.set(K_OAUTH_TOKEN, "");
+      oauthTok.set("");
       syncedAt.set(0);
       ctx.toast.info(
         "Disconnected. (Clear the PAT config field to fully stop.)",
@@ -2660,77 +2796,31 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       );
     }
     function renderSyncSection() {
-      const connected = hasSync();
       const start = deviceStart.get();
-      if (start) {
-        return tray.stack(
-          [
-            tray.flex(
-              [
-                tray.text("Enter this code at GitHub", { style: LABEL_STYLE }),
-                tray.text(start.userCode, {
-                  style: {
-                    fontSize: "1.25rem",
-                    fontWeight: "700",
-                    letterSpacing: "0.15em",
-                  },
-                }),
-              ],
-              { direction: "column", gap: 1 },
-            ),
-            tray.anchor({
-              text: "Open GitHub ↗",
-              href: start.verificationUri,
-              target: "_blank",
-            }),
-            tray.text("Waiting for authorization…", { style: CAPTION_STYLE }),
-          ],
-          { gap: 2 },
-        );
-      }
+      const connected = hasSync();
       const via = oauthToken() ? "GitHub login" : patToken() ? "PAT" : "";
-      const last = syncedAt.get();
-      const syncStatusLabel = !connected
-        ? "Not connected"
-        : syncing.get()
-          ? "Syncing…"
-          : last > 0
-            ? `Synced · via ${via}`
-            : `Connected · via ${via}`;
-      const rows = [
-        tray.flex(
-          [
-            tray.text("Sync", { style: LABEL_STYLE }),
-            tray.text(syncStatusLabel, { style: CAPTION_STYLE }),
-          ],
-          { direction: "column", gap: 1 },
-        ),
-      ];
-      const actions = [];
-      if (connected) {
-        actions.push(
-          tray.button(syncing.get() ? "⏳ Syncing…" : "↻ Sync now", {
+      return githubConnect(tray, {
+        deviceStart: start,
+        title: "\uD83C\uDF10 Sync",
+        connecting: connecting.get(),
+        connected,
+        disconnectable: !!oauthToken(),
+        connectEvent: "msu-connect",
+        disconnectEvent: "msu-sync-disconnect",
+        status: {
+          connected,
+          syncing: syncing.get(),
+          lastSyncedAt: syncedAt.get(),
+          via,
+        },
+        connectedActions: [
+          {
+            label: syncing.get() ? "Syncing…" : "Sync now",
             onClick: "msu-sync-now",
-            size: "sm",
             disabled: syncing.get(),
-          }),
-          tray.button("Disconnect", {
-            onClick: "msu-sync-disconnect",
-            size: "sm",
-            intent: "alert-subtle",
-          }),
-        );
-      } else {
-        actions.push(
-          tray.button(connecting.get() ? "⏳ Connecting…" : "Connect GitHub", {
-            onClick: "msu-connect",
-            size: "sm",
-            disabled: connecting.get(),
-          }),
-        );
-      }
-      rows.push(tray.flex(actions, { gap: 2 }));
-      return tray.stack(rows, { gap: 2 });
+          },
+        ],
+      });
     }
     function renderDetail() {
       const id = detailId.get();
