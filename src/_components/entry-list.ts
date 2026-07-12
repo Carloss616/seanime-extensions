@@ -121,9 +121,26 @@ export function entryList(tray: $ui.Tray, cfg: EntryListConfig): unknown {
     return initialsCover(tray, title);
   };
 
+  // seanime's tray.badge is a fixed-height (h-[1.2rem]) inline-flex box that
+  // optically centers its glyph. Raw text (spans, the collapsed link/button)
+  // rides a line-height:1.5 line box instead, so under the row's align-items:
+  // center its glyph lands ~1-2px off the badge center — the misalignment.
+  // Give every non-badge segment the SAME box as the badge so all centers match.
+  const SEG_BOX = {
+    display: "inline-flex",
+    alignItems: "center",
+    height: "1.2rem",
+    lineHeight: "1",
+  };
+
   const dotSep = () =>
     tray.span("·", {
-      style: { opacity: "0.35", fontSize: "0.75rem", margin: "0 2px" },
+      style: {
+        ...SEG_BOX,
+        opacity: "0.35",
+        fontSize: "0.75rem",
+        margin: "0 2px",
+      },
     });
 
   const subLineSegments = (row: EntryListRow): unknown[] => {
@@ -131,7 +148,7 @@ export function entryList(tray: $ui.Tray, cfg: EntryListConfig): unknown {
     if (row.year != null) {
       segs.push(
         tray.span(String(row.year), {
-          style: { opacity: "0.55", fontSize: "0.75rem" },
+          style: { ...SEG_BOX, opacity: "0.55", fontSize: "0.75rem" },
         }),
       );
     }
@@ -157,21 +174,20 @@ export function entryList(tray: $ui.Tray, cfg: EntryListConfig): unknown {
     if (row.chapter != null && row.chapter !== "") {
       segs.push(
         tray.span(`c.${row.chapter}`, {
-          style: { opacity: "0.7", fontSize: "0.75rem" },
+          style: { ...SEG_BOX, opacity: "0.7", fontSize: "0.75rem" },
         }),
       );
     }
     // Open ↗ (external <a>) and Open → (in-place <button>) share one style so
     // they read as a uniform pair AND match the metadata scale (year / c.N).
-    // We do NOT change the button's `display` (that bloats its label size);
-    // instead we collapse its UI-Button_root box height/padding so its
-    // underline lines up with the inline anchor's. `fontSize: 0.75rem` keeps
-    // both at the same small size as the rest of the sub-line.
+    // Same fixed-height inline-flex box as SEG_BOX (and the badge) so their
+    // underline centers on the row exactly like every other segment — the
+    // old height:auto collapse left the Button/anchor line box a couple px off.
     const linkStyle: Record<string, string> = {
+      ...SEG_BOX,
       background: "transparent",
       border: "none",
       padding: "0",
-      height: "auto",
       minHeight: "0",
       fontSize: "0.75rem",
       fontWeight: "500",
@@ -227,9 +243,16 @@ export function entryList(tray: $ui.Tray, cfg: EntryListConfig): unknown {
             whiteSpace: "nowrap",
           },
         }),
+        // lineHeight:1 on the ROW is the real fix: a tooltip-wrapped badge is
+        // rendered by seanime inside a block <div class="w-fit"> that inherits
+        // the tray's line-height (1.5). That inflates the div's text strut past
+        // the 1.2rem badge, so the badge inside it aligns by baseline (not
+        // centered) and drifts vs. bare badges. Collapsing line-height here
+        // (it inherits into that wrapper we can't style) makes every child —
+        // wrapped or bare — center identically. SEG_BOX handles the plain spans.
         tray.flex(subLineChildren, {
           gap: 0,
-          style: { alignItems: "center" },
+          style: { alignItems: "center", lineHeight: "1" },
         }),
       ],
       // gap: 1 (4px) between title and its metadata sub-line.

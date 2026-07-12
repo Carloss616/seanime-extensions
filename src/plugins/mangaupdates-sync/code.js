@@ -263,16 +263,27 @@ var register = (...args) => {
       }
       return initialsCover(tray, title);
     };
+    const SEG_BOX = {
+      display: "inline-flex",
+      alignItems: "center",
+      height: "1.2rem",
+      lineHeight: "1",
+    };
     const dotSep = () =>
       tray.span("·", {
-        style: { opacity: "0.35", fontSize: "0.75rem", margin: "0 2px" },
+        style: {
+          ...SEG_BOX,
+          opacity: "0.35",
+          fontSize: "0.75rem",
+          margin: "0 2px",
+        },
       });
     const subLineSegments = (row) => {
       const segs = [];
       if (row.year != null) {
         segs.push(
           tray.span(String(row.year), {
-            style: { opacity: "0.55", fontSize: "0.75rem" },
+            style: { ...SEG_BOX, opacity: "0.55", fontSize: "0.75rem" },
           }),
         );
       }
@@ -298,15 +309,15 @@ var register = (...args) => {
       if (row.chapter != null && row.chapter !== "") {
         segs.push(
           tray.span(`c.${row.chapter}`, {
-            style: { opacity: "0.7", fontSize: "0.75rem" },
+            style: { ...SEG_BOX, opacity: "0.7", fontSize: "0.75rem" },
           }),
         );
       }
       const linkStyle = {
+        ...SEG_BOX,
         background: "transparent",
         border: "none",
         padding: "0",
-        height: "auto",
         minHeight: "0",
         fontSize: "0.75rem",
         fontWeight: "500",
@@ -361,7 +372,7 @@ var register = (...args) => {
           }),
           tray.flex(subLineChildren, {
             gap: 0,
-            style: { alignItems: "center" },
+            style: { alignItems: "center", lineHeight: "1" },
           }),
         ],
         { gap: 1, style: { flex: "1", minWidth: "0" } },
