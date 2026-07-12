@@ -159,10 +159,13 @@ export const register = (ctx: $ui.Context) => {
   // mediaId of the manga entry the user is currently viewing (0 = not on one),
   // tracked via onNavigate so opening the tray on a manga page jumps to it.
   const currentMediaId = ctx.state<number>(0);
-  // Confirm-before-global-scan modal (opened from the library page's "Refresh
-  // sources" menu, which fires with no confirmation of its own). Lives in the
-  // tray render tree, so opening it also opens the tray.
-  const confirmGlobalOpen = ctx.state<boolean>(false);
+  // Confirm-before-run modal, shared by all three whole-list actions (plain
+  // scan, force rescan, clear exclusions) — each fires with no confirmation of
+  // its own (the library "Refresh sources" menu, the tray "…" dropdown items).
+  // Holds which action is pending, or null when closed. Lives in the tray
+  // render tree, so opening it also opens the tray.
+  type ConfirmKind = "scan" | "force" | "clear";
+  const pendingConfirm = ctx.state<ConfirmKind | null>(null);
 
   // Last seen manual-mapping sig per manga — detect save/remove in the modal.
   const lastMappingSigByMedia: Record<number, string | undefined> = {};
@@ -882,37 +885,73 @@ export const register = (ctx: $ui.Context) => {
     return false;
   };
 
-  // Open the confirm-before-global-scan modal (from the library "Refresh sources"
-  // menu). Guarded so repeated clicks while a scan runs just toast.
-  const requestGlobalScan = () => {
+  // Per-action confirm copy + the work each one runs. clearExclusions/runScan
+  // are hoisted declarations, so referencing them here (before their line) is
+  // fine — .run only fires on confirmation, long after init.
+  const CONFIRM: Record<
+    ConfirmKind,
+    { title: string; subtitle: string; button: string; run: () => void }
+  > = {
+    scan: {
+      title: "Refresh all sources?",
+      subtitle:
+        "Scans every manga in your reading list across all installed sources — this can take a while.",
+      button: "↻ Scan all",
+      run: () => void runScan(false),
+    },
+    force: {
+      title: "Force rescan all sources?",
+      subtitle:
+        "Re-probes every manga from scratch, ignoring cached results — this can take a while.",
+      button: "↻ Force rescan",
+      run: () => void runScan(true),
+    },
+    clear: {
+      title: "Clear all exclusions?",
+      subtitle:
+        "Wipes every excluded/pinned source, then rediscovers all sources from scratch — this can take a while.",
+      button: "Clear & rescan",
+      run: () => {
+        clearExclusions();
+        ctx.toast.success("Exclusions cleared — rediscovering from scratch");
+        void runScan(true);
+      },
+    },
+  };
+
+  // Open the confirm modal for a whole-list action (from the library menu, the
+  // tray "↻ Scan", or the "…" dropdown). Guarded so repeated clicks while a
+  // scan runs just toast.
+  const requestConfirm = (kind: ConfirmKind) => {
     if (rejectIfBusy()) return;
-    confirmGlobalOpen.set(true);
+    pendingConfirm.set(kind);
     // The modal lives in the tray tree, so the tray must be open to show it.
     try {
       tray.open();
     } catch {
       /* tray unavailable (not pinned) — run without the modal as a fallback */
-      void runScan(false);
+      CONFIRM[kind].run();
     }
   };
 
   ctx.registerEventHandler("msu-gconfirm-close", () =>
-    confirmGlobalOpen.set(false),
+    pendingConfirm.set(null),
   );
   ctx.registerEventHandler("msu-gconfirm-run", () => {
-    confirmGlobalOpen.set(false);
+    const kind = pendingConfirm.get();
+    pendingConfirm.set(null);
+    if (!kind) return;
     if (rejectIfBusy()) return; // a scan slipped in while the modal was open
-    void runScan(false);
+    CONFIRM[kind].run();
   });
 
-  // Tray "↻ Scan" — route through the same confirm view as the library menu.
+  // Tray "↻ Scan" — route through the confirm view like the library menu.
   ctx.registerEventHandler("msu-scan", () => {
-    requestGlobalScan();
+    requestConfirm("scan");
   });
 
   ctx.registerEventHandler("msu-force", () => {
-    if (rejectIfBusy()) return;
-    void runScan(true);
+    requestConfirm("force");
   });
 
   ctx.registerEventHandler("msu-cancel", () => {
@@ -953,12 +992,9 @@ export const register = (ctx: $ui.Context) => {
   }
 
   // Global clear: wipe every exclusion + pin, then force-rescan the whole list
-  // so it rediscovers from 0 (cancellable via the panel).
+  // so it rediscovers from 0 (cancellable via the panel). Confirm first.
   ctx.registerEventHandler("msu-clear-excl", () => {
-    if (rejectIfBusy()) return;
-    clearExclusions();
-    ctx.toast.success("Exclusions cleared — rediscovering from scratch");
-    void runScan(true);
+    requestConfirm("clear");
   });
 
   ctx.registerEventHandler("msu-back", () => {
@@ -1456,14 +1492,14 @@ export const register = (ctx: $ui.Context) => {
       if (!div.diverges) return undefined;
       return div.reason === "different"
         ? {
-            label: "⚠ match ≠",
+            label: "⚠ ≠",
             tooltip:
-              "Matched to a different series on another device — this count may not line up.",
+              "Matched to a different series on another device — count may be off.",
           }
         : {
-            label: "⚠ match ?",
+            label: "⚠ ?",
             tooltip:
-              "Manually matched on another device (not here) — this count may not line up.",
+              "Manually matched on another device, not here — count may be off.",
           };
     };
     // This manga is being scanned right now. probingId is set synchronously when
@@ -1556,7 +1592,7 @@ export const register = (ctx: $ui.Context) => {
 
     const providers = ctx.manga.getProviders();
 
-    // Status pill for an available source: "+N new" once probed & matched (color
+    // Status pill for an available source: "+N" once probed & matched (color
     // by kind), else the word state ("not scanned" / "error" / "no match"). The
     // source's latest chapter rides the row's separate `c.{chapter}` slot.
     const sourceStatus = (
@@ -1571,7 +1607,7 @@ export const register = (ctx: $ui.Context) => {
       const newCount = unreadChapters(read, p.latest);
       const intent =
         newCount > 0 ? "success" : kind === "outdated" ? "warning" : "gray";
-      return { label: `+${newCount} new`, intent };
+      return { label: `+${newCount}`, intent };
     };
 
     // AVAILABLE row: every non-excluded provider (probed or not). status =
@@ -2296,7 +2332,7 @@ export const register = (ctx: $ui.Context) => {
         item.setAttribute("data-msu-refresh-hooked", "1");
         item.addEventListener("click", () => {
           if (!syncNativeButtons()) return; // native-button sync disabled
-          requestGlobalScan();
+          requestConfirm("scan");
         });
       } catch {
         /* couldn't hook this item */
@@ -2392,11 +2428,11 @@ export const register = (ctx: $ui.Context) => {
   // content (like the reference extension's overlay) instead of a native
   // tray.modal — a controlled tray.modal didn't reliably close on Cancel/confirm,
   // whereas a plain state toggle + re-render always does.
-  function renderGlobalConfirm(): unknown {
+  function renderGlobalConfirm(kind: ConfirmKind): unknown {
+    const cfg = CONFIRM[kind];
     const head = trayHeader(tray, {
-      title: "Refresh all sources?",
-      subtitle:
-        "Scans every manga in your reading list across all installed sources — this can take a while.",
+      title: cfg.title,
+      subtitle: cfg.subtitle,
     });
     const actionRow = tray.flex(
       [
@@ -2405,7 +2441,7 @@ export const register = (ctx: $ui.Context) => {
           size: "sm",
           intent: "gray-subtle",
         }),
-        tray.button("↻ Scan all", {
+        tray.button(cfg.button, {
           onClick: "msu-gconfirm-run",
           size: "sm",
           intent: "primary",
@@ -2436,7 +2472,8 @@ export const register = (ctx: $ui.Context) => {
   }
 
   tray.render(() => {
-    if (confirmGlobalOpen.get()) return renderGlobalConfirm();
+    const pc = pendingConfirm.get();
+    if (pc) return renderGlobalConfirm(pc);
     if (detailId.get() != null) return renderDetail();
 
     const header = trayHeader(tray, {

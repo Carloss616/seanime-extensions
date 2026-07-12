@@ -40,7 +40,7 @@ var register = (...args) => {
   }
   function createDomDecorator(ctx) {
     const locks = new Set();
-    const dirty = new Set();
+    const dirty = new Map();
     const observers = [];
     const passes = [];
     let stops = [];
@@ -69,7 +69,7 @@ var register = (...args) => {
     async function decorate(el, o) {
       const lk = `${o.marker}:${o.lockKey}`;
       if (locks.has(lk)) {
-        dirty.add(lk);
+        dirty.set(lk, { el, o });
         return;
       }
       locks.add(lk);
@@ -101,7 +101,11 @@ var register = (...args) => {
       } catch {
       } finally {
         locks.delete(lk);
-        if (dirty.delete(lk)) decorate(el, o);
+        const pending = dirty.get(lk);
+        if (pending) {
+          dirty.delete(lk);
+          decorate(pending.el, pending.o);
+        }
       }
     }
     function start() {
@@ -1747,7 +1751,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       setProbes(next);
     }
     const currentMediaId = ctx.state(0);
-    const confirmGlobalOpen = ctx.state(false);
+    const pendingConfirm = ctx.state(null);
     const lastMappingSigByMedia = {};
     const myInstanceId = getInstanceId();
     const oauthToken = () => ($storage.get(K_OAUTH_TOKEN) ?? "").trim();
@@ -2275,29 +2279,57 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       }
       return false;
     };
-    const requestGlobalScan = () => {
+    const CONFIRM = {
+      scan: {
+        title: "Refresh all sources?",
+        subtitle:
+          "Scans every manga in your reading list across all installed sources — this can take a while.",
+        button: "↻ Scan all",
+        run: () => void runScan(false),
+      },
+      force: {
+        title: "Force rescan all sources?",
+        subtitle:
+          "Re-probes every manga from scratch, ignoring cached results — this can take a while.",
+        button: "↻ Force rescan",
+        run: () => void runScan(true),
+      },
+      clear: {
+        title: "Clear all exclusions?",
+        subtitle:
+          "Wipes every excluded/pinned source, then rediscovers all sources from scratch — this can take a while.",
+        button: "Clear & rescan",
+        run: () => {
+          clearExclusions();
+          ctx.toast.success("Exclusions cleared — rediscovering from scratch");
+          runScan(true);
+        },
+      },
+    };
+    const requestConfirm = (kind) => {
       if (rejectIfBusy()) return;
-      confirmGlobalOpen.set(true);
+      pendingConfirm.set(kind);
       try {
         tray.open();
       } catch {
-        runScan(false);
+        CONFIRM[kind].run();
       }
     };
     ctx.registerEventHandler("msu-gconfirm-close", () =>
-      confirmGlobalOpen.set(false),
+      pendingConfirm.set(null),
     );
     ctx.registerEventHandler("msu-gconfirm-run", () => {
-      confirmGlobalOpen.set(false);
+      const kind = pendingConfirm.get();
+      pendingConfirm.set(null);
+      if (!kind) return;
       if (rejectIfBusy()) return;
-      runScan(false);
+      CONFIRM[kind].run();
     });
     ctx.registerEventHandler("msu-scan", () => {
-      requestGlobalScan();
+      requestConfirm("scan");
     });
     ctx.registerEventHandler("msu-force", () => {
-      if (rejectIfBusy()) return;
-      runScan(true);
+      requestConfirm("force");
     });
     ctx.registerEventHandler("msu-cancel", () => {
       if (!scanning.get()) return;
@@ -2329,10 +2361,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       livePush(["exclusions", "pins"]);
     }
     ctx.registerEventHandler("msu-clear-excl", () => {
-      if (rejectIfBusy()) return;
-      clearExclusions();
-      ctx.toast.success("Exclusions cleared — rediscovering from scratch");
-      runScan(true);
+      requestConfirm("clear");
     });
     ctx.registerEventHandler("msu-back", () => {
       const id = detailId.get();
@@ -2717,14 +2746,14 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         if (!div.diverges) return;
         return div.reason === "different"
           ? {
-              label: "⚠ match ≠",
+              label: "⚠ ≠",
               tooltip:
-                "Matched to a different series on another device — this count may not line up.",
+                "Matched to a different series on another device — count may be off.",
             }
           : {
-              label: "⚠ match ?",
+              label: "⚠ ?",
               tooltip:
-                "Manually matched on another device (not here) — this count may not line up.",
+                "Manually matched on another device, not here — count may be off.",
             };
       };
       const prog = scanProgress.get();
@@ -2810,7 +2839,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         const newCount = unreadChapters(read, p.latest);
         const intent =
           newCount > 0 ? "success" : kind === "outdated" ? "warning" : "gray";
-        return { label: `+${newCount} new`, intent };
+        return { label: `+${newCount}`, intent };
       };
       const availableRow = (pid) => {
         const p = probeByProvider[pid];
@@ -3368,7 +3397,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           item.setAttribute("data-msu-refresh-hooked", "1");
           item.addEventListener("click", () => {
             if (!syncNativeButtons()) return;
-            requestGlobalScan();
+            requestConfirm("scan");
           });
         } catch {}
         return;
@@ -3439,11 +3468,11 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       currentMediaId.get();
       dm.refresh();
     }, [results, probeCache, scanProgress, currentMediaId]);
-    function renderGlobalConfirm() {
+    function renderGlobalConfirm(kind) {
+      const cfg = CONFIRM[kind];
       const head = trayHeader(tray, {
-        title: "Refresh all sources?",
-        subtitle:
-          "Scans every manga in your reading list across all installed sources — this can take a while.",
+        title: cfg.title,
+        subtitle: cfg.subtitle,
       });
       const actionRow = tray.flex(
         [
@@ -3452,7 +3481,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
             size: "sm",
             intent: "gray-subtle",
           }),
-          tray.button("↻ Scan all", {
+          tray.button(cfg.button, {
             onClick: "msu-gconfirm-run",
             size: "sm",
             intent: "primary",
@@ -3480,7 +3509,8 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       }
     }
     tray.render(() => {
-      if (confirmGlobalOpen.get()) return renderGlobalConfirm();
+      const pc = pendingConfirm.get();
+      if (pc) return renderGlobalConfirm(pc);
       if (detailId.get() != null) return renderDetail();
       const header = trayHeader(tray, {
         subtitle:

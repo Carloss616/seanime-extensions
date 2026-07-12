@@ -78,7 +78,12 @@ export interface DomDecorator {
 
 export function createDomDecorator(ctx: $ui.Context): DomDecorator {
   const locks = new Set<string>();
-  const dirty = new Set<string>();
+  // Pending re-run per lock, holding the LATEST (el, opts) — not the first
+  // caller's. Critical for virtualized grids: when a card for the same lockKey
+  // unmounts + remounts (a NEW element) mid-decorate, the queued re-run must
+  // target the live element, not the detached one the first call captured (else
+  // the badge is appended to a dead node and never shows).
+  const dirty = new Map<string, { el: $ui.DOMElement; o: DecorateOptions }>();
   const observers: {
     selector: string;
     cb: (els: $ui.DOMElement[]) => void;
@@ -125,7 +130,7 @@ export function createDomDecorator(ctx: $ui.Context): DomDecorator {
   ): Promise<void> {
     const lk = `${o.marker}:${o.lockKey}`;
     if (locks.has(lk)) {
-      dirty.add(lk);
+      dirty.set(lk, { el, o });
       return;
     }
     locks.add(lk);
@@ -160,7 +165,11 @@ export function createDomDecorator(ctx: $ui.Context): DomDecorator {
       /* injection failed for this target — the next pass retries */
     } finally {
       locks.delete(lk);
-      if (dirty.delete(lk)) void decorate(el, o);
+      const pending = dirty.get(lk);
+      if (pending) {
+        dirty.delete(lk);
+        void decorate(pending.el, pending.o);
+      }
     }
   }
 
