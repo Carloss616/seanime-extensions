@@ -1,4 +1,4 @@
-import { K_EXCLUSIONS, K_PINS, K_PROBES, K_SUMMARIES } from "./constants";
+import { K_DIGEST, K_EXCLUSIONS, K_PINS, K_PROBES } from "./constants";
 import { getMatches, setMatches } from "./matches";
 import type { LocalMaps } from "./sync";
 import type {
@@ -8,10 +8,8 @@ import type {
   StoredResult,
 } from "./types";
 
-// Raw object read from $storage (empty object when absent/malformed). There is
-// NO shape migration on read — legacy (pre-timestamp / old-key) data is upgraded
-// once via the manual migration in migrate-temp.ts, so the running plugin always
-// sees current-shape records.
+// Raw object read from $storage (empty object when absent/malformed). No shape
+// migration on read — records are always written in the current shape.
 function readObj<T>(key: string): T {
   const raw = $storage.get<T>(key);
   return raw != null && typeof raw === "object" ? raw : ({} as T);
@@ -102,10 +100,10 @@ export function getPinnedView(): Record<string, string[]> {
 }
 
 export function getResults(): Record<string, StoredResult> {
-  return readObj<Record<string, StoredResult>>(K_SUMMARIES);
+  return readObj<Record<string, StoredResult>>(K_DIGEST);
 }
 export function setResults(map: Record<string, StoredResult>): void {
-  $storage.set(K_SUMMARIES, map);
+  $storage.set(K_DIGEST, map);
 }
 
 export function getProbes(): Record<string, Record<string, ProviderProbe>> {
@@ -121,7 +119,7 @@ export function setProbes(
 // included — the merge needs them) and one write of the merged-back result.
 export function snapshotLocalMaps(): LocalMaps {
   return {
-    summaries: getResults(),
+    digest: getResults(),
     exclusions: getExcluded(),
     pins: getPinned(),
     probes: getProbes(),
@@ -130,7 +128,7 @@ export function snapshotLocalMaps(): LocalMaps {
 }
 
 export function writeLocalMaps(maps: LocalMaps): void {
-  setResults(maps.summaries);
+  setResults(maps.digest);
   setExcluded(maps.exclusions);
   setPinned(maps.pins);
   setProbes(maps.probes);

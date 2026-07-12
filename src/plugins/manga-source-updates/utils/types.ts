@@ -26,18 +26,29 @@ export interface ExcludedRecord extends TimestampMeta {
 // providerId[] array per manga).
 export type PinRecord = TimestampMeta;
 
-// Persisted per-manga scan outcome — reused on a TTL-fresh rescan AND to
-// rehydrate the tray after a reload (the in-memory state is otherwise empty).
-export interface StoredResult {
+// The SYNCED half of a digest row: the only fields that are instance-INVARIANT
+// (the same on every device) and thus safe to put on the wire. This is exactly
+// what rides the gist digest file — see utils/sync.ts `projectDigest`. Syncing
+// anything else made the digest churn forever between instances.
+export interface DigestWire extends TimestampMeta {
   title: string;
   cover?: string;
-  latest: number; // highest chapter across the matched sources
   read: number;
-  sources: number; // how many sources have this manga (matched, non-excluded)
-  newSources?: number; // of those, how many have unread chapters (drives the M in "+N · M")
-  kind: ResultKind;
-  updatedAt: number; // ms epoch — when this row was last written (was checkedAt)
-  deletedAt?: number; // ms epoch — tombstone
+  // updatedAt (ms epoch — last written, was checkedAt) + deletedAt (tombstone)
+  // come from TimestampMeta.
+}
+
+// Persisted per-manga scan outcome — reused on a TTL-fresh rescan AND to
+// rehydrate the tray after a reload (the in-memory state is otherwise empty).
+// Extends the synced base with the DERIVED / instance-relative fields, computed
+// from THIS instance's installed providers + probes + live exclusions, so they
+// differ per device and are NEVER put on the wire. Recomputed locally by
+// buildResult / reconcileInactiveProviders from the synced `probes` map.
+export interface StoredResult extends DigestWire {
+  latest: number; // DERIVED — highest chapter across the matched sources
+  sources: number; // DERIVED — how many sources have this manga (matched, non-excluded)
+  newSources?: number; // DERIVED — of those, how many have unread chapters (drives the M in "+N · M")
+  kind: ResultKind; // DERIVED
 }
 
 export type ResultRowMedia = Pick<StoredResult, "title" | "cover">;

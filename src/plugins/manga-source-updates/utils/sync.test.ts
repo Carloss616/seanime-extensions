@@ -2,12 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { encodeMediaId } from "../../../_utils/custom-source-id";
 import { GistClient } from "../../../_utils/gist/client";
 import {
+  SYNC_FILE_DIGEST,
   SYNC_FILE_EXCLUSIONS,
   SYNC_FILE_MATCHES,
   SYNC_FILE_PINS,
   SYNC_FILE_PROBES,
-  SYNC_FILE_SUMMARIES,
-  SYNC_HEAD_FILE,
 } from "./constants";
 import type { SourceMap } from "./sources";
 import {
@@ -74,10 +73,10 @@ describe("mergeMaps", () => {
     expect(mergeMaps(local, remote).pins["1"].p.deletedAt).toBeUndefined();
   });
 
-  test("one-level summaries merges by effTs", () => {
+  test("one-level digest merges by effTs", () => {
     const local: WireMaps = {
       ...emptyLocalMaps(),
-      summaries: {
+      digest: {
         "1": {
           title: "L",
           latest: 1,
@@ -90,7 +89,7 @@ describe("mergeMaps", () => {
     };
     const remote: WireMaps = {
       ...emptyLocalMaps(),
-      summaries: {
+      digest: {
         "1": {
           title: "R",
           latest: 2,
@@ -101,7 +100,20 @@ describe("mergeMaps", () => {
         },
       },
     };
-    expect(mergeMaps(local, remote).summaries["1"].title).toBe("R");
+    expect(mergeMaps(local, remote).digest["1"].title).toBe("R");
+  });
+
+  test("tie on effTs → remote wins (converges instead of ping-ponging)", () => {
+    const local: WireMaps = {
+      ...emptyLocalMaps(),
+      pins: { "1": { p: { updatedAt: 10 } } },
+    };
+    const remote: WireMaps = {
+      ...emptyLocalMaps(),
+      pins: { "1": { p: { updatedAt: 5, deletedAt: 10 } } }, // effTs also 10
+    };
+    // Remote wins the tie → local adopts it, so the next push is byte-equal.
+    expect(mergeMaps(local, remote).pins["1"].p.deletedAt).toBe(10);
   });
 
   test("union of keys from both sides", () => {
@@ -121,20 +133,20 @@ describe("mergeMaps", () => {
 });
 
 describe("per-file serialize / parse", () => {
-  test("wireMapsToFiles produces one canonical file per map, summaries first", () => {
+  test("wireMapsToFiles produces one canonical file per map, digest first", () => {
     const files = wireMapsToFiles(emptyLocalMaps());
     expect(Object.keys(files)).toEqual([
-      SYNC_FILE_SUMMARIES,
+      SYNC_FILE_DIGEST,
       SYNC_FILE_EXCLUSIONS,
       SYNC_FILE_PINS,
       SYNC_FILE_PROBES,
       SYNC_FILE_MATCHES,
     ]);
-    expect(files[SYNC_FILE_SUMMARIES]).toBe("{}");
+    expect(files[SYNC_FILE_DIGEST]).toBe("{}");
   });
 
-  test("ALL_SYNC_FILES lists summaries first", () => {
-    expect(ALL_SYNC_FILES[0]).toBe(SYNC_FILE_SUMMARIES);
+  test("ALL_SYNC_FILES lists digest first", () => {
+    expect(ALL_SYNC_FILES[0]).toBe(SYNC_FILE_DIGEST);
     expect(ALL_SYNC_FILES).toHaveLength(5);
   });
 
@@ -152,6 +164,46 @@ describe("per-file serialize / parse", () => {
     );
   });
 
+  test("digest file carries ONLY invariant fields (derived counts never hit the wire)", () => {
+    const maps: WireMaps = {
+      ...emptyLocalMaps(),
+      digest: {
+        "1": {
+          title: "T",
+          cover: "c.png",
+          latest: 120,
+          read: 100,
+          sources: 5,
+          newSources: 2,
+          kind: "new",
+          updatedAt: 3,
+        },
+      },
+    };
+    const parsed = JSON.parse(wireMapsToFiles(maps)[SYNC_FILE_DIGEST]);
+    expect(Object.keys(parsed["1"]).sort()).toEqual([
+      "cover",
+      "read",
+      "title",
+      "updatedAt",
+    ]);
+    // Two instances with different provider sets serialize the SAME bytes.
+    const other: WireMaps = {
+      ...emptyLocalMaps(),
+      digest: {
+        "1": {
+          ...maps.digest["1"],
+          latest: 80,
+          sources: 3,
+          kind: "up-to-date",
+        },
+      },
+    };
+    expect(wireMapsToFiles(maps)[SYNC_FILE_DIGEST]).toBe(
+      wireMapsToFiles(other)[SYNC_FILE_DIGEST],
+    );
+  });
+
   test("empty inner map drops out (so it doesn't look changed vs. an absent key)", () => {
     const withEmpty: WireMaps = { ...emptyLocalMaps(), pins: { "5": {} } };
     expect(wireMapsToFiles(withEmpty)[SYNC_FILE_PINS]).toBe("{}");
@@ -160,7 +212,7 @@ describe("per-file serialize / parse", () => {
   test("files round-trip back to maps (updatedAt preserved)", () => {
     const maps: WireMaps = {
       ...emptyLocalMaps(),
-      summaries: {
+      digest: {
         "1": {
           title: "T",
           latest: 0,
@@ -185,13 +237,13 @@ describe("per-file serialize / parse", () => {
       },
     };
     const back = filesToWireMaps(wireMapsToFiles(maps));
-    expect(back.summaries["1"].updatedAt).toBe(3);
+    expect(back.digest["1"].updatedAt).toBe(3);
     expect(back.probes["9"].p.updatedAt).toBe(7);
   });
 
   test("filesToWireMaps tolerates empty / malformed files", () => {
     expect(filesToWireMaps({})).toEqual(emptyLocalMaps());
-    expect(filesToWireMaps({ [SYNC_FILE_SUMMARIES]: "not json" })).toEqual(
+    expect(filesToWireMaps({ [SYNC_FILE_DIGEST]: "not json" })).toEqual(
       emptyLocalMaps(),
     );
   });
@@ -330,7 +382,7 @@ describe("ensureGist", () => {
   test("discovers by the head filename when no id is stored", async () => {
     const { client } = scriptedClient({
       "GET https://api.github.com/gists": () => [
-        { id: "found", files: { [SYNC_HEAD_FILE]: {} } },
+        { id: "found", files: { [SYNC_FILE_DIGEST]: {} } },
       ],
     });
     let stored: string | undefined;
@@ -361,8 +413,8 @@ describe("ensureGist", () => {
     expect(stored).toBe("new");
     const post = calls.find((c) => c.method === "POST");
     const body = JSON.parse(post?.body ?? "{}");
-    // Only the head (summaries) file is seeded on create.
-    expect(Object.keys(body.files)).toEqual([SYNC_HEAD_FILE]);
+    // Only the head (digest) file is seeded on create.
+    expect(Object.keys(body.files)).toEqual([SYNC_FILE_DIGEST]);
   });
 });
 

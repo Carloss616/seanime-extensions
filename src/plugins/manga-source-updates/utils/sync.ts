@@ -1,16 +1,16 @@
 import type { GistClient } from "../../../_utils/gist/client";
 import {
+  SYNC_FILE_DIGEST,
   SYNC_FILE_EXCLUSIONS,
   SYNC_FILE_MATCHES,
   SYNC_FILE_PINS,
   SYNC_FILE_PROBES,
-  SYNC_FILE_SUMMARIES,
-  SYNC_HEAD_FILE,
 } from "./constants";
 import type { ManualMatch } from "./matches";
 import type { SourceMap } from "./sources";
 import { fromWireKey, toWireKey } from "./sync-keys";
 import type {
+  DigestWire,
   ExcludedRecord,
   PinRecord,
   ProviderProbe,
@@ -19,8 +19,8 @@ import type {
 } from "./types";
 
 // The five sync maps. Field names match the K_* $storage keys
-// (summaries/exclusions/pins/probes/matches) so the wire layout, the storage
-// layer, and the gist file names all read the same. `summaries` is one-level
+// (digest/exclusions/pins/probes/matches) so the wire layout, the storage
+// layer, and the gist file names all read the same. `digest` is one-level
 // (mediaId → row); the rest are two-level (mediaId → providerId → record).
 //
 // LocalMaps is keyed by this instance's mediaId (as held in $storage); WireMaps
@@ -28,7 +28,7 @@ import type {
 // number-string, custom-source → cs:manifestId:localId). Distinct aliases keep
 // the push/pull boundary legible even though the shapes are identical.
 export interface LocalMaps {
-  summaries: Record<string, StoredResult>;
+  digest: Record<string, StoredResult>;
   exclusions: Record<string, Record<string, ExcludedRecord>>;
   pins: Record<string, Record<string, PinRecord>>;
   probes: Record<string, Record<string, ProviderProbe>>;
@@ -36,18 +36,22 @@ export interface LocalMaps {
 }
 export type WireMaps = LocalMaps;
 
+// A syncable map/section. Used to scope a push to only the file(s) an edit
+// touched (manual edits push live; scans push their own sections at the end).
+export type SyncSection = keyof LocalMaps;
+
 export function emptyLocalMaps(): LocalMaps {
-  return { summaries: {}, exclusions: {}, pins: {}, probes: {}, matches: {} };
+  return { digest: {}, exclusions: {}, pins: {}, probes: {}, matches: {} };
 }
 
 // Sync gist layout: ONE gist, one file per map (so no single file grows huge).
-// SUMMARIES is listed FIRST (the head/discovery file). `level` = key depth.
+// DIGEST is listed FIRST (the head/discovery file). `level` = key depth.
 export const SYNC_FILES: Array<{
   section: keyof LocalMaps;
   file: string;
   level: 1 | 2;
 }> = [
-  { section: "summaries", file: SYNC_FILE_SUMMARIES, level: 1 },
+  { section: "digest", file: SYNC_FILE_DIGEST, level: 1 },
   { section: "exclusions", file: SYNC_FILE_EXCLUSIONS, level: 2 },
   { section: "pins", file: SYNC_FILE_PINS, level: 2 },
   { section: "probes", file: SYNC_FILE_PROBES, level: 2 },
@@ -67,8 +71,12 @@ export function effTs(rec: TimestampMeta): number {
 function pick<T extends TimestampMeta>(l: T | undefined, r: T | undefined): T {
   if (!l) return { ...(r as T) };
   if (!r) return { ...l };
-  // Tie → local wins (deterministic; MSU has no monotonic axis to break ties on).
-  return effTs(l) >= effTs(r) ? { ...l } : { ...r };
+  // Tie → REMOTE wins (deterministic; MSU has no monotonic axis to break ties
+  // on). Remote-wins is what makes ties CONVERGE: on a tie the local side adopts
+  // remote's content, so its next serialize is byte-equal to remote and no
+  // further push fires. Local-wins would ping-pong — each instance keeps
+  // re-pushing its own version of a tied record forever.
+  return effTs(l) > effTs(r) ? { ...l } : { ...r };
 }
 
 function mergeOneLevel<T extends TimestampMeta>(
@@ -95,7 +103,7 @@ function mergeTwoLevel<T extends TimestampMeta>(
 
 export function mergeMaps(local: WireMaps, remote: WireMaps): WireMaps {
   return {
-    summaries: mergeOneLevel(local.summaries, remote.summaries),
+    digest: mergeOneLevel(local.digest, remote.digest),
     exclusions: mergeTwoLevel(local.exclusions, remote.exclusions),
     pins: mergeTwoLevel(local.pins, remote.pins),
     probes: mergeTwoLevel(local.probes, remote.probes),
@@ -140,11 +148,49 @@ function serializeSection(map: unknown, level: 1 | 2): string {
   return JSON.stringify(canon, null, 2);
 }
 
-// Each map → its own canonical gist-file content. summaries first.
+// The ONLY digest fields that are instance-INVARIANT and thus safe to sync.
+// `latest`, `sources`, `newSources` and `kind` are DERIVED from each instance's
+// own installed providers + probes + live exclusions, so a 3-source machine and
+// a 5-source machine legitimately disagree on them. Syncing those made
+// seanime-msu-digest.json churn forever, ping-ponging between each instance's
+// provider count. They ride the wire NOWHERE — every instance recomputes them
+// locally (buildResult / reconcileInactiveProviders) from the synced `probes`
+// map. Keep this list to fields that are the same on every device.
+const DIGEST_WIRE_FIELDS = [
+  "title",
+  "cover",
+  "read",
+  "updatedAt",
+  "deletedAt",
+] as const satisfies (keyof DigestWire)[];
+
+// Strip a digest record down to its syncable (invariant) fields — a DigestWire.
+// Dropping the derived fields here is what keeps the digest file byte-stable
+// across instances with different provider sets.
+function projectDigestRecord(r: DigestWire): DigestWire {
+  const out: Record<string, unknown> = {};
+  for (const f of DIGEST_WIRE_FIELDS) {
+    if (r[f] != null) out[f] = r[f];
+  }
+  return out as unknown as DigestWire;
+}
+
+function projectDigest(
+  map: Record<string, StoredResult>,
+): Record<string, DigestWire> {
+  const out: Record<string, DigestWire> = {};
+  for (const [k, r] of Object.entries(map)) out[k] = projectDigestRecord(r);
+  return out;
+}
+
+// Each map → its own canonical gist-file content. digest first (projected to its
+// invariant fields so instance-relative counts never hit the wire).
 export function wireMapsToFiles(maps: WireMaps): Record<string, string> {
   const out: Record<string, string> = {};
   for (const { section, file, level } of SYNC_FILES) {
-    out[file] = serializeSection(maps[section], level);
+    const map =
+      section === "digest" ? projectDigest(maps.digest) : maps[section];
+    out[file] = serializeSection(map, level);
   }
   return out;
 }
@@ -202,7 +248,7 @@ function parseJsonObj(raw: string): unknown {
 // Remote gist files → in-memory wire maps (tolerant of empty/malformed files).
 export function filesToWireMaps(files: Record<string, string>): WireMaps {
   return {
-    summaries: parseResults(parseJsonObj(files[SYNC_FILE_SUMMARIES] ?? "")),
+    digest: parseResults(parseJsonObj(files[SYNC_FILE_DIGEST] ?? "")),
     exclusions: parseMap(
       parseJsonObj(files[SYNC_FILE_EXCLUSIONS] ?? ""),
     ) as WireMaps["exclusions"],
@@ -261,7 +307,7 @@ export function toWireMaps(
   const dropped = new Set<number>();
   const key = (mediaId: number) => toWireKey(mediaId, sources);
   const maps: WireMaps = {
-    summaries: translateOneLevel(local.summaries, key, dropped),
+    digest: translateOneLevel(local.digest, key, dropped),
     exclusions: translateTwoLevel(local.exclusions, key, dropped),
     pins: translateTwoLevel(local.pins, key, dropped),
     probes: translateTwoLevel(local.probes, key, dropped),
@@ -300,7 +346,7 @@ export function localizeWireMaps(
     return out;
   };
   const out: LocalMaps = {
-    summaries: relOne(maps.summaries),
+    digest: relOne(maps.digest),
     exclusions: relTwo(maps.exclusions),
     pins: relTwo(maps.pins),
     probes: relTwo(maps.probes),
@@ -309,10 +355,26 @@ export function localizeWireMaps(
   return { maps: out, unresolved: [...unresolved] };
 }
 
+// Overlay the merge's authoritative SYNCED fields (title/cover/read + the
+// updatedAt/deletedAt merge metadata) onto a local digest row while keeping that
+// row's locally-DERIVED fields (latest/sources/newSources/kind — recomputed by
+// reconcileInactiveProviders from this instance's probes). deletedAt follows the
+// merge exactly, so a resurrection (merge result has no tombstone) drops the old
+// one. `wire` may still carry derived fields in memory (they're only stripped at
+// serialize) — projectDigestRecord takes exactly the synced fields, so reusing
+// it here keeps "what's synced" defined in one place (DIGEST_WIRE_FIELDS).
+function applyDigestWire(prev: StoredResult, wire: DigestWire): StoredResult {
+  const out: StoredResult = { ...prev, ...projectDigestRecord(wire) };
+  if (wire.deletedAt == null) delete out.deletedAt;
+  return out;
+}
+
 // Write-back: the localized merged maps are the source of truth for every
 // translatable mediaId; local mediaIds that never made it into the wire maps
 // (custom-source with no ref) are absent from `localized` and kept as-is. So a
-// per-map key union where `localized` wins is correct and lossless.
+// per-map key union where `localized` wins is correct and lossless — EXCEPT the
+// digest, whose derived fields live only on this instance and must survive the
+// merge (see applyDigestWire).
 export function mergeLocalBack(
   existing: LocalMaps,
   localized: LocalMaps,
@@ -325,8 +387,15 @@ export function mergeLocalBack(
     for (const [k, v] of Object.entries(l)) out[k] = v;
     return out;
   };
+  const digest: Record<string, StoredResult> = { ...existing.digest };
+  for (const [k, wire] of Object.entries(localized.digest)) {
+    const prev = existing.digest[k];
+    // No prior row → adopt as-is; reconcileInactiveProviders fills the derived
+    // fields from probes on the next pass (performSync runs it immediately).
+    digest[k] = prev ? applyDigestWire(prev, wire) : wire;
+  }
   return {
-    summaries: mergeMap(existing.summaries, localized.summaries),
+    digest,
     exclusions: mergeMap(existing.exclusions, localized.exclusions),
     pins: mergeMap(existing.pins, localized.pins),
     probes: mergeMap(existing.probes, localized.probes),
@@ -345,15 +414,15 @@ export interface EnsureGistDeps {
 export async function ensureGist(deps: EnsureGistDeps): Promise<string> {
   const existing = deps.getGistId();
   if (existing) return existing;
-  const found = await deps.client.findGistByFilename(SYNC_HEAD_FILE);
+  const found = await deps.client.findGistByFilename(SYNC_FILE_DIGEST);
   if (found) {
     deps.setGistId(found);
     return found;
   }
-  // Seed the gist with just the head (summaries) file as an empty map; the
+  // Seed the gist with just the head (digest) file as an empty map; the
   // remaining files are created on the first push (updateGistFiles).
   const info = await deps.client.createGist(
-    SYNC_HEAD_FILE,
+    SYNC_FILE_DIGEST,
     "{}",
     "Seanime manga source updates sync",
   );
@@ -372,6 +441,11 @@ export interface SyncDeps {
   // the record's own localId). Sync so the pure localize step can run inline.
   extIdForManifest: (manifestId: string, seedLocalId: number) => number | null;
   log: Console;
+  // Restrict the PUSH to these sections' files (pull/merge/write-back always
+  // cover every section — pulling is free and safe). Omit to push all changed
+  // files. Lets a manual edit push only its own file live, while scan-derived
+  // maps (digest/probes) are pushed on the scan's own trigger.
+  pushSections?: Set<SyncSection>;
 }
 
 export interface SyncResult {
@@ -404,7 +478,8 @@ export async function syncMsu(deps: SyncDeps): Promise<SyncResult> {
   const mergedFiles = wireMapsToFiles(merged);
   const remoteCanon = wireMapsToFiles(remote);
   const changed: Record<string, string> = {};
-  for (const { file } of SYNC_FILES) {
+  for (const { section, file } of SYNC_FILES) {
+    if (deps.pushSections && !deps.pushSections.has(section)) continue;
     if (mergedFiles[file] !== remoteCanon[file])
       changed[file] = mergedFiles[file];
   }

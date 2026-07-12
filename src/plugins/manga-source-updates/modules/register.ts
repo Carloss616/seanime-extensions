@@ -63,7 +63,7 @@ import {
   snapshotLocalMaps,
   writeLocalMaps,
 } from "../utils/store";
-import { ensureGist, syncMsu } from "../utils/sync";
+import { ensureGist, type SyncSection, syncMsu } from "../utils/sync";
 import { collectTitles, resolveTitle } from "../utils/titles";
 import type {
   ExcludeReason,
@@ -198,44 +198,49 @@ export const register = (ctx: $ui.Context) => {
     };
   }
 
-  let lastSilentSyncAt = 0;
+  let lastSilentFullAt = 0;
   const SILENT_SYNC_COOLDOWN_MS = 10_000;
 
-  // The one sync round-trip, reused by manual push/pull, cron, and pull-on-open.
-  // `silent` suppresses success toasts (used by cron / pull-on-open).
-  async function syncNow(reason: string, silent: boolean): Promise<void> {
-    if (!hasSync()) {
-      if (!silent) ctx.toast.error("Connect GitHub (or add a PAT) first");
-      return;
-    }
-    if (syncing.get()) return;
-    if (silent) {
-      const nowMs = Date.now();
-      if (nowMs - lastSilentSyncAt < SILENT_SYNC_COOLDOWN_MS) return;
-      lastSilentSyncAt = nowMs;
-    }
-    syncing.set(true);
-    try {
-      const client = syncClient();
+  // One gist round-trip. Always pull/merge/write-back EVERY section (pulling is
+  // free — one GET — and safe); `pushSections` restricts only which files get
+  // PATCHed. `null` = push all changed files. Concurrency/cooldown are owned by
+  // requestSync, so this just does the work.
+  async function performSync(
+    pushSections: SyncSection[] | null,
+    reason: string,
+    silent: boolean,
+  ): Promise<void> {
+    const client = syncClient();
+    const roundTrip = async () => {
       const gistId = await ensureGist({
         client,
         getGistId: () => $storage.get<string>(K_GIST_ID) ?? undefined,
         setGistId: (id) => $storage.set(K_GIST_ID, id),
       });
-
-      const local = snapshotLocalMaps();
-      const sources = getSources();
-
-      const res = await syncMsu({
+      return await syncMsu({
         client,
         gistId,
-        local,
-        sources,
+        local: snapshotLocalMaps(),
+        sources: getSources(),
         // The resolver probes using the localId of the record being localized,
         // so no separate remote pre-read is needed to seed it.
         extIdForManifest: makeExtIdResolver(),
         log,
+        pushSections: pushSections ? new Set(pushSections) : undefined,
       });
+    };
+    try {
+      let res: Awaited<ReturnType<typeof roundTrip>>;
+      try {
+        res = await roundTrip();
+      } catch (e) {
+        // A deleted / inaccessible gist 404s on the PATCH. Drop the stale cached
+        // id so ensureGist re-discovers (by filename) or re-creates it, then
+        // retry once — self-heals if the gist was deleted on GitHub.
+        if (!String((e as Error).message).includes("404")) throw e;
+        $storage.remove(K_GIST_ID);
+        res = await roundTrip();
+      }
 
       writeLocalMaps(res.writeBack);
       const now = Date.now();
@@ -246,11 +251,23 @@ export const register = (ctx: $ui.Context) => {
       // pull that changed rows is reflected without a manual rescan.
       results.set(hydrateResults());
       probeCache.set(hydrateProbes());
+      // The digest's derived fields (latest/sources/newSources/kind) are NOT
+      // synced — recompute them locally from the freshly-merged probes so a
+      // pull (peer probes, a new remote row) is reflected in the counts right
+      // away, and rows adopted from a peer don't display that peer's provider
+      // count. Reads updatedAt-preserving, so this never re-dirties the digest.
+      reconcileInactiveProviders();
 
-      if (!silent) {
-        ctx.toast.success(
-          res.pushed ? `Synced (${reason})` : `Up to date (${reason})`,
-        );
+      if (res.pushed) {
+        // Always announce a real push (even a silent live one) with the maps it
+        // uploaded — strip the `seanime-msu-`/`.json` wrapper to bare section
+        // names. A no-op pull stays quiet unless it was a manual Sync now.
+        const maps = res.changedFiles
+          .map((f) => f.replace("seanime-msu-", "").replace(".json", ""))
+          .join(", ");
+        ctx.toast.info(`☁️ Synced: ${maps}`);
+      } else if (!silent) {
+        ctx.toast.success("Up to date");
       }
       // Nudge the frontend to refetch chapter/collection queries the merge may
       // have affected.
@@ -266,10 +283,66 @@ export const register = (ctx: $ui.Context) => {
     } catch (e) {
       log.warn(`sync failed (${reason}):`, e);
       if (!silent) ctx.toast.error(`Sync failed: ${(e as Error).message}`);
+    }
+  }
+
+  // Serialized, coalescing sync queue. Manual edits push their own file(s) the
+  // instant they happen (`livePush`); scans push their sections at the end; the
+  // tray/cron/connect paths request a full round-trip. goja has no timers, so
+  // coalescing is a pending-set + in-flight guard: a request that arrives while
+  // a drain is running just records its intent and returns, and the drain picks
+  // it up — no edit is dropped, and no two round-trips overlap (concurrent gist
+  // PATCHes would corrupt each other).
+  let syncBusy = false;
+  let queuedAll = false;
+  const queuedSections = new Set<SyncSection>();
+  // Loud = a non-silent request (the manual Sync-now button) is in the batch →
+  // the drained round-trip shows a toast. `reason` is logging-only.
+  let queuedLoud = false;
+
+  async function requestSync(
+    push: SyncSection[] | "all",
+    reason: string,
+    silent: boolean,
+  ): Promise<void> {
+    if (!hasSync()) {
+      if (!silent) ctx.toast.error("Connect GitHub (or add a PAT) first");
+      return;
+    }
+    // Throttle only the silent FULL round-trips (tray-open / cron / connect) so
+    // reopening the tray doesn't spam GETs. Scoped live pushes always go through.
+    if (push === "all" && silent) {
+      const nowMs = Date.now();
+      if (nowMs - lastSilentFullAt < SILENT_SYNC_COOLDOWN_MS) return;
+      lastSilentFullAt = nowMs;
+    }
+
+    if (push === "all") queuedAll = true;
+    else for (const s of push) queuedSections.add(s);
+    if (!silent) queuedLoud = true;
+    if (syncBusy) return;
+
+    syncBusy = true;
+    syncing.set(true);
+    try {
+      while (queuedAll || queuedSections.size > 0) {
+        const loud = queuedLoud;
+        const sections = queuedAll ? null : [...queuedSections];
+        queuedAll = false;
+        queuedSections.clear();
+        queuedLoud = false;
+        await performSync(sections, reason, !loud);
+      }
     } finally {
+      syncBusy = false;
       syncing.set(false);
     }
   }
+
+  // Fire-and-forget scoped push for a manual edit / scan end (silent, live).
+  const livePush = (sections: SyncSection[]): void => {
+    void requestSync(sections, "live", true);
+  };
 
   // GitHub OAuth Device Flow: ask DeviceFlowClient for a code → show user_code +
   // link → poll for the token at `interval` until granted/expired. The HTTP
@@ -300,7 +373,7 @@ export const register = (ctx: $ui.Context) => {
       if (result.type === "token") {
         $storage.set(K_OAUTH_TOKEN, result.token);
         ctx.toast.success("Connected to GitHub");
-        void syncNow("connected", true);
+        void requestSync("all", "connected", true);
       } else if (result.type === "error") {
         ctx.toast.error(`GitHub login failed: ${result.message}`);
       } else {
@@ -737,6 +810,8 @@ export const register = (ctx: $ui.Context) => {
       scanProgress.set(null);
       scanningProviders.set(null);
       scanStatus.set(null);
+      // Push the scan's output once, at the end (covers cancellation too).
+      livePush(["digest", "probes", "exclusions"]);
     }
   }
 
@@ -804,7 +879,7 @@ export const register = (ctx: $ui.Context) => {
   });
 
   ctx.registerEventHandler("msu-sync-now", () => {
-    void syncNow("manual", false);
+    void requestSync("all", "manual", false);
   });
 
   ctx.registerEventHandler("msu-connect", () => {
@@ -831,6 +906,7 @@ export const register = (ctx: $ui.Context) => {
     );
     setExcludedMap(next.excluded);
     setPinnedMap(next.pinned);
+    livePush(["exclusions", "pins"]);
   }
 
   // Global clear: wipe every exclusion + pin, then force-rescan the whole list
@@ -1007,6 +1083,9 @@ export const register = (ctx: $ui.Context) => {
       if (probingId.get() === mediaId) probingId.set(null);
       scanProgress.set(null);
       scanningProviders.set(null);
+      // End-of-scan push (also fires when cancelled from the webview panel —
+      // panel-cancel flips cancelRequested and this scan returns into finally).
+      livePush(["digest", "probes", "exclusions"]);
     }
   }
 
@@ -1057,6 +1136,8 @@ export const register = (ctx: $ui.Context) => {
     } finally {
       scanningProvider.set("");
       scanProgress.set(null);
+      // End-of-scan push (also on webview-panel cancel — see probeMangaDetail).
+      livePush(["digest", "probes"]);
     }
   }
 
@@ -1126,6 +1207,9 @@ export const register = (ctx: $ui.Context) => {
     pinned[key][provider] = { updatedAt: Date.now() };
     setExcludedMap(excluded);
     setPinnedMap(pinned);
+    // Live push the manual choice immediately. The digest/probes it also nudges
+    // (via the rescan/rebuild below) ride the scan-scoped push, not this one.
+    livePush(["exclusions", "pins"]);
     ctx.toast.info(exclude ? "Excluded source" : "Included source");
     // A re-included source wasn't probed (excluded ones are skipped), so it has
     // no chapter data yet — scan JUST that source to fetch it (this re-renders
@@ -1278,7 +1362,7 @@ export const register = (ctx: $ui.Context) => {
     const actions: unknown[] = [];
     if (connected) {
       actions.push(
-        tray.button(syncing.get() ? "⏳ Syncing" : "↻ Sync now", {
+        tray.button(syncing.get() ? "⏳ Syncing…" : "↻ Sync now", {
           onClick: "msu-sync-now",
           size: "sm",
           disabled: syncing.get(),
@@ -1290,11 +1374,15 @@ export const register = (ctx: $ui.Context) => {
         }),
       );
     } else {
-      // Starts the device flow (connectGitHub); the placeholder-guard toasts
-      // instead if no OAuth App client_id is configured yet. The PAT config
-      // field lights up `connected` on its own either way.
+      // Starts the device flow (connectGitHub), which then swaps this section
+      // to the device-code view with a working "Open GitHub ↗" anchor. We
+      // can't auto-open the tab on this click: an anchor's href is suppressed
+      // when it also carries onClick, seanime has no open-URL API, and a
+      // deferred popup after the async device-code fetch would be blocked.
+      // The placeholder-guard toasts instead if no OAuth App client_id is
+      // configured yet; the PAT config field lights up `connected` either way.
       actions.push(
-        tray.button("Connect GitHub", {
+        tray.button(connecting.get() ? "⏳ Connecting…" : "Connect GitHub", {
           onClick: "msu-connect",
           size: "sm",
           disabled: connecting.get(),
@@ -1769,7 +1857,7 @@ export const register = (ctx: $ui.Context) => {
       await refreshProgress();
       if (id > 0) openDetail(id);
       else detailId.set(null);
-      void syncNow("tray opened", true);
+      void requestSync("all", "tray opened", true);
     })();
   });
 
@@ -2078,6 +2166,7 @@ export const register = (ctx: $ui.Context) => {
       );
       if (action.type === "tombstone") {
         setMatches(tombstoneMatch(matches, mediaId, provider, now));
+        livePush(["matches"]);
       } else if (action.type === "upsert") {
         setMatches(
           upsertMatch(
@@ -2089,6 +2178,7 @@ export const register = (ctx: $ui.Context) => {
             now,
           ),
         );
+        livePush(["matches"]);
       }
 
       // Rescan the provider only when the mapping actually CHANGED (expensive) —
@@ -2264,7 +2354,7 @@ export const register = (ctx: $ui.Context) => {
       mins < 60 ? `*/${mins} * * * *` : `0 */${Math.round(mins / 60)} * * *`;
     try {
       ctx.cron.add("msu-auto-sync", expr, () => {
-        void syncNow("auto", true);
+        void requestSync("all", "auto", true);
       });
       ctx.cron.start();
     } catch (e) {

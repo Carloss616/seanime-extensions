@@ -860,22 +860,21 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     return out;
   }
+  var K_DIGEST = "digest";
   var K_EXCLUSIONS = "exclusions";
-  var K_SUMMARIES = "summaries";
+  var K_MATCHES = "matches";
   var K_PINS = "pins";
   var K_PROBES = "probes";
-  var K_MATCHES = "matches";
-  var K_INSTANCE_ID = "instanceId";
   var K_SOURCES = "sources";
+  var K_INSTANCE_ID = "instanceId";
   var K_OAUTH_TOKEN = "oauthToken";
   var K_GIST_ID = "gistId";
   var K_SYNCED_AT = "syncedAt";
-  var SYNC_FILE_SUMMARIES = "seanime-msu-summaries.json";
+  var SYNC_FILE_DIGEST = "seanime-msu-digest.json";
   var SYNC_FILE_EXCLUSIONS = "seanime-msu-exclusions.json";
+  var SYNC_FILE_MATCHES = "seanime-msu-matches.json";
   var SYNC_FILE_PINS = "seanime-msu-pins.json";
   var SYNC_FILE_PROBES = "seanime-msu-probes.json";
-  var SYNC_FILE_MATCHES = "seanime-msu-matches.json";
-  var SYNC_HEAD_FILE = SYNC_FILE_SUMMARIES;
   var REASONS = {
     outdated: { menu: "Behind / outdated", badge: "behind", intent: "warning" },
     "bad-numbering": {
@@ -1082,10 +1081,10 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     return livePinnedView(getPinned());
   }
   function getResults() {
-    return readObj(K_SUMMARIES);
+    return readObj(K_DIGEST);
   }
   function setResults(map) {
-    $storage.set(K_SUMMARIES, map);
+    $storage.set(K_DIGEST, map);
   }
   function getProbes() {
     return readObj(K_PROBES);
@@ -1095,7 +1094,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   }
   function snapshotLocalMaps() {
     return {
-      summaries: getResults(),
+      digest: getResults(),
       exclusions: getExcluded(),
       pins: getPinned(),
       probes: getProbes(),
@@ -1103,7 +1102,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     };
   }
   function writeLocalMaps(maps) {
-    setResults(maps.summaries);
+    setResults(maps.digest);
     setExcluded(maps.exclusions);
     setPinned(maps.pins);
     setProbes(maps.probes);
@@ -1276,7 +1275,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     return encodeMediaId(extId, localId);
   }
   var SYNC_FILES = [
-    { section: "summaries", file: SYNC_FILE_SUMMARIES, level: 1 },
+    { section: "digest", file: SYNC_FILE_DIGEST, level: 1 },
     { section: "exclusions", file: SYNC_FILE_EXCLUSIONS, level: 2 },
     { section: "pins", file: SYNC_FILE_PINS, level: 2 },
     { section: "probes", file: SYNC_FILE_PROBES, level: 2 },
@@ -1289,7 +1288,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   function pick(l, r) {
     if (!l) return { ...r };
     if (!r) return { ...l };
-    return effTs(l) >= effTs(r) ? { ...l } : { ...r };
+    return effTs(l) > effTs(r) ? { ...l } : { ...r };
   }
   function mergeOneLevel(local, remote) {
     const out = {};
@@ -1307,7 +1306,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   }
   function mergeMaps(local, remote) {
     return {
-      summaries: mergeOneLevel(local.summaries, remote.summaries),
+      digest: mergeOneLevel(local.digest, remote.digest),
       exclusions: mergeTwoLevel(local.exclusions, remote.exclusions),
       pins: mergeTwoLevel(local.pins, remote.pins),
       probes: mergeTwoLevel(local.probes, remote.probes),
@@ -1336,10 +1335,25 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     const canon = level === 2 ? sortMap(map) : sortObj(map);
     return JSON.stringify(canon, null, 2);
   }
+  var DIGEST_WIRE_FIELDS = ["title", "cover", "read", "updatedAt", "deletedAt"];
+  function projectDigestRecord(r) {
+    const out = {};
+    for (const f of DIGEST_WIRE_FIELDS) {
+      if (r[f] != null) out[f] = r[f];
+    }
+    return out;
+  }
+  function projectDigest(map) {
+    const out = {};
+    for (const [k, r] of Object.entries(map)) out[k] = projectDigestRecord(r);
+    return out;
+  }
   function wireMapsToFiles(maps) {
     const out = {};
     for (const { section, file, level } of SYNC_FILES) {
-      out[file] = serializeSection(maps[section], level);
+      const map =
+        section === "digest" ? projectDigest(maps.digest) : maps[section];
+      out[file] = serializeSection(map, level);
     }
     return out;
   }
@@ -1392,7 +1406,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   }
   function filesToWireMaps(files) {
     return {
-      summaries: parseResults(parseJsonObj(files[SYNC_FILE_SUMMARIES] ?? "")),
+      digest: parseResults(parseJsonObj(files[SYNC_FILE_DIGEST] ?? "")),
       exclusions: parseMap(parseJsonObj(files[SYNC_FILE_EXCLUSIONS] ?? "")),
       pins: parseMap(parseJsonObj(files[SYNC_FILE_PINS] ?? "")),
       probes: parseMap(parseJsonObj(files[SYNC_FILE_PROBES] ?? "")),
@@ -1427,7 +1441,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     const dropped = new Set();
     const key = (mediaId) => toWireKey(mediaId, sources);
     const maps = {
-      summaries: translateOneLevel(local.summaries, key, dropped),
+      digest: translateOneLevel(local.digest, key, dropped),
       exclusions: translateTwoLevel(local.exclusions, key, dropped),
       pins: translateTwoLevel(local.pins, key, dropped),
       probes: translateTwoLevel(local.probes, key, dropped),
@@ -1462,7 +1476,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       return out2;
     };
     const out = {
-      summaries: relOne(maps.summaries),
+      digest: relOne(maps.digest),
       exclusions: relTwo(maps.exclusions),
       pins: relTwo(maps.pins),
       probes: relTwo(maps.probes),
@@ -1470,14 +1484,24 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     };
     return { maps: out, unresolved: [...unresolved] };
   }
+  function applyDigestWire(prev, wire) {
+    const out = { ...prev, ...projectDigestRecord(wire) };
+    if (wire.deletedAt == null) delete out.deletedAt;
+    return out;
+  }
   function mergeLocalBack(existing, localized) {
     const mergeMap = (e, l) => {
       const out = { ...e };
       for (const [k, v] of Object.entries(l)) out[k] = v;
       return out;
     };
+    const digest = { ...existing.digest };
+    for (const [k, wire] of Object.entries(localized.digest)) {
+      const prev = existing.digest[k];
+      digest[k] = prev ? applyDigestWire(prev, wire) : wire;
+    }
     return {
-      summaries: mergeMap(existing.summaries, localized.summaries),
+      digest,
       exclusions: mergeMap(existing.exclusions, localized.exclusions),
       pins: mergeMap(existing.pins, localized.pins),
       probes: mergeMap(existing.probes, localized.probes),
@@ -1487,13 +1511,13 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
   async function ensureGist(deps) {
     const existing = deps.getGistId();
     if (existing) return existing;
-    const found = await deps.client.findGistByFilename(SYNC_HEAD_FILE);
+    const found = await deps.client.findGistByFilename(SYNC_FILE_DIGEST);
     if (found) {
       deps.setGistId(found);
       return found;
     }
     const info = await deps.client.createGist(
-      SYNC_HEAD_FILE,
+      SYNC_FILE_DIGEST,
       "{}",
       "Seanime manga source updates sync",
     );
@@ -1518,7 +1542,8 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     const mergedFiles = wireMapsToFiles(merged);
     const remoteCanon = wireMapsToFiles(remote);
     const changed = {};
-    for (const { file } of SYNC_FILES) {
+    for (const { section, file } of SYNC_FILES) {
+      if (deps.pushSections && !deps.pushSections.has(section)) continue;
       if (mergedFiles[file] !== remoteCanon[file])
         changed[file] = mergedFiles[file];
     }
@@ -1623,47 +1648,49 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         return extId;
       };
     }
-    let lastSilentSyncAt = 0;
+    let lastSilentFullAt = 0;
     const SILENT_SYNC_COOLDOWN_MS = 1e4;
-    async function syncNow(reason, silent) {
-      if (!hasSync()) {
-        if (!silent) ctx.toast.error("Connect GitHub (or add a PAT) first");
-        return;
-      }
-      if (syncing.get()) return;
-      if (silent) {
-        const nowMs = Date.now();
-        if (nowMs - lastSilentSyncAt < SILENT_SYNC_COOLDOWN_MS) return;
-        lastSilentSyncAt = nowMs;
-      }
-      syncing.set(true);
-      try {
-        const client = syncClient();
+    async function performSync(pushSections, reason, silent) {
+      const client = syncClient();
+      const roundTrip = async () => {
         const gistId = await ensureGist({
           client,
           getGistId: () => $storage.get(K_GIST_ID) ?? undefined,
           setGistId: (id) => $storage.set(K_GIST_ID, id),
         });
-        const local = snapshotLocalMaps();
-        const sources = getSources();
-        const res = await syncMsu({
+        return await syncMsu({
           client,
           gistId,
-          local,
-          sources,
+          local: snapshotLocalMaps(),
+          sources: getSources(),
           extIdForManifest: makeExtIdResolver(),
           log,
+          pushSections: pushSections ? new Set(pushSections) : undefined,
         });
+      };
+      try {
+        let res;
+        try {
+          res = await roundTrip();
+        } catch (e) {
+          if (!String(e.message).includes("404")) throw e;
+          $storage.remove(K_GIST_ID);
+          res = await roundTrip();
+        }
         writeLocalMaps(res.writeBack);
         const now = Date.now();
         $storage.set(K_SYNCED_AT, now);
         syncedAt.set(now);
         results.set(hydrateResults());
         probeCache.set(hydrateProbes());
-        if (!silent) {
-          ctx.toast.success(
-            res.pushed ? `Synced (${reason})` : `Up to date (${reason})`,
-          );
+        reconcileInactiveProviders();
+        if (res.pushed) {
+          const maps = res.changedFiles
+            .map((f) => f.replace("seanime-msu-", "").replace(".json", ""))
+            .join(", ");
+          ctx.toast.info(`☁️ Synced: ${maps}`);
+        } else if (!silent) {
+          ctx.toast.success("Up to date");
         }
         try {
           $app.invalidateClientQuery([
@@ -1677,10 +1704,45 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       } catch (e) {
         log.warn(`sync failed (${reason}):`, e);
         if (!silent) ctx.toast.error(`Sync failed: ${e.message}`);
+      }
+    }
+    let syncBusy = false;
+    let queuedAll = false;
+    const queuedSections = new Set();
+    let queuedLoud = false;
+    async function requestSync(push, reason, silent) {
+      if (!hasSync()) {
+        if (!silent) ctx.toast.error("Connect GitHub (or add a PAT) first");
+        return;
+      }
+      if (push === "all" && silent) {
+        const nowMs = Date.now();
+        if (nowMs - lastSilentFullAt < SILENT_SYNC_COOLDOWN_MS) return;
+        lastSilentFullAt = nowMs;
+      }
+      if (push === "all") queuedAll = true;
+      else for (const s of push) queuedSections.add(s);
+      if (!silent) queuedLoud = true;
+      if (syncBusy) return;
+      syncBusy = true;
+      syncing.set(true);
+      try {
+        while (queuedAll || queuedSections.size > 0) {
+          const loud = queuedLoud;
+          const sections = queuedAll ? null : [...queuedSections];
+          queuedAll = false;
+          queuedSections.clear();
+          queuedLoud = false;
+          await performSync(sections, reason, !loud);
+        }
       } finally {
+        syncBusy = false;
         syncing.set(false);
       }
     }
+    const livePush = (sections) => {
+      requestSync(sections, "live", true);
+    };
     async function connectGitHub() {
       if (connecting.get()) return;
       connecting.set(true);
@@ -1700,7 +1762,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         if (result.type === "token") {
           $storage.set(K_OAUTH_TOKEN, result.token);
           ctx.toast.success("Connected to GitHub");
-          syncNow("connected", true);
+          requestSync("all", "connected", true);
         } else if (result.type === "error") {
           ctx.toast.error(`GitHub login failed: ${result.message}`);
         } else {
@@ -2047,6 +2109,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         scanProgress.set(null);
         scanningProviders.set(null);
         scanStatus.set(null);
+        livePush(["digest", "probes", "exclusions"]);
       }
     }
     const individualScanRunning = () =>
@@ -2092,7 +2155,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       status.set("Cancelling…");
     });
     ctx.registerEventHandler("msu-sync-now", () => {
-      syncNow("manual", false);
+      requestSync("all", "manual", false);
     });
     ctx.registerEventHandler("msu-connect", () => {
       connectGitHub();
@@ -2113,6 +2176,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       );
       setExcluded(next.excluded);
       setPinned(next.pinned);
+      livePush(["exclusions", "pins"]);
     }
     ctx.registerEventHandler("msu-clear-excl", () => {
       if (rejectIfBusy()) return;
@@ -2244,6 +2308,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         if (probingId.get() === mediaId) probingId.set(null);
         scanProgress.set(null);
         scanningProviders.set(null);
+        livePush(["digest", "probes", "exclusions"]);
       }
     }
     async function scanOneProvider(mediaId, provider) {
@@ -2288,6 +2353,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       } finally {
         scanningProvider.set("");
         scanProgress.set(null);
+        livePush(["digest", "probes"]);
       }
     }
     async function loadDetailMeta(mediaId) {
@@ -2336,6 +2402,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       pinned[key][provider] = { updatedAt: Date.now() };
       setExcluded(excluded);
       setPinned(pinned);
+      livePush(["exclusions", "pins"]);
       ctx.toast.info(exclude ? "Excluded source" : "Included source");
       if (!exclude && detailId.get() === mediaId) {
         scanOneProvider(mediaId, provider);
@@ -2463,7 +2530,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       const actions = [];
       if (connected) {
         actions.push(
-          tray.button(syncing.get() ? "⏳ Syncing" : "↻ Sync now", {
+          tray.button(syncing.get() ? "⏳ Syncing…" : "↻ Sync now", {
             onClick: "msu-sync-now",
             size: "sm",
             disabled: syncing.get(),
@@ -2476,7 +2543,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         );
       } else {
         actions.push(
-          tray.button("Connect GitHub", {
+          tray.button(connecting.get() ? "⏳ Connecting…" : "Connect GitHub", {
             onClick: "msu-connect",
             size: "sm",
             disabled: connecting.get(),
@@ -2853,7 +2920,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         await refreshProgress();
         if (id > 0) openDetail(id);
         else detailId.set(null);
-        syncNow("tray opened", true);
+        requestSync("all", "tray opened", true);
       })();
     });
     const entryButton = ctx.action.newMangaPageButton({
@@ -3085,6 +3152,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         );
         if (action.type === "tombstone") {
           setMatches(tombstoneMatch(matches, mediaId, provider, now));
+          livePush(["matches"]);
         } else if (action.type === "upsert") {
           setMatches(
             upsertMatch(
@@ -3096,6 +3164,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
               now,
             ),
           );
+          livePush(["matches"]);
         }
         const prev = lastMappingSigByMedia[mediaId];
         lastMappingSigByMedia[mediaId] = sig;
@@ -3227,7 +3296,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         mins < 60 ? `*/${mins} * * * *` : `0 */${Math.round(mins / 60)} * * *`;
       try {
         ctx.cron.add("msu-auto-sync", expr, () => {
-          syncNow("auto", true);
+          requestSync("all", "auto", true);
         });
         ctx.cron.start();
       } catch (e) {
