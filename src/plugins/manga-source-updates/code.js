@@ -741,6 +741,11 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
 
 .bar{width:100%;height:6px;border-radius:3px;background:var(--track);overflow:hidden}
 .fill{height:100%;background:var(--brand);width:0%;transition:width .25s ease}
+/* Indeterminate: a single provider has no meaningful fraction (0/1 → 1/1), so
+   a determinate bar just sits at 0% and reads as "never loads". Slide a chunk
+   across instead. */
+.bar.indeterminate .fill{width:40%;transition:none;animation:slide 1.1s ease-in-out infinite}
+@keyframes slide{0%{transform:translateX(-110%)}100%{transform:translateX(275%)}}
 
 /* footer: right-aligned action row, like the dialog's \`flex gap-2\` button bar */
 .footer{display:flex;align-items:center;justify-content:flex-end;gap:8px}
@@ -801,8 +806,12 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     cancelBtn.style.opacity = s.cancelling ? "0.5" : "1";
     if (s.cover) { cover.src = s.cover; cover.style.display = "block"; }
     else { cover.removeAttribute("src"); cover.style.display = "none"; }
+    // total <= 1 (single provider) gives no useful fraction → animate instead.
+    var indeterminate = !s.cancelling && s.total <= 1 && s.done < s.total;
+    var bar = document.querySelector(".bar");
+    bar.classList.toggle("indeterminate", indeterminate);
     var pct = s.total ? Math.round(s.done / s.total * 100) : 0;
-    document.getElementById("fill").style.width = \`\${pct}%\`;
+    document.getElementById("fill").style.width = indeterminate ? "40%" : \`\${pct}%\`;
   });
 </script>
 </body></html>
