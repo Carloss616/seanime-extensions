@@ -969,7 +969,7 @@ var register = (...args) => {
         tray.flex(
           [
             tray.text("Enter this code at GitHub", { style: CAPTION_STYLE }),
-            tray.text(start.userCode, {
+            tray.text(start.user_code, {
               style: {
                 fontSize: "1.25rem",
                 fontWeight: "700",
@@ -981,7 +981,7 @@ var register = (...args) => {
         ),
         tray.anchor({
           text: "Open GitHub ↗",
-          href: start.verificationUri,
+          href: start.verification_uri,
           target: "_blank",
         }),
         tray.text("Waiting for authorization…", { style: CAPTION_STYLE }),
@@ -1122,49 +1122,30 @@ var register = (...args) => {
     };
   }
   var GITHUB_CLIENT_ID = "Ov23li6KslJmP3EaLxXj";
-  function interpretDeviceCode(json) {
-    const j = json ?? {};
-    const deviceCode = typeof j.device_code === "string" ? j.device_code : "";
-    const userCode = typeof j.user_code === "string" ? j.user_code : "";
-    const verificationUri =
-      typeof j.verification_uri === "string" ? j.verification_uri : "";
-    if (!deviceCode || !userCode || !verificationUri) {
-      const msg =
-        typeof j.error === "string"
-          ? j.error
-          : "malformed device-code response";
-      return { ok: false, message: msg };
-    }
+  function formatDeviceCode(json) {
+    if ("device_code" in json) return { ok: true, start: json };
     return {
-      ok: true,
-      start: {
-        deviceCode,
-        userCode,
-        verificationUri,
-        interval: typeof j.interval === "number" ? j.interval : 5,
-        expiresIn: typeof j.expires_in === "number" ? j.expires_in : 900,
-      },
+      ok: false,
+      message: json.error ?? "malformed device-code response",
     };
   }
-  function interpretTokenResponse(json) {
-    const j = json ?? {};
-    if (typeof j.access_token === "string" && j.access_token.length > 0) {
-      return { type: "token", token: j.access_token };
+  function formatTokenResponse(json) {
+    if ("access_token" in json) {
+      return { type: "token", token: json.access_token };
     }
-    const err = typeof j.error === "string" ? j.error : "";
-    if (err === "authorization_pending") return { type: "pending" };
-    if (err === "slow_down") {
-      return {
-        type: "slow_down",
-        interval: typeof j.interval === "number" ? j.interval : 5,
-      };
+    if (json.error === "authorization_pending") return { type: "pending" };
+    if (json.error === "slow_down") {
+      return { type: "slow_down", interval: json.interval ?? 5 };
     }
-    if (err) return { type: "error", message: err };
-    return { type: "error", message: "unexpected token response" };
+    return {
+      type: "error",
+      message: json.error ?? "unexpected token response",
+    };
   }
 
   class DeviceFlowClient {
     constructor(clientId, fetchFn) {
+      this.baseUrl = "https://github.com/login";
       this.clientId = clientId;
       this.fetchFn = fetchFn;
     }
@@ -1172,34 +1153,31 @@ var register = (...args) => {
       return { Accept: "application/json", "Content-Type": "application/json" };
     }
     async requestDeviceCode(scope) {
-      const res = await this.fetchFn("https://github.com/login/device/code", {
+      const res = await this.fetchFn(`${this.baseUrl}/device/code`, {
         method: "POST",
         headers: this.headers(),
         body: JSON.stringify({ client_id: this.clientId, scope }),
       });
-      return interpretDeviceCode(res.json());
+      return formatDeviceCode(res.json());
     }
     async pollAccessToken(deviceCode) {
-      const res = await this.fetchFn(
-        "https://github.com/login/oauth/access_token",
-        {
-          method: "POST",
-          headers: this.headers(),
-          body: JSON.stringify({
-            client_id: this.clientId,
-            device_code: deviceCode,
-            grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-          }),
-        },
-      );
-      return interpretTokenResponse(res.json());
+      const res = await this.fetchFn(`${this.baseUrl}/oauth/access_token`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({
+          client_id: this.clientId,
+          device_code: deviceCode,
+          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+        }),
+      });
+      return formatTokenResponse(res.json());
     }
     async pollUntilToken(start, deps) {
       let interval = Math.max(1, start.interval);
-      const deadline = Date.now() + start.expiresIn * 1000;
+      const deadline = Date.now() + start.expires_in * 1000;
       while (Date.now() < deadline) {
         deps.sleep(interval * 1000);
-        const result = await this.pollAccessToken(start.deviceCode);
+        const result = await this.pollAccessToken(start.device_code);
         if (result.type === "token")
           return { type: "token", token: result.token };
         if (result.type === "error") {
@@ -4280,6 +4258,7 @@ var sharedLib = (...args) => {
 
   class GistClient {
     constructor(token, fetchFn) {
+      this.baseUrl = "https://api.github.com";
       this.token = token;
       this.fetchFn = fetchFn;
     }
@@ -4294,7 +4273,7 @@ var sharedLib = (...args) => {
       return `https://gist.githubusercontent.com/${owner}/${id}/raw/${filename}`;
     }
     async createGist(filename, content, description) {
-      const res = await this.fetchFn("https://api.github.com/gists", {
+      const res = await this.fetchFn(`${this.baseUrl}/gists`, {
         method: "POST",
         headers: this.headers(),
         body: JSON.stringify({
@@ -4307,15 +4286,16 @@ var sharedLib = (...args) => {
         throw new Error(`createGist failed: ${res.status} ${res.text()}`);
       }
       const data = res.json();
+      const id = data.id ?? "";
       const owner = data.owner?.login ?? "";
       return {
-        id: data.id,
+        id,
         owner,
-        rawUrl: this.rawUrl(owner, data.id, filename),
+        rawUrl: this.rawUrl(owner, id, filename),
       };
     }
     async getGistFile(id, filename) {
-      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+      const res = await this.fetchFn(`${this.baseUrl}/gists/${id}`, {
         method: "GET",
         headers: this.headers(),
       });
@@ -4326,7 +4306,7 @@ var sharedLib = (...args) => {
       return data.files?.[filename]?.content ?? "";
     }
     async getGistFileWithInfo(id, filename) {
-      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+      const res = await this.fetchFn(`${this.baseUrl}/gists/${id}`, {
         method: "GET",
         headers: this.headers(),
       });
@@ -4342,7 +4322,7 @@ var sharedLib = (...args) => {
       };
     }
     async updateGistFile(id, filename, content) {
-      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+      const res = await this.fetchFn(`${this.baseUrl}/gists/${id}`, {
         method: "PATCH",
         headers: this.headers(),
         body: JSON.stringify({ files: { [filename]: { content } } }),
@@ -4352,7 +4332,7 @@ var sharedLib = (...args) => {
       }
     }
     async getGistFiles(id, filenames) {
-      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+      const res = await this.fetchFn(`${this.baseUrl}/gists/${id}`, {
         method: "GET",
         headers: this.headers(),
       });
@@ -4371,7 +4351,7 @@ var sharedLib = (...args) => {
       for (const [name, content] of Object.entries(files)) {
         body.files[name] = { content };
       }
-      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+      const res = await this.fetchFn(`${this.baseUrl}/gists/${id}`, {
         method: "PATCH",
         headers: this.headers(),
         body: JSON.stringify(body),
@@ -4381,7 +4361,7 @@ var sharedLib = (...args) => {
       }
     }
     async deleteGist(id) {
-      const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+      const res = await this.fetchFn(`${this.baseUrl}/gists/${id}`, {
         method: "DELETE",
         headers: this.headers(),
       });
@@ -4390,13 +4370,10 @@ var sharedLib = (...args) => {
       }
     }
     async findGistByFilename(filename) {
-      const res = await this.fetchFn(
-        "https://api.github.com/gists?per_page=100",
-        {
-          method: "GET",
-          headers: this.headers(),
-        },
-      );
+      const res = await this.fetchFn(`${this.baseUrl}/gists?per_page=100`, {
+        method: "GET",
+        headers: this.headers(),
+      });
       if (!res.ok) {
         throw new Error(`listGists failed: ${res.status} ${res.text()}`);
       }

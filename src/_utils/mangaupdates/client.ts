@@ -68,9 +68,9 @@ export abstract class MUClientBase {
   protected async _search(
     query: string,
     options?: { page?: number; perPage?: number; token?: string },
-  ): Promise<MUSearch.Response | null> {
+  ): Promise<$mu.Search.Response | null> {
     const { page, perPage, token } = options || {};
-    return this._req<MUSearch.Response>("POST", "/series/search", {
+    return this._req<$mu.Search.Response>("POST", "/series/search", {
       body: { search: query, page, perpage: perPage },
       token,
     });

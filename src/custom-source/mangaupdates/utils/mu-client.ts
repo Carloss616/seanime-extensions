@@ -25,7 +25,7 @@ export function mapFormat(type?: string): $app.AL_MediaFormat | undefined {
 }
 
 export function toBaseManga(
-  record: MUSearch.Record | MUSeries.Response,
+  record: $mu.Search.Record | $mu.Series.Response,
 ): $app.AL_BaseManga {
   const title = record.title || "???";
   const year = muRecordYear(record);
@@ -103,7 +103,7 @@ export class MUClient extends MUClientBase {
       (ids || []).map((id) => this.getSeries(id)),
     );
     return records
-      .filter((r): r is MUSeries.Response => r !== null)
+      .filter((r): r is $mu.Series.Response => r !== null)
       .map(toBaseManga);
   }
 
@@ -119,8 +119,8 @@ export class MUClient extends MUClientBase {
     };
   }
 
-  private async getSeries(id: number): Promise<MUSeries.Response | null> {
-    return this.req<MUSeries.Response>("GET", `/series/${id}`).catch(
+  private async getSeries(id: number): Promise<$mu.Series.Response | null> {
+    return this.req<$mu.Series.Response>("GET", `/series/${id}`).catch(
       () => null,
     );
   }

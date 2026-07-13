@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   DeviceFlowClient,
-  interpretDeviceCode,
-  interpretTokenResponse,
+  formatDeviceCode,
+  formatTokenResponse,
 } from "./device-flow.ts";
 
 type Call = { url: string; init: FetchOptions };
@@ -21,69 +21,38 @@ function fakeFetch(response: unknown) {
   return { fn, calls };
 }
 
-describe("interpretDeviceCode", () => {
-  test("parses the documented device/code response", () => {
-    const r = interpretDeviceCode({
-      device_code: "dc",
-      user_code: "WDJB-MJHT",
-      verification_uri: "https://github.com/login/device",
-      expires_in: 900,
-      interval: 5,
-    });
-    expect(r).toEqual({
+const DEVICE_CODE: $gh.Login.DeviceCode = {
+  device_code: "dc",
+  user_code: "WDJB-MJHT",
+  verification_uri: "https://github.com/login/device",
+  expires_in: 900,
+  interval: 5,
+};
+
+describe("formatDeviceCode", () => {
+  test("wraps the documented device/code success body", () => {
+    expect(formatDeviceCode(DEVICE_CODE)).toEqual({
       ok: true,
-      start: {
-        deviceCode: "dc",
-        userCode: "WDJB-MJHT",
-        verificationUri: "https://github.com/login/device",
-        interval: 5,
-        expiresIn: 900,
-      },
+      start: DEVICE_CODE,
     });
   });
 
-  test("defaults interval to 5 when absent", () => {
-    const r = interpretDeviceCode({
-      device_code: "dc",
-      user_code: "x",
-      verification_uri: "https://x",
-      expires_in: 900,
+  test("surfaces an OAuth error body", () => {
+    expect(formatDeviceCode({ error: "device_flow_disabled" })).toEqual({
+      ok: false,
+      message: "device_flow_disabled",
     });
-    expect(r.ok && r.start.interval).toBe(5);
-  });
-
-  test("fails on a missing field", () => {
-    expect(interpretDeviceCode({ user_code: "x" }).ok).toBe(false);
-    expect(interpretDeviceCode({ error: "not_found" }).ok).toBe(false);
-  });
-
-  test("defaults expiresIn to 900 when absent", () => {
-    const r = interpretDeviceCode({
-      device_code: "dc",
-      user_code: "x",
-      verification_uri: "https://x",
-      interval: 5,
-    });
-    expect(r.ok && r.start.expiresIn).toBe(900);
-  });
-
-  test("preserves a real 0 for expires_in and interval (not defaulted)", () => {
-    const r = interpretDeviceCode({
-      device_code: "dc",
-      user_code: "x",
-      verification_uri: "https://x",
-      expires_in: 0,
-      interval: 0,
-    });
-    expect(r.ok && r.start.expiresIn).toBe(0);
-    expect(r.ok && r.start.interval).toBe(0);
   });
 });
 
-describe("interpretTokenResponse", () => {
+describe("formatTokenResponse", () => {
   test("access_token → token", () => {
     expect(
-      interpretTokenResponse({ access_token: "gho_x", token_type: "bearer" }),
+      formatTokenResponse({
+        access_token: "gho_x",
+        token_type: "bearer",
+        scope: "gist",
+      }),
     ).toEqual({
       type: "token",
       token: "gho_x",
@@ -91,45 +60,33 @@ describe("interpretTokenResponse", () => {
   });
 
   test("authorization_pending → pending", () => {
-    expect(interpretTokenResponse({ error: "authorization_pending" })).toEqual({
+    expect(formatTokenResponse({ error: "authorization_pending" })).toEqual({
       type: "pending",
     });
   });
 
   test("slow_down → slow_down with interval", () => {
-    expect(
-      interpretTokenResponse({ error: "slow_down", interval: 10 }),
-    ).toEqual({
+    expect(formatTokenResponse({ error: "slow_down", interval: 10 })).toEqual({
       type: "slow_down",
       interval: 10,
     });
   });
 
   test("terminal error → error", () => {
-    expect(interpretTokenResponse({ error: "access_denied" })).toEqual({
+    expect(formatTokenResponse({ error: "access_denied" })).toEqual({
       type: "error",
       message: "access_denied",
     });
-    expect(interpretTokenResponse({ error: "expired_token" })).toEqual({
+    expect(formatTokenResponse({ error: "expired_token" })).toEqual({
       type: "error",
       message: "expired_token",
     });
   });
-
-  test("unexpected shape → error", () => {
-    expect(interpretTokenResponse({}).type).toBe("error");
-  });
 });
 
 describe("DeviceFlowClient", () => {
-  test("requestDeviceCode POSTs client_id + scope, returns the parsed start", async () => {
-    const { fn, calls } = fakeFetch({
-      device_code: "dc",
-      user_code: "WDJB-MJHT",
-      verification_uri: "https://github.com/login/device",
-      expires_in: 900,
-      interval: 5,
-    });
+  test("requestDeviceCode POSTs client_id + scope, returns the formatted start", async () => {
+    const { fn, calls } = fakeFetch(DEVICE_CODE);
     const c = new DeviceFlowClient("cid", fn as unknown as typeof fetch);
     const r = await c.requestDeviceCode("gist");
     expect(calls[0].url).toBe("https://github.com/login/device/code");
@@ -137,11 +94,15 @@ describe("DeviceFlowClient", () => {
     const body = JSON.parse(calls[0].init.body);
     expect(body.client_id).toBe("cid");
     expect(body.scope).toBe("gist");
-    expect(r.ok && r.start.userCode).toBe("WDJB-MJHT");
+    expect(r.ok && r.start.user_code).toBe("WDJB-MJHT");
   });
 
   test("pollAccessToken POSTs the device_code + grant_type, returns the poll result", async () => {
-    const { fn, calls } = fakeFetch({ access_token: "gho_x" });
+    const { fn, calls } = fakeFetch({
+      access_token: "gho_x",
+      token_type: "bearer",
+      scope: "gist",
+    });
     const c = new DeviceFlowClient("cid", fn as unknown as typeof fetch);
     const r = await c.pollAccessToken("dc");
     expect(calls[0].url).toBe("https://github.com/login/oauth/access_token");
@@ -173,14 +134,6 @@ function seqFetch(responses: unknown[]) {
   return fn as unknown as typeof fetch;
 }
 
-const START = {
-  deviceCode: "dc",
-  userCode: "WDJB-MJHT",
-  verificationUri: "https://github.com/login/device",
-  interval: 5,
-  expiresIn: 900,
-};
-
 describe("DeviceFlowClient.pollUntilToken", () => {
   test("returns the token once the user authorizes, backing off through pending/slow_down", async () => {
     const sleeps: number[] = [];
@@ -189,10 +142,10 @@ describe("DeviceFlowClient.pollUntilToken", () => {
       seqFetch([
         { error: "authorization_pending" },
         { error: "slow_down", interval: 7 },
-        { access_token: "gho_x" },
+        { access_token: "gho_x", token_type: "bearer", scope: "gist" },
       ]),
     );
-    const r = await c.pollUntilToken(START, {
+    const r = await c.pollUntilToken(DEVICE_CODE, {
       sleep: (ms) => sleeps.push(ms),
     });
     expect(r).toEqual({ type: "token", token: "gho_x" });
@@ -206,7 +159,7 @@ describe("DeviceFlowClient.pollUntilToken", () => {
       "cid",
       seqFetch([{ error: "access_denied" }]),
     );
-    const r = await c.pollUntilToken(START, { sleep: () => {} });
+    const r = await c.pollUntilToken(DEVICE_CODE, { sleep: () => {} });
     expect(r).toEqual({ type: "error", message: "access_denied" });
   });
 
@@ -217,7 +170,7 @@ describe("DeviceFlowClient.pollUntilToken", () => {
       return { ok: true, status: 200, json: () => ({}) } as FetchResponse;
     }) as unknown as typeof fetch);
     const r = await c.pollUntilToken(
-      { ...START, expiresIn: 0 },
+      { ...DEVICE_CODE, expires_in: 0 },
       { sleep: () => {} },
     );
     expect(r).toEqual({ type: "timeout" });

@@ -5,10 +5,7 @@ import { githubConnect } from "../../../_components/github-connect";
 import { trayHeader } from "../../../_components/tray-header";
 import { GistClient } from "../../../_utils/gist/client";
 import { GITHUB_CLIENT_ID } from "../../../_utils/gist/constants";
-import {
-  type DeviceCodeStart,
-  DeviceFlowClient,
-} from "../../../_utils/gist/device-flow";
+import { DeviceFlowClient } from "../../../_utils/gist/device-flow";
 import { createLogger } from "../../../_utils/logger";
 import scanPanelHtml from "../assets/scan-panel.html";
 import { readCardAttrs } from "../utils/card-dom";
@@ -192,7 +189,7 @@ export const register = (ctx: $ui.Context) => {
   // double-click starting two flows; `deviceStart` drives the "enter this code"
   // view in renderSyncSection while a flow is in progress.
   const connecting = ctx.state<boolean>(false);
-  const deviceStart = ctx.state<DeviceCodeStart | null>(null);
+  const deviceStart = ctx.state<$gh.Login.DeviceCode | null>(null);
 
   // Resolve this instance's extId for a manifest: local K_SOURCES index first
   // (free), then a probe seeded with the localId of the very record being

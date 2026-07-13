@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { MUClient, mapFormat, toBaseManga } from "./mu-client.ts";
 
 // Minimal MU search record factory.
-function rec(overrides: Partial<MUSearch.Record> = {}): MUSearch.Record {
+function rec(overrides: Partial<$mu.Search.Record> = {}): $mu.Search.Record {
   return {
     series_id: 555,
     title: "Test Series",
@@ -80,7 +80,7 @@ describe("toBaseManga", () => {
       rec({
         title: "",
         year: "",
-        image: undefined as unknown as MU.Image,
+        image: undefined as unknown as $mu.Image,
       }),
     );
     expect(m.title?.userPreferred).toBe("???");
@@ -106,7 +106,7 @@ describe("MUClient.search", () => {
             results: [
               { record: rec() },
               { record: rec({ series_id: 7 }) },
-            ] as unknown as MUSearch.Result[],
+            ] as unknown as $mu.Search.Result[],
           },
         };
       }),

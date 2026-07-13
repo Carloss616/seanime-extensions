@@ -1,5 +1,5 @@
 // Normalized MangaUpdates series — consumed by the UI and link store.
-// Produced by MUClient.search from raw MUSearch.Response records.
+// Produced by MUClient.search from raw $mu.Search.Response records.
 
 export interface MUResult {
   id: string;

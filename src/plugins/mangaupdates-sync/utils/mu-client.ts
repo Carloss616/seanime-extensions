@@ -8,7 +8,7 @@ import { muRecordUrl, muRecordYear } from "../../../_utils/mangaupdates/record";
 
 const log = createLogger();
 
-export function toBaseResult(record: MUSearch.Record): MUResult {
+export function toBaseResult(record: $mu.Search.Record): MUResult {
   const cover = record.image?.url || {};
   return {
     id: String(record.series_id),
@@ -77,7 +77,7 @@ export class MUClient extends MUClientBase {
   }
 
   async login(username: string, password: string): Promise<string> {
-    const data = await this.req<MULogin.Response>("PUT", "/account/login", {
+    const data = await this.req<$mu.Login.Response>("PUT", "/account/login", {
       body: { username, password },
     });
     const token = data?.context?.session_token;

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { toBaseResult } from "./mu-client.ts";
 
-function rec(overrides: Partial<MUSearch.Record> = {}): MUSearch.Record {
+function rec(overrides: Partial<$mu.Search.Record> = {}): $mu.Search.Record {
   return {
     series_id: 42,
     title: "Example",
@@ -44,7 +44,7 @@ describe("toBaseResult", () => {
   });
 
   test("handles a record with no image without throwing", () => {
-    const r = toBaseResult(rec({ image: undefined as unknown as MU.Image }));
+    const r = toBaseResult(rec({ image: undefined as unknown as $mu.Image }));
     expect(r.cover).toBeUndefined();
     expect(r.id).toBe("42");
   });

@@ -6,12 +6,11 @@
 //
 // PURE FUNCTION over `tray` so the build can inline it into serialized goja
 // callbacks (see CLAUDE.md "Splitting an extension across multiple files").
-import type { DeviceCodeStart } from "../_utils/gist/device-flow";
 import { CAPTION_STYLE, LABEL_STYLE } from "./text";
 
 export interface GithubConnectOptions {
   /** Non-null while a login poll is in flight → the code prompt takes over. */
-  deviceStart: DeviceCodeStart | null;
+  deviceStart: $gh.Login.DeviceCode | null;
   /** Uppercase section label above the block (e.g. "Sync"). Hidden while the
    *  code prompt is up. Omit for none. */
   title?: string;
@@ -125,13 +124,16 @@ function statusRow(tray: $ui.Tray, s: ConnectStatus): unknown {
 // The device-flow "enter this code at GitHub" prompt. The button can't open the
 // tab itself (an anchor's href is suppressed when it also has onClick, and
 // there's no open-URL API), so the user taps the anchor.
-function deviceCodePrompt(tray: $ui.Tray, start: DeviceCodeStart): unknown {
+function deviceCodePrompt(
+  tray: $ui.Tray,
+  start: $gh.Login.DeviceCode,
+): unknown {
   return tray.stack(
     [
       tray.flex(
         [
           tray.text("Enter this code at GitHub", { style: CAPTION_STYLE }),
-          tray.text(start.userCode, {
+          tray.text(start.user_code, {
             style: {
               fontSize: "1.25rem",
               fontWeight: "700",
@@ -143,7 +145,7 @@ function deviceCodePrompt(tray: $ui.Tray, start: DeviceCodeStart): unknown {
       ),
       tray.anchor({
         text: "Open GitHub ↗",
-        href: start.verificationUri,
+        href: start.verification_uri,
         target: "_blank",
       }),
       tray.text("Waiting for authorization…", { style: CAPTION_STYLE }),

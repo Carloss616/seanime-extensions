@@ -4,7 +4,7 @@
 // class: the two clients live in separate bundles with different return shapes,
 // so they share these pure field-extractors, not inheritance.
 
-type MURecord = MUSearch.Record | MUSeries.Response;
+type MURecord = $mu.Search.Record | $mu.Series.Response;
 
 // Parse the publication year. MU ships it as a string ("2019"); returns
 // undefined for empty/missing/non-numeric values.

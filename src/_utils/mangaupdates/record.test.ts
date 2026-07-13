@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { muRecordUrl, muRecordYear } from "./record.ts";
 
-function rec(overrides: Partial<MUSearch.Record> = {}): MUSearch.Record {
+function rec(overrides: Partial<$mu.Search.Record> = {}): $mu.Search.Record {
   return {
     series_id: 555,
     title: "Test",

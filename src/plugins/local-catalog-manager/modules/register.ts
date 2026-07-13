@@ -5,10 +5,7 @@ import { CAPTION_STYLE, LABEL_STYLE } from "../../../_components/text";
 import { trayHeader } from "../../../_components/tray-header";
 import { statusToPill } from "../../../_utils/anilist-status";
 import { GITHUB_CLIENT_ID } from "../../../_utils/gist/constants";
-import {
-  type DeviceCodeStart,
-  DeviceFlowClient,
-} from "../../../_utils/gist/device-flow";
+import { DeviceFlowClient } from "../../../_utils/gist/device-flow";
 import {
   type ClientCacheScope,
   clientCacheQueryKeys,
@@ -795,7 +792,7 @@ export const register = (ctx: $ui.Context) => {
   // starting two flows; `deviceStart` drives the "enter this code" view while a
   // flow is in progress.
   const connecting = ctx.state<boolean>(false);
-  const deviceStart = ctx.state<DeviceCodeStart | null>(null);
+  const deviceStart = ctx.state<$gh.Login.DeviceCode | null>(null);
   // Reactive mirror of the device-flow token: $storage reads aren't reactive,
   // so connect/disconnect update this state to re-render the tray. $storage
   // stays authoritative for the hooks (separate runtimes) — both are written.

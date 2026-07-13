@@ -7,10 +7,12 @@ export interface GistInfo {
 export class GistClient {
   // Pass `(u, i) => ctx.fetch(u, i)` from UI scope; `ctx.fetch` matches the
   // shape declared in types/core.d.ts.
+  private declare baseUrl: string;
   private declare token: string;
   private declare fetchFn: typeof fetch;
 
   constructor(token: string, fetchFn: typeof fetch) {
+    this.baseUrl = "https://api.github.com";
     this.token = token;
     this.fetchFn = fetchFn;
   }
@@ -32,7 +34,7 @@ export class GistClient {
     content: string,
     description: string,
   ): Promise<GistInfo> {
-    const res = await this.fetchFn("https://api.github.com/gists", {
+    const res = await this.fetchFn(`${this.baseUrl}/gists`, {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({
@@ -44,24 +46,25 @@ export class GistClient {
     if (!res.ok) {
       throw new Error(`createGist failed: ${res.status} ${res.text()}`);
     }
-    const data = res.json<{ id: string; owner?: { login?: string } }>();
+    const data = res.json<$gh.Gist.Response>();
+    const id = data.id ?? "";
     const owner = data.owner?.login ?? "";
     return {
-      id: data.id,
+      id,
       owner,
-      rawUrl: this.rawUrl(owner, data.id, filename),
+      rawUrl: this.rawUrl(owner, id, filename),
     };
   }
 
   async getGistFile(id: string, filename: string): Promise<string> {
-    const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+    const res = await this.fetchFn(`${this.baseUrl}/gists/${id}`, {
       method: "GET",
       headers: this.headers(),
     });
     if (!res.ok) {
       throw new Error(`getGist failed: ${res.status} ${res.text()}`);
     }
-    const data = res.json<{ files?: Record<string, { content?: string }> }>();
+    const data = res.json<$gh.Gist.Response>();
     return data.files?.[filename]?.content ?? "";
   }
 
@@ -73,17 +76,14 @@ export class GistClient {
     id: string,
     filename: string,
   ): Promise<{ owner: string; rawUrl: string; content: string }> {
-    const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+    const res = await this.fetchFn(`${this.baseUrl}/gists/${id}`, {
       method: "GET",
       headers: this.headers(),
     });
     if (!res.ok) {
       throw new Error(`getGist failed: ${res.status} ${res.text()}`);
     }
-    const data = res.json<{
-      files?: Record<string, { content?: string }>;
-      owner?: { login?: string };
-    }>();
+    const data = res.json<$gh.Gist.Response>();
     const owner = data.owner?.login ?? "";
     return {
       owner,
@@ -97,7 +97,7 @@ export class GistClient {
     filename: string,
     content: string,
   ): Promise<void> {
-    const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+    const res = await this.fetchFn(`${this.baseUrl}/gists/${id}`, {
       method: "PATCH",
       headers: this.headers(),
       body: JSON.stringify({ files: { [filename]: { content } } }),
@@ -114,14 +114,14 @@ export class GistClient {
     id: string,
     filenames: string[],
   ): Promise<Record<string, string>> {
-    const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+    const res = await this.fetchFn(`${this.baseUrl}/gists/${id}`, {
       method: "GET",
       headers: this.headers(),
     });
     if (!res.ok) {
       throw new Error(`getGist failed: ${res.status} ${res.text()}`);
     }
-    const data = res.json<{ files?: Record<string, { content?: string }> }>();
+    const data = res.json<$gh.Gist.Response>();
     const out: Record<string, string> = {};
     for (const name of filenames) {
       out[name] = data.files?.[name]?.content ?? "";
@@ -139,7 +139,7 @@ export class GistClient {
     for (const [name, content] of Object.entries(files)) {
       body.files[name] = { content };
     }
-    const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+    const res = await this.fetchFn(`${this.baseUrl}/gists/${id}`, {
       method: "PATCH",
       headers: this.headers(),
       body: JSON.stringify(body),
@@ -150,7 +150,7 @@ export class GistClient {
   }
 
   async deleteGist(id: string): Promise<void> {
-    const res = await this.fetchFn(`https://api.github.com/gists/${id}`, {
+    const res = await this.fetchFn(`${this.baseUrl}/gists/${id}`, {
       method: "DELETE",
       headers: this.headers(),
     });
@@ -164,18 +164,14 @@ export class GistClient {
    *  that contains `filename`, or null. Lets a second device find the shared
    *  sync gist by filename instead of pasting an id — no create/link UI. */
   async findGistByFilename(filename: string): Promise<string | null> {
-    const res = await this.fetchFn(
-      "https://api.github.com/gists?per_page=100",
-      {
-        method: "GET",
-        headers: this.headers(),
-      },
-    );
+    const res = await this.fetchFn(`${this.baseUrl}/gists?per_page=100`, {
+      method: "GET",
+      headers: this.headers(),
+    });
     if (!res.ok) {
       throw new Error(`listGists failed: ${res.status} ${res.text()}`);
     }
-    const data =
-      res.json<Array<{ id: string; files?: Record<string, unknown> }>>();
+    const data = res.json<$gh.Gists.Response>();
     for (const g of data) {
       if (g.files && filename in g.files) return g.id;
     }
