@@ -1,22 +1,31 @@
 ---
 name: bump-version
-description: Release one extension — bump its version and write the changelog everywhere from the diff. Bumps manifest.json + the README version badge, synthesizes a Keep-a-Changelog entry into the extension's CHANGELOG.md, refreshes its README feature/config tables and llms-full.txt entry when features changed, rebuilds (code.js + marketplace.json), and offers the release commit. Use when the user asks to bump / release / cut a version, publish an update, or update the changelog for an extension.
+description: Release every extension whose built code.js changed — bump each version and write the changelog from the diff. Bumps manifest.json + the README version badge, synthesizes a Keep-a-Changelog entry into the extension's CHANGELOG.md (silent bump when the payload changed but behavior didn't), refreshes README feature/config tables and llms-full.txt when features changed, rebuilds, and offers the release commit. A shared _utils/_components fix re-inlines into several extensions' code.js, so it releases them all in one run. Use when the user asks to bump / release / cut a version, publish an update, or update the changelog.
 disable-model-invocation: true
 ---
 
 # Bump an extension's version
 
-Release **one** extension: pick the new version, write the changelog from the
-diff, propagate the number + summary to every surface, rebuild, and offer the
-commit. Run it again for the next extension — one changelog and one commit per
-extension keeps history clean.
+Release the extension(s) whose payload actually changed: pick each new version,
+write the changelog from the diff, propagate the number + summary to every
+surface, rebuild, and offer the commit.
 
-## 1. Resolve the extension + its last release
+**The trigger is `code.js`, not a folder.** Bump EVERY extension whose built
+`code.js` differs from its last release — no more, no less. Usually that's one
+extension, but a shared-code fix (`_utils` / `_components`) re-inlines into every
+dependent's `code.js`, so one edit legitimately releases several at once. In that
+case bump them all in the SAME run (don't ask which, don't defer the rest): the
+extension you actually reworked gets a full changelog entry, the ones that only
+picked up the re-inlined payload get a silent version bump (step 4). Give each
+its own `CHANGELOG.md` entry where warranted, but a single shared fix can share
+one commit across the extensions it touches.
 
-Argument is the extension **id** (the folder name, e.g. `manga-source-updates`).
-If none was given, list the extensions with unreleased changes and ask which —
-an extension has unreleased changes when `git diff` / new files exist under its
-dir since its last release commit (below). Never bump more than one per run.
+## 1. Resolve the extension(s) + their last release
+
+Argument is an extension **id** (the folder name, e.g. `manga-source-updates`) to
+scope the run to that one. If none was given, find every extension whose `code.js`
+changed (below) and release all of them — an extension has unreleased changes when
+its built payload differs from its last release commit.
 
 ```bash
 MAN=$(ls src/*/<id>/manifest.json)          # e.g. src/plugins/<id>/manifest.json
@@ -29,19 +38,23 @@ SHA=$(git log -1 --format=%H -- "$MAN")      # last commit that touched the mani
 holds because the manifest only changes on a version bump; if you ever touch a
 manifest for another reason, verify the version in that commit actually differs.
 
-**Skip an extension whose built `code.js` is unchanged.** `code.js` is the only
-thing seanime fetches, so a source diff that produces a byte-identical payload
-(a type-only refactor, a comment/format change) has nothing to release — do NOT
-bump it. Confirm against a fresh build before deciding:
+**The `code.js` diff is the decider — always build first, then bump iff it
+changed.** `code.js` is the only thing seanime fetches, so a payload that differs
+from its last release MUST be released (even a "defensive" or shared-code-only
+change with no behavior difference — that's a silent bump, step 4, not a skip),
+and a byte-identical payload (a type-only refactor, a comment/format change) has
+nothing to release — do NOT bump it. Never ask the user whether to bump a changed
+payload; a changed `code.js` is a release, full stop.
 
 ```bash
-bun run build >/dev/null 2>&1                     # bring code.js up to date
-git diff "$SHA" -- "$EXTDIR/code.js" | wc -l      # 0 → payload unchanged → skip
+bun run build >/dev/null 2>&1                     # bring every code.js up to date
+# per candidate extension:
+git diff "$SHA" -- "$EXTDIR/code.js" | wc -l      # >0 → bump   |   0 → skip
 ```
 
 This matters most for shared-code (`_utils` / `_components`) churn: it re-inlines
-into every dependent extension's `code.js`, so check each candidate's payload
-rather than assuming the source diff means a real release.
+into every dependent extension's `code.js`, so run the diff for EACH dependent and
+bump every one whose payload moved — not just the extension you edited.
 
 ## 2. Read the change set to summarize
 
@@ -126,8 +139,11 @@ bun run typecheck
 bun run test        # if any shared _utils/_components or utils/ logic changed
 ```
 
-Confirm `marketplace.json` now shows the new version and the build is clean
-before claiming done. Never hand-edit `marketplace.json`.
+Confirm the build is clean before claiming done. Note `marketplace.json` carries
+NO version field (it's not in the build's `MARKETPLACE_FIELDS`), so a version-only
+bump leaves it byte-identical — don't expect it in the diff, and never hand-edit
+it. It only changes when metadata the marketplace projects (name, description,
+icon, …) changed.
 
 ## 7. Offer the commit
 
@@ -140,4 +156,7 @@ push, do not add any Claude attribution footer):
 ```
 
 `<type>` is `feat` for a minor/major, `fix` for a patch. Stage the source **and**
-the built `code.js` + `marketplace.json`.
+every rebuilt `code.js` (plus `marketplace.json` if the build changed it). When
+one shared-code fix released several extensions, a single commit covering them all
+is cleaner than splitting the shared file across commits — list every version in
+the subject (e.g. `msu 1.8.3, msync 1.2.3, lcm 2.4.1`).
