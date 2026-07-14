@@ -5,7 +5,7 @@
 # 🗂️ Local Catalog Manager
 
 ![Type](https://shieldcn.dev/badge/type-plugin-3b82f6.svg?variant=secondary)
-![Version](https://shieldcn.dev/badge/version-2.3.0-22c55e.svg?variant=secondary)
+![Version](https://shieldcn.dev/badge/version-2.4.0-22c55e.svg?variant=secondary)
 ![TypeScript](https://shieldcn.dev/badge/TypeScript.svg?logo=typescript&color=3178C6&variant=secondary)
 
 **Manage your [Local Catalog](../../custom-source/local-catalog/) from inside seanime — add, edit, delete entries — and sync it to a GitHub Gist.**
@@ -53,13 +53,13 @@ Two operating modes:
 <details>
 <summary>Managing the gist binding (from the tray)</summary>
 
-The **🔗 GIST BINDING** section in the tray has two states:
+The header's **⋮** menu (next to the **🔗 Linked / 🔓 Not linked** badge) holds the binding actions, which vary by state:
 
-- **Not linked** — **🆕 Create new gist** (makes a secret gist seeded with an empty catalog), or paste a URL/ID into the **Link** input.
+- **Not linked** — **＋ Create new gist** (makes a secret gist seeded with an empty catalog), or **🔗 Link existing gist…**, which opens an inline input to paste a URL/ID.
 - **Linked** — three actions:
-  - **📋 Show raw URL** — toast with the raw URL to copy.
-  - **🔓 Unlink** — forgets the gist locally (leaves it on GitHub) and clears the local progress cache.
-  - **🗑 Delete remotely** — two-click confirm; the second click runs `DELETE /gists/:id` and clears local state.
+  - **📋 Copy raw catalog URL** — copies the raw URL to the clipboard.
+  - **🔓 Unlink gist** — forgets the gist locally (leaves it on GitHub) and clears the local progress cache.
+  - **⛔ Delete gist remotely…** — opens an inline confirm banner; **⛔ Delete gist** runs `DELETE /gists/:id` and clears local state.
 
 Accepted link formats: `https://gist.githubusercontent.com/<user>/<id>/raw/catalog.json`, `https://gist.github.com/<user>/<id>`, or the bare `<id>` hex string.
 

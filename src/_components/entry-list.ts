@@ -24,10 +24,17 @@ export interface EntryListRow {
   title: string;
   year?: number;
   // Rendered as a native tray.badge. `intent` drives the color.
-  status?: { label: string; intent?: $ui.BadgeComponentIntent };
+  status?: {
+    label: string;
+    intent?: $ui.BadgeComponentIntent;
+  } & $ui.ComponentProps;
   // Optional warning pill after `status` (e.g. a cross-device manual-match
   // divergence). Same sub-line, defaults to `warning` intent.
-  warn?: { label: string; tooltip?: string; intent?: $ui.BadgeComponentIntent };
+  warn?: {
+    label: string;
+    tooltip?: string;
+    intent?: $ui.BadgeComponentIntent;
+  } & $ui.ComponentProps;
   // Rendered as "c.{chapter}".
   chapter?: number | string;
   // "Open ↗" underlined external link (new tab) with an optional tooltip.
@@ -157,6 +164,8 @@ export function entryList(tray: $ui.Tray, cfg: EntryListConfig): unknown {
         tray.badge(row.status.label, {
           intent: row.status.intent ?? "gray",
           size: "sm",
+          style: row.status.style,
+          className: row.status.className,
         }),
       );
     }
@@ -164,6 +173,8 @@ export function entryList(tray: $ui.Tray, cfg: EntryListConfig): unknown {
       const badge = tray.badge(row.warn.label, {
         intent: row.warn.intent ?? "warning",
         size: "sm",
+        style: row.warn.style,
+        className: row.warn.className,
       });
       segs.push(
         row.warn.tooltip

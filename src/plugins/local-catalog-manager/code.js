@@ -623,6 +623,35 @@ var onPreUpdateEntryProgress = (...args) => {
 
 // src/plugins/local-catalog-manager/modules/register.ts
 var register = (...args) => {
+  function alertActions(tray, rows) {
+    return tray.div(
+      [
+        tray.div([], {
+          style: {
+            position: "absolute",
+            top: "-7px",
+            left: "50%",
+            transform: "translateX(-50%)",
+            width: "0",
+            height: "0",
+            borderLeft: "7px solid transparent",
+            borderRight: "7px solid transparent",
+            borderBottom: "7px solid rgba(255,255,255,0.18)",
+          },
+        }),
+        tray.stack(rows, { gap: 2, style: { alignItems: "center" } }),
+      ],
+      {
+        style: {
+          position: "relative",
+          padding: "12px",
+          borderRadius: "8px",
+          border: "1px solid rgba(255,255,255,0.18)",
+          background: "rgba(255,255,255,0.04)",
+        },
+      },
+    );
+  }
   function divider(tray) {
     return tray.div([], {
       style: { borderTop: "1px solid rgba(255,255,255,0.1)" },
@@ -648,6 +677,8 @@ var register = (...args) => {
     fontSize: "0.7rem",
     opacity: "0.55",
   };
+  var ALERT_MENU_ITEM_STYLE =
+    "hover:bg-red-100 active:bg-red-200 dark:hover:bg-opacity-20 text-[--red]";
   function initialsCover(tray, name) {
     const label = String(name);
     const clean = label.replace(/[^a-zA-Z0-9]/g, "");
@@ -727,6 +758,8 @@ var register = (...args) => {
           tray.badge(row.status.label, {
             intent: row.status.intent ?? "gray",
             size: "sm",
+            style: row.status.style,
+            className: row.status.className,
           }),
         );
       }
@@ -734,6 +767,8 @@ var register = (...args) => {
         const badge = tray.badge(row.warn.label, {
           intent: row.warn.intent ?? "warning",
           size: "sm",
+          style: row.warn.style,
+          className: row.warn.className,
         });
         segs.push(
           row.warn.tooltip
@@ -935,9 +970,7 @@ var register = (...args) => {
   function statusRow(tray, s) {
     const segs = [];
     if (s.badge) {
-      segs.push(
-        tray.badge(s.badge.label, { intent: s.badge.intent, size: "sm" }),
-      );
+      segs.push(tray.badge(s.badge.label, { intent: s.badge.intent }));
     }
     if (s.text) {
       segs.push(
@@ -999,6 +1032,7 @@ var register = (...args) => {
     if (o.disconnectable ?? o.connected) {
       items.push(
         tray.dropdownMenuItem(tray.text("Disconnect"), {
+          className: ALERT_MENU_ITEM_STYLE,
           onClick: o.disconnectEvent,
         }),
       );
@@ -1119,6 +1153,7 @@ var register = (...args) => {
     return {
       label: status.replace(/_/g, " ").toLowerCase(),
       intent: STATUS_INTENT[status] ?? "gray",
+      className: "capitalize",
     };
   }
   var GITHUB_CLIENT_ID = "Ov23li6KslJmP3EaLxXj";
@@ -2236,9 +2271,9 @@ var register = (...args) => {
       idMal: fIdMal,
       meanScore: fMeanScore,
     };
-    const deleteGistArmed = ctx.state(false);
     const deleteArmedId = ctx.state(0);
-    const bindingExpanded = ctx.state(false);
+    const bindingPrompt = ctx.state("");
+    const localInfoExpanded = ctx.state(false);
     const orphansExpanded = ctx.state(false);
     const catalogJsonExpanded = ctx.state(false);
     const progressJsonExpanded = ctx.state(false);
@@ -2317,10 +2352,15 @@ var register = (...args) => {
     if ($storage.has(K_PROGRESS_DRIFT_REMOTE)) {
       const persistedProgressRemote = $storage.get(K_PROGRESS_DRIFT_REMOTE);
       if (persistedProgressRemote) {
-        pendingProgressDrift.set({
-          local: progress.get(),
-          remote: persistedProgressRemote,
-        });
+        const pd = diffProgress(progress.get(), persistedProgressRemote);
+        if (pd.conflicts === 0 && pd.localOnly === 0 && pd.remoteOnly === 0) {
+          pauseProgressSync(null);
+        } else {
+          pendingProgressDrift.set({
+            local: progress.get(),
+            remote: persistedProgressRemote,
+          });
+        }
       }
     }
     const busyAction = ctx.state("");
@@ -2385,7 +2425,7 @@ var register = (...args) => {
       }
     }
     const disarmDelete = () => {
-      if (deleteGistArmed.get()) deleteGistArmed.set(false);
+      if (bindingPrompt.get() === "delete") bindingPrompt.set("");
       if (deleteArmedId.get() !== 0) deleteArmedId.set(0);
     };
     const clearGistLocalState = () => {
@@ -2393,6 +2433,10 @@ var register = (...args) => {
       $storage.remove(K_OWNER);
       $storage.remove(K_RAW_URL);
       rawUrl.set("");
+      pendingDrift.set(null);
+      pauseSync(null);
+      pendingProgressDrift.set(null);
+      pauseProgressSync(null);
     };
     async function createGistNow() {
       disarmDelete();
@@ -2453,6 +2497,7 @@ var register = (...args) => {
         $storage.set(K_RAW_URL, "");
         rawUrl.set("");
         fGistLink.setValue("");
+        bindingPrompt.set("");
         let remote = [];
         try {
           const info = await client().getGistFileWithInfo(
@@ -2510,10 +2555,12 @@ var register = (...args) => {
         const local = progress.get();
         const localCount = Object.keys(local.manga).length;
         const remoteCount = Object.keys(remote.manga).length;
-        if (localCount > 0 && remoteCount > 0) {
+        const d = diffProgress(local, remote);
+        const progressDiverges =
+          d.conflicts > 0 || d.localOnly > 0 || d.remoteOnly > 0;
+        if (localCount > 0 && remoteCount > 0 && progressDiverges) {
           pendingProgressDrift.set({ local, remote });
           pauseProgressSync(remote);
-          const d = diffProgress(local, remote);
           ctx.toast.warning(
             `Linked to gist ${gistId} — ${catalogSummary}. Progress drift: ${localCount} local vs ${remoteCount} remote (${d.conflicts} in conflict). Resolve in tray.`,
           );
@@ -2658,14 +2705,14 @@ var register = (...args) => {
     async function deleteGistRemotely() {
       const gistId = effectiveGistId();
       if (!gistId || !hasToken()) {
-        deleteGistArmed.set(false);
+        bindingPrompt.set("");
         return;
       }
       await runBusy("delete-gist", async () => {
         try {
           await client().deleteGist(gistId);
           clearGistLocalState();
-          deleteGistArmed.set(false);
+          bindingPrompt.set("");
           ctx.toast.success(
             `Deleted gist ${gistId} from GitHub. Local catalog + progress kept.`,
           );
@@ -2846,15 +2893,21 @@ var register = (...args) => {
         ctx.toast.info(url);
       }
     });
-    ctx.registerEventHandler("lcm-delete-gist-arm", () => {
-      deleteGistArmed.set(true);
+    ctx.registerEventHandler("lcm-binding-link-open", () => {
+      bindingPrompt.set("link");
+    });
+    ctx.registerEventHandler("lcm-binding-delete-open", () => {
+      bindingPrompt.set("delete");
+    });
+    ctx.registerEventHandler("lcm-binding-cancel", () => {
+      bindingPrompt.set("");
+      fGistLink.setValue("");
+    });
+    ctx.registerEventHandler("lcm-toggle-local", () => {
+      localInfoExpanded.set(!localInfoExpanded.get());
     });
     ctx.registerEventHandler("lcm-delete-gist-confirm", () => {
       deleteGistRemotely();
-    });
-    ctx.registerEventHandler("lcm-toggle-binding", () => {
-      disarmDelete();
-      bindingExpanded.set(!bindingExpanded.get());
     });
     ctx.registerEventHandler("lcm-connect-github", () => {
       connectGitHub();
@@ -2862,6 +2915,13 @@ var register = (...args) => {
     ctx.registerEventHandler("lcm-disconnect-github", () => {
       $storage.set(K_OAUTH_TOKEN, "");
       oauthTok.set("");
+      if (!patToken()) {
+        pendingDrift.set(null);
+        pauseSync(null);
+        pendingProgressDrift.set(null);
+        pauseProgressSync(null);
+        bindingPrompt.set("");
+      }
       ctx.toast.info(
         patToken()
           ? "GitHub login cleared (still connected via PAT config)"
@@ -3150,149 +3210,91 @@ var register = (...args) => {
         connectHint: "or set a GitHub PAT in the plugin config",
       });
     }
+    function renderBindingPrompt() {
+      if (!hasToken()) return null;
+      const gid = effectiveGistId();
+      const prompt = bindingPrompt.get();
+      if (prompt === "link" && !gid) {
+        const linkBusy = busyAction.get() === "link-gist";
+        return tray.flex(
+          [
+            tray.div(
+              [tray.input("Paste gist URL or ID", { fieldRef: fGistLink })],
+              { style: { flex: "1", minWidth: "0" } },
+            ),
+            tray.button(linkBusy ? "Linking…" : "\uD83D\uDD17 Link", {
+              onClick: "lcm-link-gist",
+              size: "sm",
+              loading: linkBusy,
+            }),
+            tray.button("Cancel", {
+              onClick: "lcm-binding-cancel",
+              size: "sm",
+              intent: "gray-subtle",
+            }),
+          ],
+          {
+            gap: 2,
+            style: {
+              alignItems: "end",
+            },
+          },
+        );
+      }
+      if (prompt === "delete" && gid) {
+        const deleteBusy = busyAction.get() === "delete-gist";
+        const shortId = gid.length > 12 ? `${gid.slice(0, 12)}…` : gid;
+        return tray.stack(
+          [
+            tray.alert({
+              title: `Delete gist ${shortId} from GitHub?`,
+              description:
+                "Irreversible. Your local catalog + reading progress are kept — only the remote gist is removed.",
+              intent: "alert",
+            }),
+            alertActions(tray, [
+              tray.flex(
+                [
+                  tray.button(deleteBusy ? "Deleting…" : "⛔ Delete gist", {
+                    onClick: "lcm-delete-gist-confirm",
+                    intent: "alert",
+                    loading: deleteBusy,
+                  }),
+                  tray.button("✕ Cancel", {
+                    onClick: "lcm-binding-cancel",
+                  }),
+                ],
+                { gap: 2 },
+              ),
+            ]),
+          ],
+          { gap: 2 },
+        );
+      }
+      return null;
+    }
     function renderSync() {
       if (hasToken()) {
-        const gid = effectiveGistId();
-        const owner = $storage.get(K_OWNER) ?? "";
-        const expanded2 = bindingExpanded.get();
-        const drifting = hasDrift();
-        const items2 = [];
         const statusLine = status.get();
-        if (statusLine) {
-          items2.push(
+        if (!statusLine) return null;
+        return tray.stack(
+          [
             tray.text(statusLine, {
               style: {
                 fontSize: "0.75rem",
                 opacity: "0.6",
               },
             }),
-          );
-        }
-        if (expanded2) {
-          if (gid) {
-            const deleteBusy = busyAction.get() === "delete-gist";
-            const shortId = gid.length > 12 ? `${gid.slice(0, 12)}…` : gid;
-            items2.push(
-              tray.flex(
-                [
-                  tray.div(
-                    [
-                      tray.span(shortId, {
-                        style: {
-                          fontFamily: "monospace",
-                          fontSize: "0.8rem",
-                          opacity: "0.85",
-                        },
-                      }),
-                      owner
-                        ? tray.span(`  ${owner}`, {
-                            style: { fontSize: "0.8rem", opacity: "0.55" },
-                          })
-                        : tray.span(""),
-                    ],
-                    {
-                      style: { flex: "1", alignSelf: "center", minWidth: "0" },
-                    },
-                  ),
-                  tray.tooltip(
-                    tray.button("\uD83D\uDCCB", {
-                      onClick: "lcm-show-raw-url",
-                      size: "sm",
-                      disabled: drifting,
-                    }),
-                    { text: "Copy raw catalog URL" },
-                  ),
-                  tray.tooltip(
-                    tray.button("\uD83D\uDD13", {
-                      onClick: "lcm-unlink-gist",
-                      size: "sm",
-                      disabled: drifting,
-                    }),
-                    { text: "Unlink gist (keep on GitHub)" },
-                  ),
-                  tray.tooltip(
-                    tray.button(
-                      deleteBusy
-                        ? "…"
-                        : deleteGistArmed.get()
-                          ? "⚠️️ Confirm"
-                          : "⛔",
-                      {
-                        onClick: deleteGistArmed.get()
-                          ? "lcm-delete-gist-confirm"
-                          : "lcm-delete-gist-arm",
-                        size: "sm",
-                        disabled: drifting,
-                        loading: deleteBusy,
-                      },
-                    ),
-                    {
-                      text: deleteGistArmed.get()
-                        ? "Click to confirm — this is irreversible"
-                        : "Delete gist remotely (irreversible)",
-                    },
-                  ),
-                ],
-                {
-                  gap: 2,
-                  style: {
-                    alignItems: "center",
-                    padding: "8px",
-                    borderRadius: "4px",
-                    background: "rgba(255,255,255,0.03)",
-                  },
-                },
-              ),
-            );
-          } else {
-            const createBusy = busyAction.get() === "create-gist";
-            items2.push(
-              tray.flex(
-                [
-                  tray.button(createBusy ? "Creating…" : "+ Create new gist", {
-                    onClick: "lcm-create-gist",
-                    intent: "primary",
-                    size: "sm",
-                    loading: createBusy,
-                  }),
-                ],
-                {},
-              ),
-              tray.flex(
-                [
-                  tray.div(
-                    [
-                      tray.input("Paste gist URL or ID", {
-                        fieldRef: fGistLink,
-                      }),
-                    ],
-                    { style: { flex: "1", minWidth: "0" } },
-                  ),
-                  tray.button(
-                    busyAction.get() === "link-gist"
-                      ? "Linking…"
-                      : "\uD83D\uDD17 Link",
-                    {
-                      onClick: "lcm-link-gist",
-                      size: "sm",
-                      loading: busyAction.get() === "link-gist",
-                    },
-                  ),
-                ],
-                { gap: 2, style: { alignItems: "end" } },
-              ),
-            );
-          }
-        }
-        if (items2.length === 0) return null;
-        return tray.stack(items2, { gap: 2 });
+          ],
+          { gap: 2 },
+        );
       }
       const localCount = entries.get().length;
       const jsonOut = serializeCatalog(
         entries.get(),
         $storage.get(K_UPDATED_AT) ?? Date.now(),
       );
-      const expanded = bindingExpanded.get();
+      const expanded = localInfoExpanded.get();
       const items = [];
       if (expanded) {
         items.push(
@@ -3599,37 +3601,7 @@ var register = (...args) => {
       });
       if (hasToken()) {
         const layers = [];
-        const actionBox = (buttonRows) =>
-          tray.div(
-            [
-              tray.div([], {
-                style: {
-                  position: "absolute",
-                  top: "-7px",
-                  left: "50%",
-                  transform: "translateX(-50%)",
-                  width: "0",
-                  height: "0",
-                  borderLeft: "7px solid transparent",
-                  borderRight: "7px solid transparent",
-                  borderBottom: "7px solid rgba(255,255,255,0.18)",
-                },
-              }),
-              tray.stack(buttonRows, {
-                gap: 2,
-                style: { alignItems: "center" },
-              }),
-            ],
-            {
-              style: {
-                position: "relative",
-                padding: "12px",
-                borderRadius: "8px",
-                border: "1px solid rgba(255,255,255,0.18)",
-                background: "rgba(255,255,255,0.04)",
-              },
-            },
-          );
+        const actionBox = (buttonRows) => alertActions(tray, buttonRows);
         const drift = pendingDrift.get();
         if (drift) {
           const d = diffCatalog(drift.local, drift.remote);
@@ -3724,6 +3696,8 @@ var register = (...args) => {
             ),
           );
         }
+        const bindingBanner = renderBindingPrompt();
+        if (bindingBanner) layers.push(bindingBanner);
         const connect = renderConnect();
         if (connect) layers.push(connect);
         const sync = renderSync();
@@ -4177,7 +4151,8 @@ var register = (...args) => {
       })();
     });
     tray.onClose(() => {
-      bindingExpanded.set(false);
+      bindingPrompt.set("");
+      localInfoExpanded.set(false);
       orphansExpanded.set(false);
       catalogJsonExpanded.set(false);
       progressJsonExpanded.set(false);
@@ -4195,40 +4170,65 @@ var register = (...args) => {
         );
       }
       const gid = effectiveGistId();
-      const expanded = bindingExpanded.get();
-      const drifting = hasDrift();
-      const right = hasToken()
-        ? [
-            gid
-              ? tray.badge("\uD83D\uDD17 Linked", { intent: "success" })
-              : tray.badge("\uD83D\uDD13 Not linked", { intent: "gray" }),
-            tray.tooltip(
-              tray.button(expanded ? "△" : "⚙️", {
-                onClick: "lcm-toggle-binding",
-                size: "sm",
-                disabled: drifting,
+      let right;
+      if (hasToken()) {
+        const menuItems = gid
+          ? [
+              tray.dropdownMenuItem(
+                tray.text("\uD83D\uDCCB Copy raw catalog URL"),
+                {
+                  onClick: "lcm-show-raw-url",
+                },
+              ),
+              tray.dropdownMenuItem(tray.text("\uD83D\uDD13 Unlink gist"), {
+                onClick: "lcm-unlink-gist",
               }),
-              {
-                text: expanded
-                  ? "Collapse gist details"
-                  : "Manage gist binding",
-              },
-            ),
-          ]
-        : [
-            tray.badge("\uD83D\uDCBB Device only", { intent: "gray" }),
-            tray.tooltip(
-              tray.button(expanded ? "△" : "⚠️", {
-                onClick: "lcm-toggle-binding",
-                size: "sm",
+              tray.dropdownMenuItem(tray.text("⛔ Delete gist remotely…"), {
+                className: ALERT_MENU_ITEM_STYLE,
+                onClick: "lcm-binding-delete-open",
               }),
-              {
-                text: expanded
-                  ? "Collapse local limitation"
-                  : "Show local limitation",
-              },
-            ),
-          ];
+            ]
+          : [
+              tray.dropdownMenuItem(tray.text("＋ Create new gist"), {
+                onClick: "lcm-create-gist",
+              }),
+              tray.dropdownMenuItem(
+                tray.text("\uD83D\uDD17 Link existing gist…"),
+                {
+                  onClick: "lcm-binding-link-open",
+                },
+              ),
+            ];
+        right = [
+          gid
+            ? tray.badge("\uD83D\uDD17 Linked", { intent: "success" })
+            : tray.badge("\uD83D\uDD13 Not linked", { intent: "gray" }),
+          tray.dropdownMenu({
+            trigger: tray.button("⋮", {
+              size: "sm",
+              intent: "gray-subtle",
+              disabled: !!pendingDrift.get(),
+            }),
+            items: menuItems,
+          }),
+        ];
+      } else {
+        const expanded = localInfoExpanded.get();
+        right = [
+          tray.badge("\uD83D\uDCBB Device only", { intent: "gray" }),
+          tray.tooltip(
+            tray.button(expanded ? "△" : "⚠️", {
+              onClick: "lcm-toggle-local",
+              size: "sm",
+            }),
+            {
+              text: expanded
+                ? "Collapse local limitation"
+                : "Show local limitation",
+            },
+          ),
+        ];
+      }
       const header = trayHeader(tray, {
         subtitle: hasToken() ? "Gist mode" : "Local mode",
         right,

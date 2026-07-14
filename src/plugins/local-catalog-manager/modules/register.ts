@@ -1,7 +1,12 @@
+import { alertActions } from "../../../_components/alert-actions";
 import { divider, joinDividers } from "../../../_components/divider";
 import { type EntryListRow, entryList } from "../../../_components/entry-list";
 import { githubConnect } from "../../../_components/github-connect";
-import { CAPTION_STYLE, LABEL_STYLE } from "../../../_components/text";
+import {
+  ALERT_MENU_ITEM_STYLE,
+  CAPTION_STYLE,
+  LABEL_STYLE,
+} from "../../../_components/text";
 import { trayHeader } from "../../../_components/tray-header";
 import { statusToPill } from "../../../_utils/anilist-status";
 import { GITHUB_CLIENT_ID } from "../../../_utils/gist/constants";
@@ -614,16 +619,20 @@ export const register = (ctx: $ui.Context) => {
     meanScore: fMeanScore,
   };
 
-  // Armed state for the two-click "Delete remotely" confirmation.
-  const deleteGistArmed = ctx.state<boolean>(false);
-
   // Armed catalog-entry id for the two-click entry-delete confirmation (0 =
   // none). First ⛔ click arms + warns (progress is lost too); second deletes.
   const deleteArmedId = ctx.state<number>(0);
 
-  // Whether the gist-binding subline (short-id + owner + icon actions) is
-  // expanded. Defaults to collapsed; pencil toggle flips it.
-  const bindingExpanded = ctx.state<boolean>(false);
+  // Which gist-binding prompt is open below the header. Empty = none (the
+  // binding actions live in the header ⋮ menu). "link" reveals the paste-gist
+  // input (can't live inside a dropdown), "delete" the irreversible-confirm
+  // banner. The menu items open these; a Cancel / the action itself closes it.
+  const bindingPrompt = ctx.state<"" | "link" | "delete">("");
+
+  // Local-only mode: whether the "can't sync directly" limitation + JSON export
+  // blocks are expanded. Its own toggle (the ⚠️ header button) since it reveals
+  // CONTENT, not actions — unlike Gist mode's ⋮ actions menu.
+  const localInfoExpanded = ctx.state<boolean>(false);
 
   // Whether the orphan list (per-orphan delete + try-apply) is expanded under
   // the READING PROGRESS section. Defaults collapsed; the ⚠️ N badge toggles.
@@ -777,10 +786,17 @@ export const register = (ctx: $ui.Context) => {
       K_PROGRESS_DRIFT_REMOTE,
     );
     if (persistedProgressRemote) {
-      pendingProgressDrift.set({
-        local: progress.get(),
-        remote: persistedProgressRemote,
-      });
+      // Self-heal (mirror of the catalog path): a persisted progress drift that
+      // no longer diverges from local is dead — clear it instead of restoring.
+      const pd = diffProgress(progress.get(), persistedProgressRemote);
+      if (pd.conflicts === 0 && pd.localOnly === 0 && pd.remoteOnly === 0) {
+        pauseProgressSync(null);
+      } else {
+        pendingProgressDrift.set({
+          local: progress.get(),
+          remote: persistedProgressRemote,
+        });
+      }
     }
   }
 
@@ -878,7 +894,7 @@ export const register = (ctx: $ui.Context) => {
   // Reset the armed "Delete remotely" state. Called from every other event
   // handler so accidental arms don't linger.
   const disarmDelete = () => {
-    if (deleteGistArmed.get()) deleteGistArmed.set(false);
+    if (bindingPrompt.get() === "delete") bindingPrompt.set("");
     if (deleteArmedId.get() !== 0) deleteArmedId.set(0);
   };
 
@@ -891,6 +907,13 @@ export const register = (ctx: $ui.Context) => {
     $storage.remove(K_OWNER);
     $storage.remove(K_RAW_URL);
     rawUrl.set("");
+    // Any pending drift was against the gist we're now forgetting (unlink /
+    // remote-delete) — clear both kinds + unpause so their banners don't linger
+    // after the binding is gone (they'd otherwise stay until resolved).
+    pendingDrift.set(null);
+    pauseSync(null);
+    pendingProgressDrift.set(null);
+    pauseProgressSync(null);
   };
 
   async function createGistNow() {
@@ -961,6 +984,7 @@ export const register = (ctx: $ui.Context) => {
       $storage.set(K_RAW_URL, "");
       rawUrl.set("");
       fGistLink.setValue("");
+      bindingPrompt.set("");
 
       let remote: MangaCatalogEntry[] = [];
       try {
@@ -1049,11 +1073,16 @@ export const register = (ctx: $ui.Context) => {
       const local = progress.get();
       const localCount = Object.keys(local.manga).length;
       const remoteCount = Object.keys(remote.manga).length;
-      if (localCount > 0 && remoteCount > 0) {
+      const d = diffProgress(local, remote);
+      // Only a REAL divergence is a drift. Re-linking the SAME gist (or any
+      // identical state) yields no diff — surfacing a banner there was the bug
+      // where relinking a clean gist always nagged. Mirror catalogsEqual above.
+      const progressDiverges =
+        d.conflicts > 0 || d.localOnly > 0 || d.remoteOnly > 0;
+      if (localCount > 0 && remoteCount > 0 && progressDiverges) {
         // Drift candidate — surface the banner.
         pendingProgressDrift.set({ local, remote });
         pauseProgressSync(remote);
-        const d = diffProgress(local, remote);
         ctx.toast.warning(
           `Linked to gist ${gistId} — ${catalogSummary}. Progress drift: ${localCount} local vs ${remoteCount} remote (${d.conflicts} in conflict). Resolve in tray.`,
         );
@@ -1232,14 +1261,14 @@ export const register = (ctx: $ui.Context) => {
   async function deleteGistRemotely() {
     const gistId = effectiveGistId();
     if (!gistId || !hasToken()) {
-      deleteGistArmed.set(false);
+      bindingPrompt.set("");
       return;
     }
     await runBusy("delete-gist", async () => {
       try {
         await client().deleteGist(gistId);
         clearGistLocalState();
-        deleteGistArmed.set(false);
+        bindingPrompt.set("");
         ctx.toast.success(
           `Deleted gist ${gistId} from GitHub. Local catalog + progress kept.`,
         );
@@ -1435,15 +1464,23 @@ export const register = (ctx: $ui.Context) => {
       ctx.toast.info(url);
     }
   });
-  ctx.registerEventHandler("lcm-delete-gist-arm", () => {
-    deleteGistArmed.set(true);
+  // Binding prompts (opened from the header ⋮ menu). "link" reveals the paste
+  // input, "delete" the irreversible-confirm banner; Cancel closes either.
+  ctx.registerEventHandler("lcm-binding-link-open", () => {
+    bindingPrompt.set("link");
+  });
+  ctx.registerEventHandler("lcm-binding-delete-open", () => {
+    bindingPrompt.set("delete");
+  });
+  ctx.registerEventHandler("lcm-binding-cancel", () => {
+    bindingPrompt.set("");
+    fGistLink.setValue("");
+  });
+  ctx.registerEventHandler("lcm-toggle-local", () => {
+    localInfoExpanded.set(!localInfoExpanded.get());
   });
   ctx.registerEventHandler("lcm-delete-gist-confirm", () => {
     void deleteGistRemotely();
-  });
-  ctx.registerEventHandler("lcm-toggle-binding", () => {
-    disarmDelete();
-    bindingExpanded.set(!bindingExpanded.get());
   });
   ctx.registerEventHandler("lcm-connect-github", () => {
     void connectGitHub();
@@ -1454,6 +1491,17 @@ export const register = (ctx: $ui.Context) => {
     // re-uses it. oauthTok.set drives the re-render ($storage isn't reactive).
     $storage.set(K_OAUTH_TOKEN, "");
     oauthTok.set("");
+    // If a PAT remains we're still connected + syncing via it, so a real
+    // pending drift must stay. Only when FULLY disconnecting (no PAT) do we drop
+    // the drift state — otherwise its banner would resurface on reconnect even
+    // though local mode hid it. The divergence re-detects on the next reload.
+    if (!patToken()) {
+      pendingDrift.set(null);
+      pauseSync(null);
+      pendingProgressDrift.set(null);
+      pauseProgressSync(null);
+      bindingPrompt.set("");
+    }
     ctx.toast.info(
       patToken()
         ? "GitHub login cleared (still connected via PAT config)"
@@ -1763,148 +1811,99 @@ export const register = (ctx: $ui.Context) => {
     });
   }
 
+  // The "Link existing gist…" / "Delete gist remotely…" prompts opened from the
+  // header ⋮ menu. Rendered as a top-level banner near the top of the list (like
+  // the drift banners), not buried below the Sync section. Null when no prompt
+  // is open or it doesn't match the current linked state.
+  function renderBindingPrompt(): unknown {
+    if (!hasToken()) return null;
+    const gid = effectiveGistId();
+    const prompt = bindingPrompt.get();
+    // "Link existing gist…" — hosts the paste input, which can't live inside the
+    // ⋮ dropdown. Only meaningful while unlinked; a successful link clears it.
+    if (prompt === "link" && !gid) {
+      const linkBusy = busyAction.get() === "link-gist";
+      return tray.flex(
+        [
+          tray.div(
+            [tray.input("Paste gist URL or ID", { fieldRef: fGistLink })],
+            { style: { flex: "1", minWidth: "0" } },
+          ),
+          tray.button(linkBusy ? "Linking…" : "🔗 Link", {
+            onClick: "lcm-link-gist",
+            size: "sm",
+            loading: linkBusy,
+          }),
+          tray.button("Cancel", {
+            onClick: "lcm-binding-cancel",
+            size: "sm",
+            intent: "gray-subtle",
+          }),
+        ],
+        {
+          gap: 2,
+          style: {
+            alignItems: "end",
+          },
+        },
+      );
+    }
+    // "Delete gist remotely…" confirm banner (replaces the old in-place
+    // arm→confirm). Only when linked.
+    if (prompt === "delete" && gid) {
+      const deleteBusy = busyAction.get() === "delete-gist";
+      const shortId = gid.length > 12 ? `${gid.slice(0, 12)}…` : gid;
+      return tray.stack(
+        [
+          tray.alert({
+            title: `Delete gist ${shortId} from GitHub?`,
+            description:
+              "Irreversible. Your local catalog + reading progress are kept — only the remote gist is removed.",
+            intent: "alert",
+          }),
+          alertActions(tray, [
+            tray.flex(
+              [
+                tray.button(deleteBusy ? "Deleting…" : "⛔ Delete gist", {
+                  onClick: "lcm-delete-gist-confirm",
+                  intent: "alert",
+                  loading: deleteBusy,
+                }),
+                tray.button("✕ Cancel", {
+                  onClick: "lcm-binding-cancel",
+                }),
+              ],
+              { gap: 2 },
+            ),
+          ]),
+        ],
+        { gap: 2 },
+      );
+    }
+    return null;
+  }
+
   function renderSync() {
     if (hasToken()) {
-      const gid = effectiveGistId();
-      const owner = $storage.get<string>(K_OWNER) ?? "";
-      const expanded = bindingExpanded.get();
-      // While a drift is pending the user must resolve it via the drift banner;
-      // managing the gist binding here would be confusing, so disable it.
-      const drifting = hasDrift();
-      // The mode/linked/toggle row is rendered by the top trayHeader now; this
-      // section carries only the status line + (when expanded) binding details.
-      const items: unknown[] = [];
+      // The binding actions live in the header ⋮ menu; the link/delete prompts
+      // render as a top-level banner (renderBindingPrompt). This section carries
+      // only the status line now.
       // Status line only when there's an explicit op result ("Synced N",
       // "Reloaded · N", …) — the ENTRIES header + Linked pill already convey
       // the steady state, so there's no static fallback.
       const statusLine = status.get();
-      if (statusLine) {
-        items.push(
+      if (!statusLine) return null;
+      return tray.stack(
+        [
           tray.text(statusLine, {
             style: {
               fontSize: "0.75rem",
               opacity: "0.6",
             },
           }),
-        );
-      }
-      if (expanded) {
-        if (gid) {
-          const deleteBusy = busyAction.get() === "delete-gist";
-          const shortId = gid.length > 12 ? `${gid.slice(0, 12)}…` : gid;
-          items.push(
-            tray.flex(
-              [
-                tray.div(
-                  [
-                    tray.span(shortId, {
-                      style: {
-                        fontFamily: "monospace",
-                        fontSize: "0.8rem",
-                        opacity: "0.85",
-                      },
-                    }),
-                    owner
-                      ? tray.span(`  ${owner}`, {
-                          style: { fontSize: "0.8rem", opacity: "0.55" },
-                        })
-                      : tray.span(""),
-                  ],
-                  { style: { flex: "1", alignSelf: "center", minWidth: "0" } },
-                ),
-                tray.tooltip(
-                  tray.button("📋", {
-                    onClick: "lcm-show-raw-url",
-                    size: "sm",
-                    disabled: drifting,
-                  }),
-                  { text: "Copy raw catalog URL" },
-                ),
-                tray.tooltip(
-                  tray.button("🔓", {
-                    onClick: "lcm-unlink-gist",
-                    size: "sm",
-                    disabled: drifting,
-                  }),
-                  { text: "Unlink gist (keep on GitHub)" },
-                ),
-                tray.tooltip(
-                  tray.button(
-                    deleteBusy
-                      ? "…"
-                      : deleteGistArmed.get()
-                        ? "⚠️️ Confirm"
-                        : "⛔",
-                    {
-                      onClick: deleteGistArmed.get()
-                        ? "lcm-delete-gist-confirm"
-                        : "lcm-delete-gist-arm",
-                      size: "sm",
-                      disabled: drifting,
-                      loading: deleteBusy,
-                    },
-                  ),
-                  {
-                    text: deleteGistArmed.get()
-                      ? "Click to confirm — this is irreversible"
-                      : "Delete gist remotely (irreversible)",
-                  },
-                ),
-              ],
-              {
-                gap: 2,
-                style: {
-                  alignItems: "center",
-                  padding: "8px",
-                  borderRadius: "4px",
-                  background: "rgba(255,255,255,0.03)",
-                },
-              },
-            ),
-          );
-        } else {
-          const createBusy = busyAction.get() === "create-gist";
-          items.push(
-            tray.flex(
-              [
-                tray.button(createBusy ? "Creating…" : "+ Create new gist", {
-                  onClick: "lcm-create-gist",
-                  intent: "primary",
-                  size: "sm",
-                  loading: createBusy,
-                }),
-              ],
-              {},
-            ),
-            tray.flex(
-              [
-                tray.div(
-                  [
-                    tray.input("Paste gist URL or ID", {
-                      fieldRef: fGistLink,
-                    }),
-                  ],
-                  { style: { flex: "1", minWidth: "0" } },
-                ),
-                tray.button(
-                  busyAction.get() === "link-gist" ? "Linking…" : "🔗 Link",
-                  {
-                    onClick: "lcm-link-gist",
-                    size: "sm",
-                    loading: busyAction.get() === "link-gist",
-                  },
-                ),
-              ],
-              { gap: 2, style: { alignItems: "end" } },
-            ),
-          );
-        }
-      }
-      // Collapsed with no status line → nothing to show. Return null so the
-      // caller skips it (no empty stack adding a stray gap + a divider that
-      // would double up with the header's bottom border).
-      if (items.length === 0) return null;
-      return tray.stack(items, { gap: 2 });
+        ],
+        { gap: 2 },
+      );
     }
     // Local-only mode (no GitHub token configured).
     const localCount = entries.get().length;
@@ -1912,7 +1911,7 @@ export const register = (ctx: $ui.Context) => {
       entries.get(),
       $storage.get<number>(K_UPDATED_AT) ?? Date.now(),
     );
-    const expanded = bindingExpanded.get();
+    const expanded = localInfoExpanded.get();
     // The mode/badge/toggle row is rendered by the top trayHeader now.
     const items: unknown[] = [];
     if (expanded) {
@@ -2261,36 +2260,10 @@ export const register = (ctx: $ui.Context) => {
     if (hasToken()) {
       const layers: unknown[] = [];
       // tray.alert can't host child buttons, so an alert's actions live in a
-      // bordered box right below it, with an upward notch pointing back at the
-      // alert. Rows are centered inside the box.
+      // bordered notch box right below it (alertActions, shared with the gist
+      // delete-confirm). Rows are centered inside the box.
       const actionBox = (buttonRows: unknown[]) =>
-        tray.div(
-          [
-            tray.div([], {
-              style: {
-                position: "absolute",
-                top: "-7px",
-                left: "50%",
-                transform: "translateX(-50%)",
-                width: "0",
-                height: "0",
-                borderLeft: "7px solid transparent",
-                borderRight: "7px solid transparent",
-                borderBottom: "7px solid rgba(255,255,255,0.18)",
-              },
-            }),
-            tray.stack(buttonRows, { gap: 2, style: { alignItems: "center" } }),
-          ],
-          {
-            style: {
-              position: "relative",
-              padding: "12px",
-              borderRadius: "8px",
-              border: "1px solid rgba(255,255,255,0.18)",
-              background: "rgba(255,255,255,0.04)",
-            },
-          },
-        );
+        alertActions(tray, buttonRows);
       const drift = pendingDrift.get();
       if (drift) {
         const d = diffCatalog(drift.local, drift.remote);
@@ -2382,6 +2355,11 @@ export const register = (ctx: $ui.Context) => {
           ),
         );
       }
+      // Binding prompt (link/delete) sits right under the header — above the
+      // Sync section — since it's opened from the header ⋮ menu, mirroring how
+      // the drift banners surface near the top.
+      const bindingBanner = renderBindingPrompt();
+      if (bindingBanner) layers.push(bindingBanner);
       const connect = renderConnect();
       if (connect) layers.push(connect);
       const sync = renderSync();
@@ -2895,7 +2873,8 @@ export const register = (ctx: $ui.Context) => {
   // Collapse all expandable sections whenever the tray closes — the next
   // open starts with a clean compact view.
   tray.onClose(() => {
-    bindingExpanded.set(false);
+    bindingPrompt.set("");
+    localInfoExpanded.set(false);
     orphansExpanded.set(false);
     catalogJsonExpanded.set(false);
     progressJsonExpanded.set(false);
@@ -2913,41 +2892,71 @@ export const register = (ctx: $ui.Context) => {
         { gap: 3 },
       );
     }
-    // List view folds the mode + linked status + binding toggle (was a
+    // List view folds the mode + linked status + binding actions (was a
     // separate modeHeader row inside renderSync) into the identity header.
     const gid = effectiveGistId();
-    const expanded = bindingExpanded.get();
-    const drifting = hasDrift();
-    const right: unknown[] = hasToken()
-      ? [
-          gid
-            ? tray.badge("🔗 Linked", { intent: "success" })
-            : tray.badge("🔓 Not linked", { intent: "gray" }),
-          tray.tooltip(
-            tray.button(expanded ? "△" : "⚙️", {
-              onClick: "lcm-toggle-binding",
-              size: "sm",
-              disabled: drifting,
+    let right: unknown[];
+    if (hasToken()) {
+      // Gist mode: badge + a ⋮ actions menu. The paste-input / delete-confirm
+      // that some items need can't live in a dropdown, so those items open an
+      // inline prompt (renderSync, driven by bindingPrompt) instead.
+      const menuItems: unknown[] = gid
+        ? [
+            tray.dropdownMenuItem(tray.text("📋 Copy raw catalog URL"), {
+              onClick: "lcm-show-raw-url",
             }),
-            {
-              text: expanded ? "Collapse gist details" : "Manage gist binding",
-            },
-          ),
-        ]
-      : [
-          tray.badge("💻 Device only", { intent: "gray" }),
-          tray.tooltip(
-            tray.button(expanded ? "△" : "⚠️", {
-              onClick: "lcm-toggle-binding",
-              size: "sm",
+            tray.dropdownMenuItem(tray.text("🔓 Unlink gist"), {
+              onClick: "lcm-unlink-gist",
             }),
-            {
-              text: expanded
-                ? "Collapse local limitation"
-                : "Show local limitation",
-            },
-          ),
-        ];
+            tray.dropdownMenuItem(tray.text("⛔ Delete gist remotely…"), {
+              className: ALERT_MENU_ITEM_STYLE,
+              onClick: "lcm-binding-delete-open",
+            }),
+          ]
+        : [
+            tray.dropdownMenuItem(tray.text("＋ Create new gist"), {
+              onClick: "lcm-create-gist",
+            }),
+            tray.dropdownMenuItem(tray.text("🔗 Link existing gist…"), {
+              onClick: "lcm-binding-link-open",
+            }),
+          ];
+      right = [
+        gid
+          ? tray.badge("🔗 Linked", { intent: "success" })
+          : tray.badge("🔓 Not linked", { intent: "gray" }),
+        // Only CATALOG drift blocks binding management (link/create conflict
+        // with the pending merge) → disable the trigger then. PROGRESS drift
+        // leaves catalog + binding ops enabled, so the menu stays normal (it
+        // was showing opaque-but-clickable, which is worse than either state).
+        tray.dropdownMenu({
+          trigger: tray.button("⋮", {
+            size: "sm",
+            intent: "gray-subtle",
+            disabled: !!pendingDrift.get(),
+          }),
+          items: menuItems,
+        }),
+      ];
+    } else {
+      // Local mode: the ⚠️ button reveals CONTENT (limitation note + JSON
+      // export), not actions — so it stays a plain content toggle.
+      const expanded = localInfoExpanded.get();
+      right = [
+        tray.badge("💻 Device only", { intent: "gray" }),
+        tray.tooltip(
+          tray.button(expanded ? "△" : "⚠️", {
+            onClick: "lcm-toggle-local",
+            size: "sm",
+          }),
+          {
+            text: expanded
+              ? "Collapse local limitation"
+              : "Show local limitation",
+          },
+        ),
+      ];
+    }
     const header = trayHeader(tray, {
       subtitle: hasToken() ? "Gist mode" : "Local mode",
       right,

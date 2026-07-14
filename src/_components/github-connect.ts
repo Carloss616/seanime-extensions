@@ -6,7 +6,7 @@
 //
 // PURE FUNCTION over `tray` so the build can inline it into serialized goja
 // callbacks (see CLAUDE.md "Splitting an extension across multiple files").
-import { CAPTION_STYLE, LABEL_STYLE } from "./text";
+import { ALERT_MENU_ITEM_STYLE, CAPTION_STYLE, LABEL_STYLE } from "./text";
 
 export interface GithubConnectOptions {
   /** Non-null while a login poll is in flight → the code prompt takes over. */
@@ -92,9 +92,7 @@ const SEG_BOX: Record<string, string> = {
 function statusRow(tray: $ui.Tray, s: ConnectStatus): unknown {
   const segs: unknown[] = [];
   if (s.badge) {
-    segs.push(
-      tray.badge(s.badge.label, { intent: s.badge.intent, size: "sm" }),
-    );
+    segs.push(tray.badge(s.badge.label, { intent: s.badge.intent }));
   }
   if (s.text) {
     segs.push(
@@ -168,6 +166,7 @@ function actionsMenu(tray: $ui.Tray, o: GithubConnectOptions): unknown {
   if (o.disconnectable ?? o.connected) {
     items.push(
       tray.dropdownMenuItem(tray.text("Disconnect"), {
+        className: ALERT_MENU_ITEM_STYLE,
         onClick: o.disconnectEvent,
       }),
     );

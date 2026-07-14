@@ -17,7 +17,7 @@ Extension types: `custom-source` (a metadata provider for the collection) and `p
    - Entries use seanime's native AL_BaseManga shape. `id` + non-empty `title` required; the rest optional. v2 replaced the old flat shape (cover/banner/year/country).
    - Configurable in-memory cache TTL (Cache minutes).
 
-2. Local Catalog Manager (plugin, v2.3.0)
+2. Local Catalog Manager (plugin, v2.4.0)
    - Companion to Local Catalog: add/edit/delete entries from the tray or the 🗂️ manga-page button.
    - Tray UI: **list view** (sync controls, reading-progress section, searchable entry list) and **form view** (contextual cover+title header, reading-progress cards with seanime drift compare + Apply, full AL_BaseManga fields). Opening the tray on a local-catalog manga page auto-jumps into that entry's form.
    - Gist mode (GitHub connected): pushes catalog.json to a secret Gist the source reads; supports manual Pull and scheduled Auto-sync (interval configurable, default 30 min, uses the `cron` scope). Auth is either a device-flow OAuth token (tray "Connect GitHub" button, shared _utils/gist/device-flow.ts + GITHUB_CLIENT_ID) or the `githubToken` PAT config field; utils/token.ts's syncToken() resolves oauth-wins-over-PAT for both register and the hooks (K_OAUTH_TOKEN in $storage, local-only, never synced).
@@ -31,7 +31,7 @@ Extension types: `custom-source` (a metadata provider for the collection) and `p
    - Not a reader — MangaUpdates tracks scanlation releases, not pages.
    - Maps the MU `record` onto AL_BaseManga (series_id→id, url→siteUrl, title, image→coverImage, genres, associated→synonyms, bayesian_rating×10→meanScore, year→startDate.year, type→format).
 
-4. MangaUpdates Sync (plugin, v1.2.1)
+4. MangaUpdates Sync (plugin, v1.2.2)
    - Pushes reading state (progress, status, score) to MangaUpdates whenever seanime updates an entry — chapter "+1" bumps and manual edits.
    - Two hook pairs in init(): Pre hook stashes payload in $store, the matching Post hook pushes to MU only after AniList accepts the update (lock-step). Each callback is a self-contained module (goja serializes callbacks via .toString() into a fresh runtime, so helpers must be inlined).
    - Requests: POST /v1/lists/series/update (status + chapter; integer list_id), POST /v1/lists/series (add fallback), PUT /v1/series/{id}/rating (score; the list-update payload drops rating).
@@ -46,7 +46,7 @@ Extension types: `custom-source` (a metadata provider for the collection) and `p
    - Reads the live viewport width and sets an inline grid-template-columns on the grid containers ([data-media-card-grid] and the virtualized [data-media-card-lazy-grid]); inline styles outrank Tailwind grid-cols-* classes. Re-applies on grid mount, new main tab, and resize across a tier.
    - Monotonic constraint (smaller screen ≤ bigger screen columns), values clamped 1–12, seanime-default toggle to restore the native grid. Permission: storage only; no network.
 
-6. Manga Source Updates (plugin, v1.8.1)
+6. Manga Source Updates (plugin, v1.8.2)
    - UI-only: scans every CURRENT reading-list entry against all installed manga providers to find which sources have new chapters. Scanning itself makes NO external HTTP calls — reads chapters through seanime's own providers (ctx.manga.*); the only outbound network traffic is the opt-in cross-device sync (below).
    - Per manga probes each non-excluded provider fresh (emptyCache then getChapterContainer with AniList titles), in parallel batches (parallelBatch, default 10), classifies each source vs. reading progress (new / up-to-date / outdated / no-match / error), and summarizes the manga from its furthest-ahead source as "+N · M" (N unread on the best source, M = how many sources have unread chapters; shows "0 · 0" when nothing is new).
    - Auto-excludes bad sources (no match / fetch error / farBehindGap+ chapters behind, default 10); exclusions/pins/results/probes persisted in $storage and rehydrated after reload. Manual exclude/include pins the source so auto-exclude can't override it. TTL (ttlMinutes, default 60) skips a recently-scanned manga.

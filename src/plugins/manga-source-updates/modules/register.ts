@@ -2,6 +2,7 @@ import { joinDividers } from "../../../_components/divider";
 import { createDomDecorator } from "../../../_components/dom-decorator";
 import { type EntryListRow, entryList } from "../../../_components/entry-list";
 import { githubConnect } from "../../../_components/github-connect";
+import { ALERT_MENU_ITEM_STYLE } from "../../../_components/text";
 import { trayHeader } from "../../../_components/tray-header";
 import { GistClient } from "../../../_utils/gist/client";
 import { GITHUB_CLIENT_ID } from "../../../_utils/gist/constants";
@@ -2446,7 +2447,7 @@ export const register = (ctx: $ui.Context) => {
               size: "sm",
             }),
             tray.dropdownMenu({
-              trigger: tray.button("…", {
+              trigger: tray.button("⋮", {
                 size: "sm",
                 intent: "gray-subtle",
               }),
@@ -2456,6 +2457,7 @@ export const register = (ctx: $ui.Context) => {
                 }),
                 tray.dropdownMenuItem(tray.span("Clear exclusions"), {
                   onClick: "msu-clear-excl",
+                  className: ALERT_MENU_ITEM_STYLE,
                 }),
               ],
             }),

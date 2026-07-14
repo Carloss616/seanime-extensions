@@ -5,6 +5,18 @@ All notable changes to this extension are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-07-13
+
+### Changed
+- Gist binding management moved into a **⋮ actions menu** in the tray header — Copy raw catalog URL / Unlink / Delete when linked, Create / Link when not — replacing the old ⚙️ expand toggle.
+- Linking an existing gist (paste input) and confirming a remote delete now surface as an inline banner near the top of the tray, matching the drift banner, instead of an always-expanded section and a two-click arm button.
+
+### Fixed
+- Re-linking the same gist no longer raises a false "reading progress drift".
+- The drift banner now clears when you unlink or delete the gist (it used to linger).
+- Fully disconnecting GitHub (no PAT fallback) now clears any pending drift instead of resurfacing it on reconnect.
+- The ⋮ actions menu no longer renders opaque/disabled during a reading-progress drift — only catalog drift blocks binding management.
+
 ## [2.3.0] - 2026-07-12
 
 ### Added

@@ -126,6 +126,8 @@ var register = (...args) => {
     fontSize: "0.7rem",
     opacity: "0.55",
   };
+  var ALERT_MENU_ITEM_STYLE =
+    "hover:bg-red-100 active:bg-red-200 dark:hover:bg-opacity-20 text-[--red]";
   function initialsCover(tray, name) {
     const label = String(name);
     const clean = label.replace(/[^a-zA-Z0-9]/g, "");
@@ -205,6 +207,8 @@ var register = (...args) => {
           tray.badge(row.status.label, {
             intent: row.status.intent ?? "gray",
             size: "sm",
+            style: row.status.style,
+            className: row.status.className,
           }),
         );
       }
@@ -212,6 +216,8 @@ var register = (...args) => {
         const badge = tray.badge(row.warn.label, {
           intent: row.warn.intent ?? "warning",
           size: "sm",
+          style: row.warn.style,
+          className: row.warn.className,
         });
         segs.push(
           row.warn.tooltip
@@ -413,9 +419,7 @@ var register = (...args) => {
   function statusRow(tray, s) {
     const segs = [];
     if (s.badge) {
-      segs.push(
-        tray.badge(s.badge.label, { intent: s.badge.intent, size: "sm" }),
-      );
+      segs.push(tray.badge(s.badge.label, { intent: s.badge.intent }));
     }
     if (s.text) {
       segs.push(
@@ -477,6 +481,7 @@ var register = (...args) => {
     if (o.disconnectable ?? o.connected) {
       items.push(
         tray.dropdownMenuItem(tray.text("Disconnect"), {
+          className: ALERT_MENU_ITEM_STYLE,
           onClick: o.disconnectEvent,
         }),
       );
@@ -3597,7 +3602,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
                 size: "sm",
               }),
               tray.dropdownMenu({
-                trigger: tray.button("…", {
+                trigger: tray.button("⋮", {
                   size: "sm",
                   intent: "gray-subtle",
                 }),
@@ -3607,6 +3612,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
                   }),
                   tray.dropdownMenuItem(tray.span("Clear exclusions"), {
                     onClick: "msu-clear-excl",
+                    className: ALERT_MENU_ITEM_STYLE,
                   }),
                 ],
               }),

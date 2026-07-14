@@ -292,6 +292,8 @@ var register = (...args) => {
           tray.badge(row.status.label, {
             intent: row.status.intent ?? "gray",
             size: "sm",
+            style: row.status.style,
+            className: row.status.className,
           }),
         );
       }
@@ -299,6 +301,8 @@ var register = (...args) => {
         const badge = tray.badge(row.warn.label, {
           intent: row.warn.intent ?? "warning",
           size: "sm",
+          style: row.warn.style,
+          className: row.warn.className,
         });
         segs.push(
           row.warn.tooltip
@@ -551,6 +555,7 @@ var register = (...args) => {
     return {
       label: status.replace(/_/g, " ").toLowerCase(),
       intent: STATUS_INTENT[status] ?? "gray",
+      className: "capitalize",
     };
   }
   var mu_letter_default =

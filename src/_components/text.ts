@@ -21,3 +21,6 @@ export const CAPTION_STYLE: Record<string, string> = {
   fontSize: "0.7rem",
   opacity: "0.55",
 };
+
+export const ALERT_MENU_ITEM_STYLE =
+  "hover:bg-red-100 active:bg-red-200 dark:hover:bg-opacity-20 text-[--red]";
