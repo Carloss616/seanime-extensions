@@ -5,7 +5,7 @@
 # 🔁 MangaUpdates Sync
 
 ![Type](https://shieldcn.dev/badge/type-plugin-3b82f6.svg?variant=secondary)
-![Version](https://shieldcn.dev/badge/version-1.2.2-22c55e.svg?variant=secondary)
+![Version](https://shieldcn.dev/badge/version-1.2.3-22c55e.svg?variant=secondary)
 ![TypeScript](https://shieldcn.dev/badge/TypeScript.svg?logo=typescript&color=3178C6&variant=secondary)
 
 **Pushes your manga reading state to [MangaUpdates](https://www.mangaupdates.com/) whenever seanime updates an entry.**

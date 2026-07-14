@@ -164,8 +164,12 @@ export function entryList(tray: $ui.Tray, cfg: EntryListConfig): unknown {
         tray.badge(row.status.label, {
           intent: row.status.intent ?? "gray",
           size: "sm",
-          style: row.status.style,
-          className: row.status.className,
+          // Only spread style/className when set: a literal `className: undefined`
+          // key still reaches goja, and the Go badge binding reads it as a string
+          // → "expected string, got nil" panic (a bare `{intent}` badge works
+          // because the key is absent, not present-but-undefined).
+          ...(row.status.style ? { style: row.status.style } : {}),
+          ...(row.status.className ? { className: row.status.className } : {}),
         }),
       );
     }
@@ -173,8 +177,8 @@ export function entryList(tray: $ui.Tray, cfg: EntryListConfig): unknown {
       const badge = tray.badge(row.warn.label, {
         intent: row.warn.intent ?? "warning",
         size: "sm",
-        style: row.warn.style,
-        className: row.warn.className,
+        ...(row.warn.style ? { style: row.warn.style } : {}),
+        ...(row.warn.className ? { className: row.warn.className } : {}),
       });
       segs.push(
         row.warn.tooltip

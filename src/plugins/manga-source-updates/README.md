@@ -5,7 +5,7 @@
 # 🔎 Manga Source Updates
 
 ![Type](https://shieldcn.dev/badge/type-plugin-3b82f6.svg?variant=secondary)
-![Version](https://shieldcn.dev/badge/version-1.8.2-22c55e.svg?variant=secondary)
+![Version](https://shieldcn.dev/badge/version-1.8.3-22c55e.svg?variant=secondary)
 ![TypeScript](https://shieldcn.dev/badge/TypeScript.svg?logo=typescript&color=3178C6&variant=secondary)
 
 **Scans your reading list against every installed manga provider and tells you which sources have new chapters — now synced across your devices.**
