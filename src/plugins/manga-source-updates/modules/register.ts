@@ -571,16 +571,17 @@ export const register = (ctx: $ui.Context) => {
     }
     // `lastScannedAt` bumps every scan (drives the TTL). `updatedAt` (the synced
     // LWW clock) bumps ONLY when a synced field changed vs. the stored row, so a
-    // rescan that finds the same title/cover/read leaves the digest gist file
-    // byte-identical → no churn. (reconcile/refreshProgress cherry-pick fields
-    // and keep their own timestamps, so this stamp only lands on real scans.)
+    // rescan that finds the same title/cover leaves the digest gist file
+    // byte-identical → no churn. `read` is deliberately NOT in this check: it's
+    // off the wire (re-read locally per instance), so reading a chapter must not
+    // bump the synced clock. (reconcile/refreshProgress cherry-pick fields and
+    // keep their own timestamps, so this stamp only lands on real scans.)
     const prev = getResults()[key];
     const now = Date.now();
     const syncedSame =
       prev != null &&
       prev.title === media.title &&
-      String(prev.cover ?? "") === String(media.cover ?? "") &&
-      Number(prev.read ?? 0) === Number(read);
+      String(prev.cover ?? "") === String(media.cover ?? "");
     return {
       title: media.title,
       cover: media.cover,

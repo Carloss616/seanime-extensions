@@ -1302,6 +1302,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       if (!isLive(r)) continue;
       out.push({
         ...r,
+        read: Number(r.read ?? 0),
         mediaId: Number(key),
         isNew: r.kind === "new",
         fromCache: true,
@@ -1563,7 +1564,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       level === 3 ? sortMap3(map) : level === 2 ? sortMap(map) : sortObj(map);
     return JSON.stringify(canon, null, 2);
   }
-  var DIGEST_WIRE_FIELDS = ["title", "cover", "read", "updatedAt", "deletedAt"];
+  var DIGEST_WIRE_FIELDS = ["title", "cover", "updatedAt", "deletedAt"];
   function projectDigestRecord(r) {
     const out = {};
     for (const f of DIGEST_WIRE_FIELDS) {
@@ -2157,8 +2158,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       const syncedSame =
         prev != null &&
         prev.title === media.title &&
-        String(prev.cover ?? "") === String(media.cover ?? "") &&
-        Number(prev.read ?? 0) === Number(read);
+        String(prev.cover ?? "") === String(media.cover ?? "");
       return {
         title: media.title,
         cover: media.cover,

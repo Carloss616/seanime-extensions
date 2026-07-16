@@ -5,6 +5,11 @@ All notable changes to this extension are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.4] - 2026-07-16
+
+### Changed
+- Reading progress is no longer pushed to the Gist sync. It's re-read from seanime's own collection on each instance instead, so reading a chapter no longer triggers a sync — this cuts the number of Gist writes sharply. Progress for AniList-tracked manga still syncs across devices through seanime/AniList as before; progress for custom-source manga is now local per device.
+
 ## [1.8.3] - 2026-07-13
 
 ### Fixed

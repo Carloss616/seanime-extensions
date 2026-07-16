@@ -46,7 +46,7 @@ Extension types: `custom-source` (a metadata provider for the collection) and `p
    - Reads the live viewport width and sets an inline grid-template-columns on the grid containers ([data-media-card-grid] and the virtualized [data-media-card-lazy-grid]); inline styles outrank Tailwind grid-cols-* classes. Re-applies on grid mount, new main tab, and resize across a tier.
    - Monotonic constraint (smaller screen ≤ bigger screen columns), values clamped 1–12, seanime-default toggle to restore the native grid. Permission: storage only; no network.
 
-6. Manga Source Updates (plugin, v1.8.3)
+6. Manga Source Updates (plugin, v1.8.4)
    - UI-only: scans every CURRENT reading-list entry against all installed manga providers to find which sources have new chapters. Scanning itself makes NO external HTTP calls — reads chapters through seanime's own providers (ctx.manga.*); the only outbound network traffic is the opt-in cross-device sync (below).
    - Per manga probes each non-excluded provider fresh (emptyCache then getChapterContainer with AniList titles), in parallel batches (parallelBatch, default 10), classifies each source vs. reading progress (new / up-to-date / outdated / no-match / error), and summarizes the manga from its furthest-ahead source as "+N · M" (N unread on the best source, M = how many sources have unread chapters; shows "0 · 0" when nothing is new).
    - Auto-excludes bad sources (no match / fetch error / farBehindGap+ chapters behind, default 10); exclusions/pins/results/probes persisted in $storage and rehydrated after reload. Manual exclude/include pins the source so auto-exclude can't override it. TTL (ttlMinutes, default 60) skips a recently-scanned manga.

@@ -226,11 +226,14 @@ function serializeSection(map: unknown, level: 1 | 2 | 3): string {
 // seanime-msu-digest.json churn forever, ping-ponging between each instance's
 // provider count. They ride the wire NOWHERE — every instance recomputes them
 // locally (buildResult / reconcileInactiveProviders) from the synced `probes`
-// map. Keep this list to fields that are the same on every device.
+// map. `read` (reading progress) is likewise OFF the wire: seanime/AniList
+// already syncs progress, and reading a chapter changed it constantly, so
+// syncing it churned the digest on every read — each instance re-reads it from
+// its own collection (refreshProgress). Keep this list to fields that are the
+// same on every device AND stable between reads.
 const DIGEST_WIRE_FIELDS = [
   "title",
   "cover",
-  "read",
   "updatedAt",
   "deletedAt",
 ] as const satisfies (keyof DigestWire)[];
@@ -456,9 +459,10 @@ export function localizeWireMaps(
   return { maps: out, unresolved: [...unresolved] };
 }
 
-// Overlay the merge's authoritative SYNCED fields (title/cover/read + the
+// Overlay the merge's authoritative SYNCED fields (title/cover + the
 // updatedAt/deletedAt merge metadata) onto a local digest row while keeping that
-// row's locally-DERIVED fields (latest/sources/newSources/kind — recomputed by
+// row's LOCAL fields (read + latest/sources/newSources/kind — read re-read from
+// the collection by refreshProgress, the rest recomputed by
 // reconcileInactiveProviders from this instance's probes). deletedAt follows the
 // merge exactly, so a resurrection (merge result has no tombstone) drops the old
 // one. `wire` may still carry derived fields in memory (they're only stripped at

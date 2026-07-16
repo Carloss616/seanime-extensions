@@ -183,19 +183,21 @@ describe("per-file serialize / parse", () => {
       },
     };
     const parsed = JSON.parse(wireMapsToFiles(maps)[SYNC_FILE_DIGEST]);
+    // `read` (reading progress) is NOT on the wire — re-read locally per instance.
     expect(Object.keys(parsed["1"]).sort()).toEqual([
       "cover",
-      "read",
       "title",
       "updatedAt",
     ]);
-    // Two instances with different provider sets serialize the SAME bytes.
+    // Two instances with different provider sets AND different reading progress
+    // serialize the SAME bytes (read is off the wire, so a read never churns).
     const other: WireMaps = {
       ...emptyLocalMaps(),
       digest: {
         "1": {
           ...maps.digest["1"],
           latest: 80,
+          read: 42,
           sources: 3,
           kind: "up-to-date",
         },

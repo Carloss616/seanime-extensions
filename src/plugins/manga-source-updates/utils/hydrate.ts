@@ -12,6 +12,10 @@ export function hydrateResults(): MangaResult[] {
     if (!isLive(r)) continue;
     out.push({
       ...r,
+      // `read` is off the wire, so a row discovered purely from a peer has none
+      // until refreshProgress re-reads it from this instance's collection.
+      // Default to 0 so unreadChapters()/classify() never see undefined → NaN.
+      read: Number(r.read ?? 0),
       mediaId: Number(key),
       isNew: r.kind === "new",
       fromCache: true,

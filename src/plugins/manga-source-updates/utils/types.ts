@@ -33,7 +33,6 @@ export type PinRecord = TimestampMeta;
 export interface DigestWire extends TimestampMeta {
   title: string;
   cover?: string;
-  read: number;
   // updatedAt (ms epoch — last written, was checkedAt) + deletedAt (tombstone)
   // come from TimestampMeta.
 }
@@ -45,6 +44,11 @@ export interface DigestWire extends TimestampMeta {
 // differ per device and are NEVER put on the wire. Recomputed locally by
 // buildResult / reconcileInactiveProviders from the synced `probes` map.
 export interface StoredResult extends DigestWire {
+  // LOCAL — the user's reading progress. NOT synced: seanime/AniList already
+  // syncs progress, and re-reading a chapter changes it constantly, so putting
+  // it on the wire churned the digest gist on every read. Re-read from THIS
+  // instance's collection on every refresh (refreshProgress) instead.
+  read: number;
   latest: number; // DERIVED — highest chapter across the matched sources
   sources: number; // DERIVED — how many sources have this manga (matched, non-excluded)
   newSources?: number; // DERIVED — of those, how many have unread chapters (drives the M in "+N · M")
