@@ -2145,7 +2145,10 @@ export const register = (ctx: $ui.Context) => {
   const redecorateBar = async () => {
     try {
       const cont = (await ctx.dom.query("[data-chapter-list-container]"))?.[0];
-      if (cont) void decorateBar(cont);
+      if (cont) {
+        void decorateBar(cont);
+        void hookRefreshSourceButton(cont);
+      }
     } catch {
       /* not on an entry page */
     }
@@ -2173,6 +2176,49 @@ export const register = (ctx: $ui.Context) => {
           .trim()
           .toLowerCase()
       : "";
+  };
+
+  // Newer seanime dropped the entry-page "Reload sources" confirm modal for a
+  // "Refresh source" button placed directly in the chapter-list header, firing
+  // immediately with NO confirmation (unlike "Manual match", it has no
+  // aria-haspopup="dialog"). hookReloadModal (below) never fires anymore because
+  // that modal no longer mounts, so hook this button instead: it's a single-manga
+  // action, so kick off the full MSU scan of THIS manga right away — exactly what
+  // the old modal-confirm did. Match by text among the header's buttons ("Refresh
+  // source" vs "Manual match"); stamp data-msu-refresh-source-hooked so repeated
+  // observer fires within one mount don't double-attach (a re-mounted header loses
+  // the attr → re-hooked). query()[0], never the denshi-broken queryOne.
+  const hookRefreshSourceButton = async (container: $ui.DOMElement) => {
+    if (!currentMediaId.get()) return;
+    let buttons: $ui.DOMElement[] = [];
+    try {
+      buttons =
+        (await container.query(
+          "[data-chapter-list-header-container] button",
+        )) ?? [];
+    } catch {
+      return;
+    }
+    for (const btn of buttons) {
+      try {
+        const text = String((await btn.getText()) ?? "")
+          .trim()
+          .toLowerCase();
+        if (text !== "refresh source") continue;
+        if (await btn.hasAttribute("data-msu-refresh-source-hooked")) return;
+        btn.setAttribute("data-msu-refresh-source-hooked", "1");
+        btn.addEventListener("click", () => {
+          if (!syncNativeButtons()) return;
+          const id = currentMediaId.get();
+          if (id <= 0) return;
+          if (rejectIfBusy()) return;
+          void probeMangaDetail(id);
+        });
+      } catch {
+        /* couldn't hook this button */
+      }
+      return;
+    }
   };
 
   const hookReloadModal = async (dialog: $ui.DOMElement) => {
@@ -2334,7 +2380,10 @@ export const register = (ctx: $ui.Context) => {
     "[data-chapter-list-container]",
     (els) => {
       const c = els[0];
-      if (c) void decorateBar(c);
+      if (c) {
+        void decorateBar(c);
+        void hookRefreshSourceButton(c);
+      }
     },
     { withInnerHTML: true },
   );

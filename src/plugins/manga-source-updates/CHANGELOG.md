@@ -5,6 +5,11 @@ All notable changes to this extension are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.5] - 2026-07-16
+
+### Fixed
+- Triggering a scan from seanime's **Refresh source** button on the manga entry page works again. A newer seanime version replaced the old "Reload sources" confirmation dialog with a "Refresh source" button placed directly in the chapter-list header, which MSU wasn't hooking — so refreshing a source no longer kicked off a scan. (Requires **Sync with native buttons** to be enabled.)
+
 ## [1.8.4] - 2026-07-16
 
 ### Changed

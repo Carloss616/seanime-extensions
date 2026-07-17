@@ -3382,7 +3382,10 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         const cont = (
           await ctx.dom.query("[data-chapter-list-container]")
         )?.[0];
-        if (cont) decorateBar(cont);
+        if (cont) {
+          decorateBar(cont);
+          hookRefreshSourceButton(cont);
+        }
       } catch {}
     };
     const dialogTitle = async (dialog) => {
@@ -3392,6 +3395,36 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
             .trim()
             .toLowerCase()
         : "";
+    };
+    const hookRefreshSourceButton = async (container) => {
+      if (!currentMediaId.get()) return;
+      let buttons = [];
+      try {
+        buttons =
+          (await container.query(
+            "[data-chapter-list-header-container] button",
+          )) ?? [];
+      } catch {
+        return;
+      }
+      for (const btn of buttons) {
+        try {
+          const text = String((await btn.getText()) ?? "")
+            .trim()
+            .toLowerCase();
+          if (text !== "refresh source") continue;
+          if (await btn.hasAttribute("data-msu-refresh-source-hooked")) return;
+          btn.setAttribute("data-msu-refresh-source-hooked", "1");
+          btn.addEventListener("click", () => {
+            if (!syncNativeButtons()) return;
+            const id = currentMediaId.get();
+            if (id <= 0) return;
+            if (rejectIfBusy()) return;
+            probeMangaDetail(id);
+          });
+        } catch {}
+        return;
+      }
     };
     const hookReloadModal = async (dialog) => {
       if (!currentMediaId.get()) return;
@@ -3509,7 +3542,10 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       "[data-chapter-list-container]",
       (els) => {
         const c = els[0];
-        if (c) decorateBar(c);
+        if (c) {
+          decorateBar(c);
+          hookRefreshSourceButton(c);
+        }
       },
       { withInnerHTML: true },
     );
