@@ -3162,7 +3162,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     }
     const dm = createDomDecorator(ctx);
     const headerProgress = createHeaderProgressReader(ctx);
-    const CARD_REDECORATE_YIELD_EVERY = 24;
+    const CARD_DECORATE_BATCH = 8;
     ctx.screen.onNavigate((e) => {
       const isManga = String(e.pathname ?? "").includes("/manga/");
       const raw = isManga ? e.searchParams?.id : "";
@@ -3251,7 +3251,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         if (!attrsCache) attrsCache = readCardAttrs(el);
         return attrsCache;
       };
-      const { mediaId } = await readCardAttrs(el);
+      const { mediaId } = await cardAttrs();
       if (!mediaId) return;
       await dm.decorate(el, {
         marker: "msu-card-badge",
@@ -3283,6 +3283,14 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           el.append(node);
         },
       });
+    };
+    const decorateCards = async (els) => {
+      for (let i = 0; i < els.length; i += CARD_DECORATE_BATCH) {
+        await Promise.all(
+          els.slice(i, i + CARD_DECORATE_BATCH).map((el) => decorateCard(el)),
+        );
+        $sleep(0);
+      }
     };
     const escHtml = (s) =>
       String(s)
@@ -3364,18 +3372,28 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         },
       });
     };
+    let cardsSweeping = false;
+    let cardsDirty = false;
     const redecorateCards = async () => {
-      reconcileInactiveProviders();
+      if (cardsSweeping) {
+        cardsDirty = true;
+        return;
+      }
+      cardsSweeping = true;
       try {
-        const cards = await ctx.dom.query(
-          '[data-media-entry-card-container][data-media-type="manga"]',
-        );
-        const list = cards ?? [];
-        for (let i = 0; i < list.length; i++) {
-          decorateCard(list[i]);
-          if (i % CARD_REDECORATE_YIELD_EVERY === 0) $sleep(0);
-        }
-      } catch {}
+        do {
+          cardsDirty = false;
+          reconcileInactiveProviders();
+          const cards = await ctx.dom.query(
+            '[data-media-entry-card-container][data-media-type="manga"]',
+          );
+          await decorateCards(cards ?? []);
+        } while (cardsDirty);
+      } catch (e) {
+        log.warn("redecorateCards failed:", e);
+      } finally {
+        cardsSweeping = false;
+      }
     };
     const redecorateBar = async () => {
       try {
@@ -3534,7 +3552,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
     dm.observe(
       '[data-media-entry-card-container][data-media-type="manga"]',
       (els) => {
-        for (const el of els ?? []) decorateCard(el);
+        decorateCards(els ?? []);
       },
       { withInnerHTML: true },
     );

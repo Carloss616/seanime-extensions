@@ -1851,7 +1851,11 @@ export const register = (ctx: $ui.Context) => {
   const dm = createDomDecorator(ctx);
   const headerProgress = createHeaderProgressReader(ctx);
 
-  const CARD_REDECORATE_YIELD_EVERY = 24;
+  // Bounded concurrency for card decoration: fanning out ALL ~80 cards at once
+  // stampedes the denshi DOM bridge (silent read/append failures → blank cards);
+  // fully serial is reliable but slow. A small batch is the middle ground.
+  // ponytail: 8 is a guess — lower if cards still drop, raise if it's slow.
+  const CARD_DECORATE_BATCH = 8;
 
   // Opening the tray while on a manga entry page jumps to that manga's source
   // detail; opening it anywhere else shows the list.
@@ -1977,7 +1981,7 @@ export const register = (ctx: $ui.Context) => {
       return attrsCache;
     };
 
-    const { mediaId } = await readCardAttrs(el);
+    const { mediaId } = await cardAttrs();
     if (!mediaId) return;
 
     await dm.decorate(el, {
@@ -2007,6 +2011,18 @@ export const register = (ctx: $ui.Context) => {
         el.append(node);
       },
     });
+  };
+
+  // Decorate cards in small bounded batches with a yield between each, so badges
+  // stream in progressively and the grid stays responsive instead of freezing on
+  // one big fan-out (which stampedes the denshi bridge and injects "de golpe").
+  const decorateCards = async (els: $ui.DOMElement[]) => {
+    for (let i = 0; i < els.length; i += CARD_DECORATE_BATCH) {
+      await Promise.all(
+        els.slice(i, i + CARD_DECORATE_BATCH).map((el) => decorateCard(el)),
+      );
+      $sleep(0);
+    }
   };
 
   // §2: a "New on: {source} +N" bar in the chapter-list header of the entry page
@@ -2105,19 +2121,30 @@ export const register = (ctx: $ui.Context) => {
 
   // Explicit query→decorate passes (run on arm + refresh) — cover elements
   // already mounted before the observers ran; the sig guard keeps them idempotent.
+  // Coalesced: several triggers (grid observer, effect, arm) fire near-together;
+  // without this each ran a full concurrent sweep over the SAME ~80 cards, doubling
+  // the bridge load. Only one sweep runs at a time; a request mid-sweep re-runs once.
+  let cardsSweeping = false;
+  let cardsDirty = false;
   const redecorateCards = async () => {
-    reconcileInactiveProviders();
+    if (cardsSweeping) {
+      cardsDirty = true;
+      return;
+    }
+    cardsSweeping = true;
     try {
-      const cards = await ctx.dom.query(
-        '[data-media-entry-card-container][data-media-type="manga"]',
-      );
-      const list = cards ?? [];
-      for (let i = 0; i < list.length; i++) {
-        void decorateCard(list[i]);
-        if (i % CARD_REDECORATE_YIELD_EVERY === 0) $sleep(0);
-      }
-    } catch {
-      /* no cards on this screen */
+      do {
+        cardsDirty = false;
+        reconcileInactiveProviders();
+        const cards = await ctx.dom.query(
+          '[data-media-entry-card-container][data-media-type="manga"]',
+        );
+        await decorateCards(cards ?? []);
+      } while (cardsDirty);
+    } catch (e) {
+      log.warn("redecorateCards failed:", e);
+    } finally {
+      cardsSweeping = false;
     }
   };
   const redecorateBar = async () => {
@@ -2350,7 +2377,7 @@ export const register = (ctx: $ui.Context) => {
   dm.observe(
     '[data-media-entry-card-container][data-media-type="manga"]',
     (els) => {
-      for (const el of els ?? []) void decorateCard(el);
+      void decorateCards(els ?? []);
     },
     { withInnerHTML: true },
   );

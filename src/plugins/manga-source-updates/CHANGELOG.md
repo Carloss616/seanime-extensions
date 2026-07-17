@@ -5,6 +5,11 @@ All notable changes to this extension are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.6] - 2026-07-16
+
+### Fixed
+- Library-card update badges render more reliably and load progressively. They were injected by firing a decoration at every card at once, which overwhelmed the desktop DOM bridge — under load a card's read came back empty and it silently stayed blank, so a full library sometimes showed only a few badges. Cards are now decorated in small bounded batches that stream in, and overlapping refresh triggers are coalesced into a single sweep instead of several concurrent ones fighting over the same cards.
+
 ## [1.8.5] - 2026-07-16
 
 ### Fixed
