@@ -2497,17 +2497,24 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         for (const e of list.entries ?? []) {
           const m = e?.media;
           if (m && Number(e.mediaId ?? m.id) === mediaId) {
-            return { media: m, read: Number(e.listData?.progress ?? 0) };
+            return {
+              media: m,
+              read: Number(e.listData?.progress ?? 0),
+              status: e.listData?.status ?? "",
+            };
           }
         }
       }
       try {
         const m = $anilist.getManga(mediaId);
-        if (m) return { media: m, read: 0 };
+        if (m) return { media: m, read: 0, status: "" };
       } catch {}
       return null;
     }
-    function syncRow(mediaId, result) {
+    function syncRow(mediaId, result, reading = true) {
+      const cur = results.get();
+      const exists = cur.some((r) => r.mediaId === mediaId);
+      if (!reading && !exists) return;
       const stored = getResults();
       stored[String(mediaId)] = result;
       setResults(stored);
@@ -2517,9 +2524,8 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         isNew: result.kind === "new",
         fromCache: false,
       };
-      const cur = results.get();
       results.set(
-        cur.some((r) => r.mediaId === mediaId)
+        exists
           ? cur.map((r) => (r.mediaId === mediaId ? row : r))
           : [...cur, row],
       );
@@ -2599,7 +2605,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           (probes) =>
             setProbes2(mediaId, { ...probeCache.get()[mediaId], ...probes }),
         );
-        syncRow(mediaId, result);
+        syncRow(mediaId, result, String(found.status) === "CURRENT");
         ctx.toast.success(`${result.sources} sources have ${title}`);
       } catch {
         ctx.toast.error("Failed to probe sources");
@@ -2646,6 +2652,7 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
             gap,
             merged,
           ),
+          String(found.status) === "CURRENT",
         );
       } catch {
         ctx.toast.error("Failed to scan source");
@@ -2879,8 +2886,8 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           tray.button(
             scanningThis
               ? hasProg
-                ? `⏳ Scanning ${prog.done}/${prog.total}`
-                : "⏳ Scanning…"
+                ? `Scanning ${prog.done}/${prog.total}`
+                : "Scanning…"
               : "↻ Scan this manga",
             {
               onClick: ctx.eventHandler(`msu-rescan-${id}`, () =>
@@ -2888,7 +2895,8 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
               ),
               size: "sm",
               intent: "gray-subtle",
-              disabled: busy,
+              loading: scanningThis,
+              disabled: busy && !scanningThis,
             },
           ),
           tray.button("Open →", {
@@ -2925,13 +2933,14 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
           chapter: p?.matched ? p.latest : undefined,
           actions: [
             tray.tooltip(
-              tray.button(isPidScanning(pid) ? "⏳" : "↻", {
+              tray.button(isPidScanning(pid) ? "…" : "↻", {
                 onClick: ctx.eventHandler(`msu-rescan1-${id}-${pid}`, () =>
                   scanOneProvider(id, pid),
                 ),
                 size: "sm",
                 intent: "gray-subtle",
-                disabled: busy,
+                loading: isPidScanning(pid),
+                disabled: busy && !isPidScanning(pid),
               }),
               { text: "Rescan this source" },
             ),

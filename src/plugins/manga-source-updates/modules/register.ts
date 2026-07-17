@@ -125,7 +125,7 @@ export const register = (ctx: $ui.Context) => {
     total: number;
   } | null>(null);
   // Providers currently being fetched in the active per-manga scan (global or
-  // detail). Drives the live ⏳ on each source's rescan button. Keyed by mediaId
+  // detail). Drives the live spinner on each source's rescan button. Keyed by mediaId
   // so a global scan on a DIFFERENT manga doesn't light up the open detail rows.
   const scanningProviders = ctx.state<{
     mediaId: number;
@@ -633,7 +633,7 @@ export const register = (ctx: $ui.Context) => {
       Math.floor(Number($getUserPreference("parallelBatch") ?? "10")) || 10,
     );
     scanProgress.set({ mediaId, done: 0, total: toScan.length });
-    // Track which providers are in-flight so the detail rows can show a live ⏳.
+    // Track which providers are in-flight so the detail rows can show a live spinner.
     const inflight = new Set<string>();
     const publishInflight = () =>
       scanningProviders.set({ mediaId, pids: [...inflight] });
@@ -1003,21 +1003,27 @@ export const register = (ctx: $ui.Context) => {
   // Find a manga's media + progress for probing. Searches the WHOLE collection
   // (any status) so the detail works from a manga entry page too; falls back to
   // a direct AniList lookup for manga not in the user's list (progress → 0).
-  async function findEntry(
-    mediaId: number,
-  ): Promise<{ media: $app.AL_BaseManga; read: number } | null> {
+  async function findEntry(mediaId: number): Promise<{
+    media: $app.AL_BaseManga;
+    read: number;
+    status: $app.AL_MediaListStatus | "";
+  } | null> {
     const col = await ctx.manga.getCollection();
     for (const list of col.lists ?? []) {
       for (const e of list.entries ?? []) {
         const m = e?.media as $app.AL_BaseManga | undefined;
         if (m && Number(e.mediaId ?? m.id) === mediaId) {
-          return { media: m, read: Number(e.listData?.progress ?? 0) };
+          return {
+            media: m,
+            read: Number(e.listData?.progress ?? 0),
+            status: e.listData?.status ?? "",
+          };
         }
       }
     }
     try {
       const m = $anilist.getManga(mediaId);
-      if (m) return { media: m, read: 0 };
+      if (m) return { media: m, read: 0, status: "" };
     } catch {
       // not on AniList / lookup failed
     }
@@ -1026,7 +1032,12 @@ export const register = (ctx: $ui.Context) => {
 
   // Persist a manga's row summary to $storage and update the in-memory list
   // (replace if present, else append). Shared by every scan path.
-  function syncRow(mediaId: number, result: StoredResult) {
+  function syncRow(mediaId: number, result: StoredResult, reading = true) {
+    const cur = results.get();
+    const exists = cur.some((r) => r.mediaId === mediaId);
+    // A non-reading manga scanned from its own entry page keeps its per-source
+    // probes (for the detail view) but must NOT enter the reading-list summary.
+    if (!reading && !exists) return;
     const stored = getResults();
     stored[String(mediaId)] = result;
     setResults(stored);
@@ -1036,9 +1047,8 @@ export const register = (ctx: $ui.Context) => {
       isNew: result.kind === "new",
       fromCache: false,
     };
-    const cur = results.get();
     results.set(
-      cur.some((r) => r.mediaId === mediaId)
+      exists
         ? cur.map((r) => (r.mediaId === mediaId ? row : r))
         : [...cur, row],
     );
@@ -1145,7 +1155,7 @@ export const register = (ctx: $ui.Context) => {
           setProbes(mediaId, { ...probeCache.get()[mediaId], ...probes }),
       );
 
-      syncRow(mediaId, result);
+      syncRow(mediaId, result, String(found.status) === "CURRENT");
 
       ctx.toast.success(`${result.sources} sources have ${title}`);
     } catch {
@@ -1168,7 +1178,7 @@ export const register = (ctx: $ui.Context) => {
     cancelRequested.set(false); // don't inherit a stale cancel from a prior scan
     // Single-source fetch — drive the floating panel with a 1-step progress so a
     // "Checking sources" indicator shows (this path also fires from the
-    // manual-match hook / re-include, outside the detail view's own ⏳ button).
+    // manual-match hook / re-include, outside the detail view's own spinner button).
     scanProgress.set({ mediaId, done: 0, total: 1 });
     try {
       const found = await findEntry(mediaId);
@@ -1201,6 +1211,7 @@ export const register = (ctx: $ui.Context) => {
           gap,
           merged,
         ),
+        String(found.status) === "CURRENT",
       );
     } catch {
       ctx.toast.error("Failed to scan source");
@@ -1495,8 +1506,8 @@ export const register = (ctx: $ui.Context) => {
         tray.button(
           scanningThis
             ? hasProg
-              ? `⏳ Scanning ${prog.done}/${prog.total}`
-              : "⏳ Scanning…"
+              ? `Scanning ${prog.done}/${prog.total}`
+              : "Scanning…"
             : "↻ Scan this manga",
           {
             onClick: ctx.eventHandler(`msu-rescan-${id}`, () =>
@@ -1504,7 +1515,8 @@ export const register = (ctx: $ui.Context) => {
             ),
             size: "sm",
             intent: "gray-subtle",
-            disabled: busy,
+            loading: scanningThis,
+            disabled: busy && !scanningThis,
           },
         ),
         tray.button("Open →", {
@@ -1551,15 +1563,16 @@ export const register = (ctx: $ui.Context) => {
         chapter: p?.matched ? p.latest : undefined,
         actions: [
           tray.tooltip(
-            tray.button(isPidScanning(pid) ? "⏳" : "↻", {
+            tray.button(isPidScanning(pid) ? "…" : "↻", {
               onClick: ctx.eventHandler(`msu-rescan1-${id}-${pid}`, () =>
                 scanOneProvider(id, pid),
               ),
               size: "sm",
               intent: "gray-subtle",
-              // Disabled while the whole manga is scanning or any single-source
-              // scan is in flight (one at a time).
-              disabled: busy,
+              loading: isPidScanning(pid),
+              // Disabled while ANOTHER scan is in flight (one at a time); this
+              // source's own run shows `loading` instead.
+              disabled: busy && !isPidScanning(pid),
             }),
             { text: "Rescan this source" },
           ),
