@@ -7,10 +7,9 @@ import {
   setMULink,
 } from "./link-store.ts";
 
-// Minimal in-memory $storage stub. The real seanime $storage expands object
-// values into dotted leaf keys and reconstructs them on get(); the flat fake
-// is enough to exercise our prefix logic and the top-level-only enumeration
-// (the listMULinkIds tests seed the dotted sub-keys by hand).
+// Minimal in-memory $storage stub. The real seanime $storage expands objects into
+// dotted leaf keys; this flat fake doesn't, so the listMULinkIds tests seed the
+// dotted sub-keys by hand.
 function fakeStorage() {
   const map = new Map<string, unknown>();
   return {
@@ -70,8 +69,7 @@ describe("link-store", () => {
   });
 
   test("listMULinkIds skips dotted sub-keys and dedupes to parent", () => {
-    // Mimic the polluted keys() from the bug report: $storage emits the parent
-    // node AND a leaf key per object field.
+    // $storage emits the parent node AND a leaf key per object field.
     storage.map.set("mu_link_159441", sample);
     storage.map.set("mu_link_159441.cover", "x");
     storage.map.set("mu_link_159441.id", "159441");

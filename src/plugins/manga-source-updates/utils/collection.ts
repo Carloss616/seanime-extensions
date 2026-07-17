@@ -1,4 +1,3 @@
-/** Every CURRENT-list entry that has media (global scan input). */
 export function readingEntries(
   col: $app.Manga_Collection,
 ): $app.Manga_CollectionEntry[] {

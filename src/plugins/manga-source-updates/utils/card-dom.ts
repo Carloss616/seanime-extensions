@@ -2,7 +2,6 @@ import { domAttr } from "../../../_utils/dom-read";
 
 export type CardAttrs = { mediaId: number; progress: number };
 
-/** One parse of data-list-data + data-media-id for library card decoration. */
 export async function readCardAttrs(el: $ui.DOMElement): Promise<CardAttrs> {
   const fromAttr = Number((await domAttr(el, "data-media-id")) ?? 0);
   let progress = 0;

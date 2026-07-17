@@ -1,5 +1,3 @@
-// Scan a manga collection for listData on a specific mediaId.
-
 export function findListData(
   collection: $app.Manga_Collection,
   mediaId: number,

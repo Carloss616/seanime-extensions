@@ -270,7 +270,6 @@ export function entryList(tray: $ui.Tray, cfg: EntryListConfig): unknown {
           style: { alignItems: "center", lineHeight: "1" },
         }),
       ],
-      // gap: 1 (4px) between title and its metadata sub-line.
       { gap: 1, style: { flex: "1", minWidth: "0" } },
     );
     const rowChildren: unknown[] = [

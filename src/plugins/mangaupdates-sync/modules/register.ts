@@ -19,7 +19,6 @@ import {
 import type { MULink, MUResult } from "../utils/types";
 import type { sharedLib } from "./shared-lib";
 
-// UI: explicit AniList ↔ MangaUpdates linking.
 export const register = (ctx: $ui.Context) => {
   // $shared.use re-evals the factory in this runtime, so MUClient is a
   // runtime-local copy of the class defined in code.ts init().
@@ -33,9 +32,8 @@ export const register = (ctx: $ui.Context) => {
   const searchInputRef = ctx.fieldRef<string>("");
   const searchResults = ctx.state<MUResult[]>([]);
   const isSearching = ctx.state(false);
-  // Local filter over the linked-mangas list (Section B in tray.render).
-  // Separate from the MU API search above — this only narrows what's already
-  // linked, it never hits the network.
+  // Local filter over the linked list — narrows what's already linked, never
+  // hits the network (distinct from the MU API search).
   const linkedFilter = ctx.state("");
   const fLinkedFilter = ctx.fieldRef<string>("");
   // $storage is NOT reactive: tray.render only re-runs when a ctx.state read
@@ -43,8 +41,8 @@ export const register = (ctx: $ui.Context) => {
   // re-reads the mu_link_* keys.
   const linkedRefresh = ctx.state(0);
   const bumpLinked = () => linkedRefresh.set(linkedRefresh.get() + 1);
-  // Per-entry detail view: when set, the tray renders link + search for that
-  // manga instead of the full LINKED list.
+  // When set, the tray renders link + search for that manga instead of the
+  // full LINKED list.
   const detailId = ctx.state<number | null>(null);
 
   const getMedia = (id: number): $app.AL_BaseManga | undefined => {
@@ -69,9 +67,8 @@ export const register = (ctx: $ui.Context) => {
         media.title.romaji)) ||
     `#${id}`;
 
-  // mediaId of the manga entry page the user is viewing (0 = not on one),
-  // tracked via onNavigate — same source of truth as manga-source-updates.
-  // The icon injector reads this instead of parsing data-media off the DOM.
+  // currentMediaId is tracked via onNavigate (below) — the icon injector reads
+  // this instead of parsing data-media off the DOM.
 
   const btn = ctx.action.newMangaPageButton({
     label: "🔓",
@@ -79,9 +76,8 @@ export const register = (ctx: $ui.Context) => {
     tooltipText: "Link to MangaUpdates",
   });
 
-  // Recompute the button label from $storage. Hides the button for
-  // mangaupdates custom-source entries (sync uses the embedded id, no
-  // linking needed — detected via the SOURCE_PREFIX siteUrl prefix).
+  // Hides the button for mangaupdates custom-source entries (sync uses the
+  // embedded id, no linking needed).
   ctx.effect(() => {
     const id = currentMediaId.get();
     if (!id) {
@@ -115,16 +111,11 @@ export const register = (ctx: $ui.Context) => {
   }, [currentMediaId]);
 
   // MU icon injected next to the AniList icon on the manga entry page.
-  // Pattern (cribbed from the `quick-access` plugin):
-  //   1. ctx.dom.observe (withInnerHTML + identifyChildren) gives a sync
-  //      snapshot plus auto-assigned child ids for re-acquiring live handles
-  //      via ctx.dom.asElement(id).
-  //   2. LoadDoc parses the snapshot; the buttons container is located via
-  //      data-manga-meta-section-buttons-container.
-  //   3. Idempotency: each injected icon carries data-mu-sync-key="mu". If
-  //      the snapshot already has it in the right slot we only refresh its href;
-  //      if it was nested inside another icon's tooltip (custom-source entries),
-  //      remove and re-insert as a sibling wrapper div.
+  // `identifyChildren` auto-assigns child ids for re-acquiring live handles via
+  // ctx.dom.asElement(id). Idempotency: each injected icon carries
+  // data-mu-sync-key="mu" — if one already sits in the right slot we only refresh
+  // its href; if it got nested inside another icon's tooltip (custom-source
+  // entries) it's removed and re-inserted as a sibling wrapper div.
   const MU_ICON_KEY = "mu";
   let muIconInjecting = false;
 
@@ -228,16 +219,13 @@ export const register = (ctx: $ui.Context) => {
   });
   ctx.screen.loadCurrent();
 
-  // Shared unlink body for both the per-entry "Unlink" button and the per-row
-  // ⛔ buttons — they differ only in how the id is bound.
   const unlinkMedia = (id: number) => {
     removeMULink(id);
     ctx.toast.info("Link cleared");
     bumpLinked();
-    // If we just unlinked the entry we're viewing, drop its stale picker,
-    // refresh its button label (re-setting currentMediaId re-runs the effect)
-    // and re-run the icon observer so the MU icon vanishes without a
-    // navigate-away-and-back.
+    // If we unlinked the entry we're viewing: re-setting currentMediaId re-runs
+    // the effect (button label), refetchEntryPage re-runs the icon observer so
+    // the MU icon vanishes without a navigate-away-and-back.
     if (id === currentMediaId.get()) {
       searchResults.set([]);
       currentMediaId.set(id);
@@ -247,15 +235,13 @@ export const register = (ctx: $ui.Context) => {
 
   const mu = new MUClient((url, init) => ctx.fetch(url, init));
 
-  // Pushes the current AniList listData (status / progress / score) to the
-  // linked MU series at link-time so MU mirrors AL immediately; subsequent AL
-  // edits are handled by the post-update hook.
+  // Mirrors current AniList listData to the linked MU series at link-time;
+  // subsequent AL edits are handled by the post-update hook.
   async function syncStatsToMU(mediaId: number): Promise<boolean> {
     const link = getMULink(mediaId);
     if (!link?.id) return false;
 
-    // Scan the (client-cached) manga collection for listData — cheaper than
-    // refetching from AniList.
+    // Scan the client-cached collection — cheaper than refetching from AniList.
     let listData: $app.Manga_EntryListData | undefined;
     try {
       const collection = await ctx.manga.getCollection();
@@ -263,7 +249,6 @@ export const register = (ctx: $ui.Context) => {
     } catch (err) {
       log.warn("getCollection failed:", err);
     }
-    // Nothing on the AL list yet — nothing to mirror.
     if (!listData) return false;
 
     const seriesIdNum = Number(link.id);
@@ -279,8 +264,6 @@ export const register = (ctx: $ui.Context) => {
     return true;
   }
 
-  // Drives the reactive UI state around mu.search (which does the HTTP +
-  // response-shaping).
   async function runSearch(query: string) {
     const q = (query || "").trim();
     if (q.length < 2) {
@@ -320,8 +303,7 @@ export const register = (ctx: $ui.Context) => {
     detailId.set(null);
   });
 
-  // Open the per-entry detail view. Seeds the search input and auto-runs MU
-  // search when the entry isn't linked yet (same rules as the page button).
+  // Auto-runs MU search only when the entry isn't linked yet.
   async function openEntryDetail(id: number) {
     detailId.set(id);
     const media = getMedia(id);
@@ -341,9 +323,9 @@ export const register = (ctx: $ui.Context) => {
     }
   }
 
-  // Seeds currentMediaId from event.media (onNavigate may not have fired for
-  // the route, e.g. opening the page directly), opens the detail view, and
-  // tries to open the tray — which only works if the user has pinned it.
+  // Seeds currentMediaId from event.media since onNavigate may not have fired
+  // for the route (e.g. opening the page directly). tray.open() only works if
+  // the user has pinned the tray.
   btn.onClick(async (event) => {
     const media = event.media;
     if (!media?.id) return;
@@ -357,7 +339,6 @@ export const register = (ctx: $ui.Context) => {
   });
   btn.mount();
 
-  // One linked-manga row for the full list (MU identity + AL list metadata).
   const buildLinkedRow = (mediaId: number, link: MULink): EntryListRow => {
     let alMedia: $app.AL_BaseManga | undefined;
     try {
@@ -406,7 +387,6 @@ export const register = (ctx: $ui.Context) => {
     };
   };
 
-  // Detail-view row: MangaUpdates series only (header above is the AniList entry).
   const buildMULinkRow = (mediaId: number, link: MULink): EntryListRow => ({
     cover: link.cover,
     title: link.title || `#${link.id}`,
@@ -427,12 +407,8 @@ export const register = (ctx: $ui.Context) => {
     ],
   });
 
-  // The full, locally-filterable "LINKED (N)" list section.
   const renderLinkedListSection = (): unknown => {
     const filter = linkedFilter.get().toLowerCase();
-    // listMULinkIds() enumerates only top-level `mu_link_<id>` keys — it skips
-    // the dotted sub-keys $storage produces for object values
-    // (mu_link_<id>.cover, …) and dedupes them back to the parent id.
     const allLinked = listMULinkIds()
       .map((mediaId) => ({ mediaId, link: getMULink(mediaId) }))
       .filter(
@@ -473,9 +449,6 @@ export const register = (ctx: $ui.Context) => {
       { gap: 2, style: { alignItems: "center" } },
     );
 
-  // Search-MangaUpdates UI for the current entry: search row + "Search as"
-  // title shortcuts + the results picker. Pass `sectioned` to wrap with a
-  // MANGAUPDATES section label (detail view).
   const renderSearchUI = (
     media: $app.AL_BaseManga,
     id: number,
@@ -511,8 +484,6 @@ export const register = (ctx: $ui.Context) => {
     }
     out.push(tray.flex(searchRow, { gap: 2, style: { alignItems: "end" } }));
 
-    // "Search as" per-title buttons (English / Romaji / Preferred), deduped
-    // and minus whatever is already in the input box.
     const allTitles: Array<{ label: string; value: string }> = [];
     if (media.title) {
       if (media.title.english)
@@ -563,8 +534,7 @@ export const register = (ctx: $ui.Context) => {
       );
     }
 
-    // Results picker. Pick / Linked trailing action, external-link only — no
-    // in-place open (the series isn't in seanime yet) and no search row.
+    // No in-place open action — the series isn't in seanime yet.
     const results = searchResults.get();
     if (results.length > 0) {
       const resultRows = results.map((r): EntryListRow => {
@@ -588,13 +558,11 @@ export const register = (ctx: $ui.Context) => {
                     ctx.toast.success(`Linked to ${r.title}`);
                     searchResults.set([]);
                     bumpLinked();
-                    // Re-render the button label.
                     currentMediaId.set(id);
                     // Re-run the icon observer so the MU icon appears next to
                     // the AL one without a navigate-away-and-back.
                     refetchEntryPage();
                     tray.close();
-                    // Fire-and-forget: mirror current AL listData to MU.
                     syncStatsToMU(id)
                       .then((pushed) => {
                         if (pushed)
@@ -648,7 +616,6 @@ export const register = (ctx: $ui.Context) => {
       { text: "Open in seanime" },
     );
 
-  // AniList entry header for the detail view (link badge + back only).
   function renderAniListDetailHeader(
     media: $app.AL_BaseManga,
     id: number,
@@ -675,7 +642,6 @@ export const register = (ctx: $ui.Context) => {
     });
   }
 
-  // LINKED WITH block: MU row when linked, or a short not-linked note.
   function renderLinkedWithDetailSection(
     id: number,
     link: MULink | undefined,
@@ -709,7 +675,6 @@ export const register = (ctx: $ui.Context) => {
     );
   }
 
-  // Root list view: plugin identity header + optional notes + full LINKED list.
   function renderLinkedList(): unknown {
     const id = currentMediaId.get();
     const media = id ? getMedia(id) : undefined;
@@ -735,7 +700,6 @@ export const register = (ctx: $ui.Context) => {
     return tray.stack(joinDividers(tray, blocks), { gap: 3 });
   }
 
-  // Per-entry detail: AniList section + MU link + search.
   function renderEntryDetail(): unknown {
     const id = detailId.get();
     if (id == null) return null;
@@ -751,8 +715,8 @@ export const register = (ctx: $ui.Context) => {
     return tray.stack(joinDividers(tray, blocks), { gap: 3 });
   }
 
-  // Opening the tray while on a linkable manga entry page jumps to that
-  // entry's detail; opening it anywhere else shows the full linked list.
+  // On a linkable manga entry page, jump straight to that entry's detail;
+  // anywhere else, show the full linked list.
   tray.onOpen(() => {
     void (async () => {
       const id = currentMediaId.get();

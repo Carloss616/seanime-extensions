@@ -1,5 +1,3 @@
-// Tray form field parsers (catalog entry editor).
-
 export function parseOptionalNumber(s: string | undefined): number | undefined {
   const v = Number((s ?? "").trim());
   return (s ?? "").trim() !== "" && Number.isFinite(v) ? v : undefined;

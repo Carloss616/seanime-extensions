@@ -1,12 +1,9 @@
-// Local-catalog read client for the custom-source.
+// Local-catalog read client for the custom-source. `fetch` and
+// `$getUserPreference` are injected so the client is unit-testable without the
+// goja globals.
 //
-// Owns the catalog source (remote URL or inline preference), TTL caching, and
-// normalization of MangaCatalogEntry → $app.AL_BaseManga. The Provider (code.ts) is
-// a thin delegate. `fetch` and `$getUserPreference` are injected so the client
-// is unit-testable without the goja globals.
-//
-// `parseCatalog` is shared with the local-catalog-manager plugin (it parses the
-// same catalog.json wire format) — see src/_utils/local-catalog/catalog.ts.
+// `parseCatalog` is shared with the local-catalog-manager plugin (same
+// catalog.json wire format) — see src/_utils/local-catalog/catalog.ts.
 
 import {
   coerceTitle,

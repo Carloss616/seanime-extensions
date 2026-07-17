@@ -1,6 +1,5 @@
 import type { MUResult } from "./types";
 
-// De-duped, non-empty AniList titles to score a MU candidate against.
 // Skips `native` (CJK) — MU titles are latin/english, so it never matches.
 export function mangaTitles(manga: $app.AL_BaseManga | undefined): string[] {
   if (!manga) return [];
@@ -16,10 +15,9 @@ export function mangaTitles(manga: $app.AL_BaseManga | undefined): string[] {
   ];
 }
 
-// Picks the MU result whose title best matches ANY of the AniList titles,
-// using seanime's native scanner matcher ($scannerUtils.compareTitles, 0..1).
-// Returns undefined when nothing clears `minScore` — a missing link is recoverable
-// (manual link button); a wrong auto-link gets cached and silently corrupts syncs.
+// Matches via seanime's native scanner matcher ($scannerUtils.compareTitles, 0..1).
+// Rejects (undefined) when nothing clears `minScore`: a missing link is recoverable
+// (manual link button), but a wrong auto-link gets cached and silently corrupts syncs.
 export function pickBestMatch(
   titles: string[],
   results: MUResult[],

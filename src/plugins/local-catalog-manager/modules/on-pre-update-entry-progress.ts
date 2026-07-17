@@ -10,8 +10,8 @@ import {
 } from "../utils/progress-capture";
 import type { sharedLib } from "./shared-lib";
 
-// Chapter-increment hook (fired when the reader marks a chapter). No scoreRaw
-// on this event shape — capture only what's available.
+// Chapter-increment hook: no scoreRaw on this event shape — capture only
+// what's available.
 export const onPreUpdateEntryProgress = (
   event: $app.PreUpdateEntryProgressEvent,
 ) => {

@@ -10,9 +10,8 @@ import {
 } from "../utils/progress-capture";
 import type { sharedLib } from "./shared-lib";
 
-// Full-entry update hook (status / score / progress, from the entry edit UI).
-// Captures the to-be-applied fields into $store keyed by mediaId, for the
-// post hook to read. Post receives only mediaId, so we must stash here.
+// Full-entry update hook (status / score / progress). Post receives only
+// mediaId, so we stash the to-be-applied fields in $store keyed by mediaId.
 export const onPreUpdateEntry = (event: $app.PreUpdateEntryEvent) => {
   const { createLogger, decodeLocalId } =
     $shared.use<ReturnType<typeof sharedLib>>(SHARED_LIB_NAME);

@@ -107,8 +107,6 @@ export function effTs(rec: TimestampMeta): number {
   return Math.max(rec.updatedAt ?? 0, rec.deletedAt ?? 0);
 }
 
-// --- merge (pure, LWW) -------------------------------------------------------
-
 function pick<T extends TimestampMeta>(l: T | undefined, r: T | undefined): T {
   if (!l) return { ...(r as T) };
   if (!r) return { ...l };
@@ -165,8 +163,6 @@ export function mergeMaps(local: WireMaps, remote: WireMaps): WireMaps {
     matches: mergeThreeLevel(local.matches, remote.matches),
   };
 }
-
-// --- per-file serialize / parse (stable byte output so redundant pushes no-op) -
 
 function sortObj(o: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -368,8 +364,6 @@ export function filesToWireMaps(files: Record<string, string>): WireMaps {
   };
 }
 
-// --- translate (push) / localize (pull) --------------------------------------
-
 function translateTwoLevel<T>(
   m: Record<string, Record<string, T>>,
   key: (mediaId: number) => string | null,
@@ -508,8 +502,6 @@ export function mergeLocalBack(
   };
 }
 
-// --- gist binding (auto-discovery, no create/link UI) ------------------------
-
 export interface EnsureGistDeps {
   client: GistClient;
   getGistId: () => string | undefined;
@@ -534,8 +526,6 @@ export async function ensureGist(deps: EnsureGistDeps): Promise<string> {
   deps.setGistId(info.id);
   return info.id;
 }
-
-// --- round-trip: pull → merge → push-changed-files → localize ----------------
 
 export interface SyncDeps {
   client: GistClient;
@@ -569,7 +559,6 @@ export async function syncMsu(deps: SyncDeps): Promise<SyncResult> {
     );
   }
 
-  // One GET pulls every file's content.
   let remoteFiles: Record<string, string> = {};
   try {
     remoteFiles = await deps.client.getGistFiles(deps.gistId, ALL_SYNC_FILES);

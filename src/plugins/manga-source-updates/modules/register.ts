@@ -108,12 +108,10 @@ export const register = (ctx: $ui.Context) => {
   );
   const results = ctx.state<MangaResult[]>(hydrated);
 
-  // Per-manga detail view: when detailId is set the tray renders the source
-  // list for that manga. probeCache holds the on-demand probe per mediaId.
   const detailId = ctx.state<number | null>(null);
   const detailTitle = ctx.state<string>("");
-  const detailCover = ctx.state<string>(""); // cover of the open manga (header)
-  const detailRead = ctx.state<number>(0); // reader progress for the open manga
+  const detailCover = ctx.state<string>("");
+  const detailRead = ctx.state<number>(0);
   const probingId = ctx.state<number | null>(null);
   // Provider id being scanned individually (single-source rescan / include),
   // "" = none. One at a time keeps the merge simple.
@@ -169,7 +167,6 @@ export const register = (ctx: $ui.Context) => {
   const lastMappingSigByMedia: Record<number, string | undefined> = {};
   const myInstanceId = getInstanceId();
 
-  // --- Phase 2 sync state ----------------------------------------------------
   // Reactive mirror of the device-flow token so connect/disconnect re-render
   // the tray ($storage reads aren't reactive). $storage stays authoritative for
   // the hooks (separate runtimes) — both are written on connect/disconnect.
@@ -252,7 +249,6 @@ export const register = (ctx: $ui.Context) => {
         log,
         pushSections: pushSections ? new Set(pushSections) : undefined,
       });
-      // Restore this instance's own matched-provider probes into the write-back.
       return {
         ...res,
         writeBack: {
@@ -375,14 +371,11 @@ export const register = (ctx: $ui.Context) => {
     }
   }
 
-  // Fire-and-forget scoped push for a manual edit / scan end (silent, live).
   const livePush = (sections: SyncSection[]): void => {
     void requestSync(sections, "live", true);
   };
 
-  // GitHub OAuth Device Flow: ask DeviceFlowClient for a code → show user_code +
-  // link → poll for the token at `interval` until granted/expired. The HTTP
-  // POSTs live in DeviceFlowClient; this owns the poll cadence + UI state.
+  // The HTTP POSTs live in DeviceFlowClient; this owns the poll cadence + UI state.
   // ponytail: the poll loop BLOCKS the UI runtime via $sleep between polls
   // (there is no setTimeout). Bounded by expires_in so it can't hang forever;
   // acceptable for a user-initiated one-time connect. Upgrade path: drive the
@@ -401,8 +394,6 @@ export const register = (ctx: $ui.Context) => {
       }
       deviceStart.set(parsed.start);
 
-      // The client runs the whole blocking poll loop; we just act on the
-      // terminal outcome.
       const result = await auth.pollUntilToken(parsed.start, {
         sleep: (ms) => $sleep(ms),
       });
@@ -685,7 +676,7 @@ export const register = (ctx: $ui.Context) => {
           }
         }
       }
-      onProgress?.(probes); // once per batch
+      onProgress?.(probes);
     }
     scanningProviders.set(null);
     setExcludedMap(excluded);
@@ -734,8 +725,7 @@ export const register = (ctx: $ui.Context) => {
 
       // Seed the working list from what's already shown, so cancelling (or a
       // crash) leaves the prior rows intact — each manga is UPDATED in place as
-      // it's scanned, never wiped up front. upsert replaces the row if present
-      // (identity = mediaId) else appends, then re-renders.
+      // it's scanned, never wiped up front.
       const out: MangaResult[] = [...results.get()];
       const upsert = (row: MangaResult) => {
         const idx = out.findIndex((r) => r.mediaId === row.mediaId);
@@ -951,7 +941,6 @@ export const register = (ctx: $ui.Context) => {
     CONFIRM[kind].run();
   });
 
-  // Tray "↻ Scan" — route through the confirm view like the library menu.
   ctx.registerEventHandler("msu-scan", () => {
     requestConfirm("scan");
   });
@@ -998,8 +987,6 @@ export const register = (ctx: $ui.Context) => {
     livePush(["exclusions", "pins"]);
   }
 
-  // Global clear: wipe every exclusion + pin, then force-rescan the whole list
-  // so it rediscovers from 0 (cancellable via the panel). Confirm first.
   ctx.registerEventHandler("msu-clear-excl", () => {
     requestConfirm("clear");
   });
@@ -1121,8 +1108,6 @@ export const register = (ctx: $ui.Context) => {
     if (found) rebuildStoredRow(mediaId, found.read);
   }
 
-  // Detail probe = a per-manga scan (probeAll) with live list updates, plus a
-  // refreshed list row. Same scanOneManga the full reload uses.
   async function probeMangaDetail(mediaId: number) {
     // One scan at a time: never start on top of another per-manga / per-source
     // scan or the global scan — they'd share emptyCache + scanProgress and race.
@@ -1320,8 +1305,6 @@ export const register = (ctx: $ui.Context) => {
         : null;
     const actions: unknown[] = [];
     if (scanning) actions.push(scanning);
-    // Status pill lives in the trailing actions, just left of the details
-    // button, with a tooltip decoding the compact `+N · M`.
     const s = statusFor(r);
     actions.push(
       tray.tooltip(tray.badge(s.label, { intent: s.intent }), { text: s.tip }),
@@ -1464,8 +1447,6 @@ export const register = (ctx: $ui.Context) => {
     // and a click would just be rejected with a toast.
     const busy =
       scanningThis || scanningProvider.get() !== "" || scanning.get();
-    // A source is loading if it's the single-provider rescan target OR it's
-    // in-flight in the active per-manga scan for THIS manga.
     const inflight = scanningProviders.get();
     const isPidScanning = (pid: string): boolean =>
       scanningProvider.get() === pid ||
@@ -1475,10 +1456,8 @@ export const register = (ctx: $ui.Context) => {
     const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
 
     const head = trayHeader(tray, {
-      // Manga name as the title; subtitle shows the reader's current chapter.
       title,
       subtitle: read > 0 ? `Read c.${read}` : "Not started",
-      // Use the manga's cover as the header icon; fall back to the plugin icon.
       // String() unwraps a goja-wrapped empty cover so `||` falls through to the
       // manifest icon instead of passing an empty (but truthy) src to tray.img.
       iconUrl: String(cur?.cover ?? "") || detailCover.get() || undefined,
@@ -1766,7 +1745,6 @@ export const register = (ctx: $ui.Context) => {
   scanPanel.channel.on("panel-open", (mediaId: unknown) => {
     const id = Number(mediaId ?? 0);
     if (!Number.isFinite(id) || id <= 0) return;
-    // Already on this entry → just surface the detail in the tray.
     if (currentMediaId.get() === id) {
       openDetail(id);
       try {
@@ -2305,7 +2283,7 @@ export const register = (ctx: $ui.Context) => {
   // portaled to the document root). Unlike the entry page's "Reload sources" it
   // fires with NO confirmation, so hooking it directly would launch the heavy
   // whole-list scan on a single click — instead open our own confirm modal
-  // (requestGlobalScan → confirmGlobalOpen). The menu item carries no data-* of
+  // (requestConfirm). The menu item carries no data-* of
   // its own; match it by text (lowercased) among the menu's [role=menuitem]s, so
   // the sibling "Unread chapters only" and every other menu are skipped. Stamp
   // data-msu-refresh-hooked so repeated observer fires within one open don't
@@ -2349,7 +2327,7 @@ export const register = (ctx: $ui.Context) => {
     if (read == null) return;
     headerProgress.setCache(read);
     const cur = results.get().find((r) => r.mediaId === id);
-    if (!cur || Number(cur.read) === read) return; // nothing new
+    if (!cur || Number(cur.read) === read) return;
     const gap = Number($getUserPreference("farBehindGap") ?? "10") || 10;
     const probes = probeCache.get()[id];
     if (probes && Object.keys(probes).length) {
@@ -2476,7 +2454,6 @@ export const register = (ctx: $ui.Context) => {
     if (detailId.get() != null) return renderDetail();
 
     const header = trayHeader(tray, {
-      // Live scan/status line when there is one; the tagline otherwise.
       subtitle: status.get() || "Detect new chapters across your reading list",
       right: scanning.get()
         ? [
@@ -2488,7 +2465,7 @@ export const register = (ctx: $ui.Context) => {
             }),
           ]
         : [
-            // Opens the confirm view (msu-scan → requestGlobalScan). Kept
+            // Opens the confirm view (msu-scan → requestConfirm). Kept
             // ENABLED even while a per-manga scan runs so the click registers and
             // rejectIfBusy can toast "a scan is already running" instead of the
             // button silently doing nothing.

@@ -23,7 +23,7 @@
 // decide whether the DOM is already correct ("skip") or must be rebuilt.
 // Rebuild covers none, a stale sig, AND duplicates (length !== 1) — which is why
 // a plain `innerHTML.includes(sig)` guard is wrong: it lets a raced duplicate
-// stick forever. Exported for unit testing.
+// stick forever.
 import { domAttr } from "../_utils/dom-read";
 
 export function decideDecoration(

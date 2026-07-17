@@ -1,6 +1,3 @@
-// Normalized MangaUpdates series — consumed by the UI and link store.
-// Produced by MUClient.search from raw $mu.Search.Response records.
-
 export interface MUResult {
   id: string;
   title: string;
@@ -9,7 +6,6 @@ export interface MUResult {
   url: string;
 }
 
-// A persisted link extends MUResult with when it was linked.
 export interface MULink extends MUResult {
   linkedAt: number;
 }

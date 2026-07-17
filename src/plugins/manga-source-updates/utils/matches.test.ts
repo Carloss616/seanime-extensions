@@ -63,9 +63,7 @@ describe("upsertMatch (3-level, per instance)", () => {
     };
     const out = upsertMatch(start, 1, "asura", "A", "y", 100);
     expect(out["1"].asura.A).toEqual({ mappedId: "y", updatedAt: 100 });
-    // B's leaf untouched
     expect(out["1"].asura.B).toEqual({ mappedId: "z", updatedAt: 1 });
-    // input not mutated
     expect(start["1"].asura.A.mappedId).toBe("x");
   });
 });

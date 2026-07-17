@@ -2,7 +2,6 @@
 // bridge when the snapshot is empty (observe/query nodes often lack attributes
 // or textContent until getAttribute / getText runs).
 
-/** Read a data-* attribute: `el.attributes` first, then `await getAttribute`. */
 export async function domAttr(
   el: $ui.DOMElement,
   key: string,
@@ -18,7 +17,6 @@ export async function domAttr(
   return undefined;
 }
 
-/** Parse numeric text: `textContent` first, then `await getText`. */
 export async function parseDomNumber(
   el?: $ui.DOMElement | null,
 ): Promise<number | null> {

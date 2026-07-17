@@ -5,8 +5,6 @@ export interface GistInfo {
 }
 
 export class GistClient {
-  // Pass `(u, i) => ctx.fetch(u, i)` from UI scope; `ctx.fetch` matches the
-  // shape declared in types/core.d.ts.
   private declare baseUrl: string;
   private declare token: string;
   private declare fetchFn: typeof fetch;
@@ -68,10 +66,9 @@ export class GistClient {
     return data.files?.[filename]?.content ?? "";
   }
 
-  /** Single GET that returns owner + computed raw URL + file content — used
-   *  by the link-existing-gist flow so we can persist K_OWNER and K_RAW
-   *  without a follow-up request (and so "Show raw catalog URL" works
-   *  immediately after linking, not only after the first push/pull). */
+  /** Single GET returning owner + raw URL + content, so the link-existing-gist
+   *  flow can persist K_OWNER/K_RAW without a follow-up request (and "Show raw
+   *  catalog URL" works right after linking, not only after the first push). */
   async getGistFileWithInfo(
     id: string,
     filename: string,
@@ -107,9 +104,8 @@ export class GistClient {
     }
   }
 
-  /** Read several files from ONE gist in a single GET (the gist GET returns
-   *  every file's content). Returns filename → content, "" for any requested
-   *  file the gist doesn't have. Lets a multi-file payload pull in one request. */
+  /** Read several files from ONE gist in a single GET. Returns filename →
+   *  content, "" for any requested file the gist doesn't have. */
   async getGistFiles(
     id: string,
     filenames: string[],
@@ -160,9 +156,8 @@ export class GistClient {
     }
   }
 
-  /** List the authenticated user's gists and return the id of the first one
-   *  that contains `filename`, or null. Lets a second device find the shared
-   *  sync gist by filename instead of pasting an id — no create/link UI. */
+  /** Id of the authenticated user's first gist containing `filename`, or null.
+   *  Lets a second device find the shared sync gist without pasting an id. */
   async findGistByFilename(filename: string): Promise<string | null> {
     const res = await this.fetchFn(`${this.baseUrl}/gists?per_page=100`, {
       method: "GET",

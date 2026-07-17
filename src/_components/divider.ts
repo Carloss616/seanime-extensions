@@ -1,11 +1,7 @@
-// Thin horizontal separator between tray sections.
-//
-// A plain 1px line with NO margin/padding: spacing around it comes from the
-// parent stack's `gap` (the repo's spacing convention — see CLAUDE.md). This
-// keeps vertical rhythm consistent instead of each divider baking in its own.
-//
-// PURE FUNCTION over `tray` so the build can inline it into serialized goja
-// callbacks (see CLAUDE.md "Splitting an extension across multiple files").
+// Thin 1px separator between tray sections. NO margin/padding: spacing comes
+// from the parent stack's `gap` (the repo spacing convention) so vertical
+// rhythm stays uniform instead of each divider baking in its own.
+// PURE over `tray` so the build can inline it into serialized goja callbacks.
 
 export function divider(tray: $ui.Tray): unknown {
   return tray.div([], {
@@ -13,12 +9,10 @@ export function divider(tray: $ui.Tray): unknown {
   });
 }
 
-// Interleave dividers between page-level blocks: a bare rule between each pair
-// of present blocks, none before the first and none around absent (null/
-// undefined) blocks. Returns the flat child list for a page `tray.stack` so the
-// stack's own `gap` spaces every divider equally on both sides — the uniform
-// 12px rhythm (see CLAUDE.md). Replaces the old per-section `leadingDivider`
-// flag: callers list their sections and the rules fall where blocks meet.
+// Interleave dividers between page-level blocks: a rule between each pair of
+// present blocks, none before the first or around null/undefined blocks.
+// Returns the flat child list for a page `tray.stack` so the stack's `gap`
+// spaces every rule equally on both sides.
 export function joinDividers(tray: $ui.Tray, blocks: unknown[]): unknown[] {
   const out: unknown[] = [];
   for (const b of blocks) {

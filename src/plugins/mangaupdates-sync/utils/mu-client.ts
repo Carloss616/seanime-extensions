@@ -1,7 +1,3 @@
-// MangaUpdates v1 REST client. Inlined into every goja-isolated callback that
-// needs it (via the modules/ self-containerization, or once through $shared).
-// See CLAUDE.md "Splitting an extension across multiple files".
-
 import { createLogger } from "../../../_utils/logger";
 import { MUClientBase } from "../../../_utils/mangaupdates/client";
 import { muRecordUrl, muRecordYear } from "../../../_utils/mangaupdates/record";
@@ -27,11 +23,8 @@ export class MUClient extends MUClientBase {
   private declare tokenKey: string;
   private declare statusList: Record<string, number>;
 
-  /**
-   * @param fetchFn  HTTP transport. Pass `ctx.fetch.bind(ctx)` from UI
-   *                 scope, or the plain `fetch` global from hook scope.
-   *                 Indirection lets the same class work in either runtime.
-   */
+  // fetchFn indirection lets the same class work in either runtime: pass
+  // `ctx.fetch.bind(ctx)` from UI scope, or the plain `fetch` global from hook scope.
   constructor(fetchFn: typeof fetch) {
     super();
     this.tokenKey = "mu_session_token";
@@ -66,10 +59,8 @@ export class MUClient extends MUClientBase {
     });
   }
 
-  /** Searches the public MangaUpdates series index and returns normalized
-   *  results. No login required — attaches the stored session token only if
-   *  one is present (it slightly enriches results but isn't mandatory). A
-   *  query shorter than 2 chars short-circuits to an empty list. */
+  // No login required — attaches the stored session token only if present (it
+  // slightly enriches results but isn't mandatory).
   async search(query: string, page = 1, perpage = 10): Promise<MUResult[]> {
     const token = await this.ensureToken();
     const data = await this._search(query, { page, perPage: perpage, token });
@@ -85,9 +76,8 @@ export class MUClient extends MUClientBase {
     return token;
   }
 
-  /** Returns a usable bearer token. Logs in (caching the token in `$storage`)
-   *  when none is stored; `refresh=true` forces a fresh login, bypassing the
-   *  cache (used by `req`'s onRefreshToken to recover from an expired token). */
+  // `refresh=true` forces a fresh login, bypassing the cache — used by `req`'s
+  // onRefreshToken to recover from an expired token.
   private async ensureToken(refresh = false): Promise<string> {
     let token = refresh ? undefined : $storage.get<string>(this.tokenKey);
     const username = $getUserPreference("username");
@@ -104,10 +94,8 @@ export class MUClient extends MUClientBase {
     return token;
   }
 
-  /** Pushes status + chapter to MU. Falls through to `/lists/series` (add)
-   *  when the series isn't on the user's list yet — MU's update endpoint
-   *  only mutates existing entries. `payload.status` accepts AniList list
-   *  status strings; the mapping to MU list ids is built-in. */
+  // Falls through to `/lists/series` (add) when the series isn't on the user's
+  // list yet — MU's update endpoint only mutates existing entries.
   async pushListEntry(
     seriesId: number,
     payload: {
@@ -140,9 +128,8 @@ export class MUClient extends MUClientBase {
     }
   }
 
-  /** Pushes a rating (0-10 scale, derived from AniList's 0-100 scoreRaw).
-   *  Skipped silently when scoreRaw <= 0. Score lives behind a separate
-   *  endpoint — `/lists/series/update` silently drops any `rating` field. */
+  // Rating (0-10) is derived from AniList's 0-100 scoreRaw. Score lives behind a
+  // separate endpoint — `/lists/series/update` silently drops any `rating` field.
   async pushRating(seriesId: number, scoreRaw: number): Promise<void> {
     if (scoreRaw <= 0) return;
     const token = await this.ensureToken();

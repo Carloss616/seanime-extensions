@@ -1,8 +1,7 @@
-// Shared catalog parsing / serialization for both the local-catalog
-// custom-source (reader) and the local-catalog-manager plugin (writer).
-//
-// Entries are native $app.AL_BaseManga / $app.AL_BaseAnime plus a per-record
-// `updatedAt` (merge-metadata). See types/local-catalog.d.ts.
+// Shared catalog parsing / serialization for the local-catalog custom-source
+// (reader) and the local-catalog-manager plugin (writer). Entries are native
+// $app.AL_BaseManga / $app.AL_BaseAnime plus a per-record `updatedAt` (merge
+// metadata). See types/local-catalog.d.ts.
 
 export function resolveUserPreferred(title: unknown): string | undefined {
   if (typeof title === "string") {
@@ -16,9 +15,8 @@ export function resolveUserPreferred(title: unknown): string | undefined {
   return undefined;
 }
 
-// Normalize a title (string or partial object) to a full AL title object with a
-// populated `userPreferred`. Used at parse time so downstream always sees an
-// object, and by the reader as a safety net.
+// Normalize a title (string or partial object) to an AL title object with a
+// populated `userPreferred`, so downstream always sees an object.
 export function coerceTitle(title: unknown): $app.AL_BaseManga_Title {
   if (typeof title === "string") {
     const t = title.trim();
@@ -123,20 +121,19 @@ export function serializeCatalog(
   updatedAt: number,
   anime: AnimeCatalogEntry[] = [],
 ): string {
-  // Envelope order (version/updatedAt/manga/anime) is fixed; entries are
-  // canonicalized. Indented for readability in the GitHub gist UI.
   const doc = {
     version: 2,
     updatedAt,
     manga: manga.map(canonicalizeKeys),
     anime: anime.map(canonicalizeKeys),
   };
+  // Indented for readability in the GitHub gist UI.
   return JSON.stringify(doc, null, 2);
 }
 
 // Per-entry last-write-wins by `updatedAt` (missing → 0; tie → local), sorted by
-// id. Mirrors mergeProgress. Returned entries are NOT fresh copies — callers that
-// mutate the result should spread first.
+// id. Returned entries are NOT fresh copies — callers that mutate the result
+// should spread first.
 export function mergeCatalog(
   local: MangaCatalogEntry[],
   remote: MangaCatalogEntry[],
@@ -167,7 +164,6 @@ export function catalogsEqual(
   return norm(a) === norm(b);
 }
 
-// Counts of ids unique to each side + ids in conflict (same id both sides).
 export function diffCatalog(
   local: MangaCatalogEntry[],
   remote: MangaCatalogEntry[],

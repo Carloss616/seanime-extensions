@@ -1,11 +1,4 @@
-// $shared factory — one public binding per file (build convention).
-// init() registers this via $shared.define("local-catalog", sharedLib);
-// every hook / register module calls $shared.use<ReturnType<typeof sharedLib>>("local-catalog").
-//
-// The build self-containerizes this file (just like every other modules/*.ts),
-// inlining all helper imports into the function body. seanime then re-evals
-// `sharedLib.toString()` in each runtime that calls $shared.use, so the
-// helpers travel along.
+// $shared factory for "local-catalog" (see CLAUDE.md "$shared").
 
 import {
   decodeExtId,
@@ -50,7 +43,6 @@ import {
 export const sharedLib = () => ({
   createLogger,
   GistClient,
-  // catalog read/write
   coerceTitle,
   parseCatalog,
   resolveUserPreferred,
@@ -62,18 +54,15 @@ export const sharedLib = () => ({
   removeEntry,
   nextId,
   validateEntry,
-  // mediaId codec
   decodeLocalId,
   decodeExtId,
   encodeMediaId,
   isCustomSourceId,
-  // progress
   parseProgress,
   serializeProgress,
   mergeProgress,
   diffProgress,
   progressMangaEquals,
-  // sync ops
   buildMediaIdLookup,
   applyRemote,
   detectOrphans,

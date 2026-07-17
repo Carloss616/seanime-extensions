@@ -1,6 +1,5 @@
 import { parseDomNumber } from "../../../_utils/dom-read";
 
-/** Entry-page progress reader with a nav-scoped cache for decorateBar passes. */
 export function createHeaderProgressReader(ctx: $ui.Context) {
   let cache: number | null = null;
 

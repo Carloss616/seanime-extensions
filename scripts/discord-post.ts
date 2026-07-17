@@ -75,7 +75,6 @@ if (!m) {
 
 const toCode = (s: string) => `\`${s}\``;
 
-// Additional notes auto-derived from the manifest's declared capabilities.
 const notes: string[] = [];
 const scopes = m.plugin?.permissions?.scopes;
 if (scopes?.length) {

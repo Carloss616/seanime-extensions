@@ -95,7 +95,6 @@ export function trayHeader(
     );
   }
   row.push(
-    // gap: 1 (4px) between title and subtitle.
     tray.stack(textCol, { gap: 1, style: { flex: "1", minWidth: "0" } }),
   );
   if (opts.right?.length) {

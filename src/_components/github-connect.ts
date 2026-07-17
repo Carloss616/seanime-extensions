@@ -87,8 +87,6 @@ const SEG_BOX: Record<string, string> = {
   lineHeight: "1",
 };
 
-// Badge (or plain text) + optional "· via {via}" suffix, all vertically
-// centered on one line.
 function statusRow(tray: $ui.Tray, s: ConnectStatus): unknown {
   const segs: unknown[] = [];
   if (s.badge) {

@@ -27,7 +27,6 @@ export function hydrateResults(): MangaResult[] {
   return out;
 }
 
-// Rehydrate the per-source probes from $storage (keyed by provider id).
 export function hydrateProbes(): Record<number, Record<string, ProviderProbe>> {
   return getProbes() as unknown as Record<
     number,

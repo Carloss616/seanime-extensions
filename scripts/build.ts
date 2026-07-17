@@ -10,9 +10,7 @@ const VALID_TYPES = new Set([
   "plugin",
 ]);
 
-// Fields projected into marketplace.json (mirrors what seanime's marketplace
-// reads). Everything else in a manifest (payload/plugin/userConfig blocks)
-// stays out of the index.
+// Fields projected into marketplace.json — mirrors what seanime's marketplace reads.
 const MARKETPLACE_FIELDS = [
   "id",
   "name",

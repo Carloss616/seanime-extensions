@@ -4,8 +4,7 @@ import type { MUResult } from "./mu-client";
 
 const r = (id: string, title: string): MUResult => ({ id, title, url: "" });
 
-// goja exposes $scannerUtils; bun doesn't. Stub it with a Dice-coefficient
-// matcher — good enough to exercise the selection + threshold logic.
+// goja exposes $scannerUtils; bun doesn't. Stub it with a Dice-coefficient matcher.
 const norm = (s: string) =>
   s
     .toLowerCase()

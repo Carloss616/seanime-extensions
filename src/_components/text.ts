@@ -1,13 +1,8 @@
-// Shared typography tokens for tray UIs. Two roles for the small dim text that
-// recurs across every plugin — collapses the four ad-hoc sizes (0.65 / 0.68 /
-// 0.70 / 0.72rem) that had drifted apart into one scale.
-//
+// Shared typography tokens for tray UIs — one scale for the small dim text that
+// recurs across every plugin:
 //   LABEL_STYLE   — uppercase, tracked section headers & stat labels
 //   CAPTION_STYLE — plain dim sub-labels & captions
-//
-// Plain style objects (typed Record<string,string> to match the tray node
-// `style` param) so they inline into serialized goja callbacks like any other
-// helper (see CLAUDE.md "Splitting an extension across multiple files").
+// Plain style objects so they inline into serialized goja callbacks.
 
 export const LABEL_STYLE: Record<string, string> = {
   fontSize: "0.7rem",

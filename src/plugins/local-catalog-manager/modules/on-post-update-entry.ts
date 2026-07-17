@@ -12,10 +12,9 @@ import { wrapUpdateEntryWithSkip } from "../utils/progress-capture";
 import { syncToken } from "../utils/token";
 import type { sharedLib } from "./shared-lib";
 
-// Persist captured payload + sync with the gist (source of truth).
-// handlePostUpdate handles the branching: cache present → push, cache absent
-// + remote present → restore-from-remote, cache absent + remote absent →
-// push-new. We don't block event.next() on the network.
+// Persist captured payload + sync with the gist (source of truth) —
+// handlePostUpdate branches on cache/remote presence. We don't block
+// event.next() on the network.
 export const onPostUpdateEntry = (event: $app.PostUpdateEntryEvent) => {
   const {
     createLogger,

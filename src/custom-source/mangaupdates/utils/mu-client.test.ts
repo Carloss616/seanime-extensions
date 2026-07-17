@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { MUClient, mapFormat, toBaseManga } from "./mu-client.ts";
 
-// Minimal MU search record factory.
 function rec(overrides: Partial<$mu.Search.Record> = {}): $mu.Search.Record {
   return {
     series_id: 555,

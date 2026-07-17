@@ -297,6 +297,16 @@ Plugin manifests have two blocks beyond the standard fields ([example](src/plugi
 - `plugin.permissions.allow.networkAccess.allowedDomains` — host allow-list; `fetch` to anything not listed is blocked.
 - `userConfig.fields` — declarative form schema; values are read at runtime via `$getUserPreference(name)`.
 
+## Comment hygiene (write few — apply on every edit)
+
+Comment density in this repo is intentionally low. **When you write or edit any `*.ts`, apply the `prune-comments` skill's rubric at write-time** — the default for a comment is to NOT write it. A comment earns its place only if a competent reader (or a future Claude session) reading only the code would be surprised or make a wrong change without it. Concretely:
+
+- **Do NOT write**: comments that restate what the code does (`// loop over items`, `// return result`), narrate steps (`// Step 1 …`, `// now build the map`), label the obvious (banners, `// STATE`), or echo a descriptive identifier/type. Obvious JSDoc (`@param name The name`) too.
+- **DO write** (the load-bearing kind): a non-obvious **why** (design decision, ordering constraint, workaround), a gotcha/invariant the code can't reveal, a goja-runtime trap / build-pipeline constraint / encoding math / seanime-internal behavior, and `SPIKE:` / `ponytail:` markers.
+- Litmus test before writing any comment: *would someone reading only the code get this wrong without it?* If no → skip it.
+
+Full rubric + the `modules/*.ts` no-`export`-substring rule live in the `prune-comments` skill (run `/prune-comments` for a repo-wide cleanup pass).
+
 ## SPIKE markers
 
 Code and READMEs use `SPIKE:` comments to flag values inferred from community wrappers / reverse-engineering that need confirmation against real APIs (most relevant for `mangaupdates-sync` — MangaUpdates v1 has no public OpenAPI spec). When verifying these, update the comment **and** the corresponding entry in the extension's README "SPIKE" section.

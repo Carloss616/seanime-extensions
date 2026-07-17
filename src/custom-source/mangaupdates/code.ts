@@ -1,8 +1,7 @@
 import { MUClient } from "./utils/mu-client";
 
 export class Provider implements CustomSource {
-  // Read client (search + series lookup + normalization). `fetch` is the goja
-  // global available in custom-source runtimes.
+  // `fetch` is the goja global available in custom-source runtimes.
   private client = new MUClient(fetch);
 
   getSettings(): Settings {

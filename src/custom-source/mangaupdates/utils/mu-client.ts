@@ -1,13 +1,10 @@
-// MangaUpdates v1 read client for the custom-source.
+// MangaUpdates v1 read client for the custom-source. `fetchFn` is injected so
+// the client is unit-testable without the network; the Provider passes the
+// `fetch` global.
 //
-// Wraps the public search + series endpoints and normalizes their records into
-// the `$app.AL_BaseManga` shape seanime expects. The Provider (code.ts) is a
-// thin delegate over this client. `fetchFn` is injected so the client is unit-
-// testable without the network; the Provider passes the `fetch` global.
-//
-// (This is the READ side. The mangaupdates-sync plugin has its own auth/write
+// This is the READ side. The mangaupdates-sync plugin has its own auth/write
 // client at src/plugins/mangaupdates-sync/utils/mu-client.ts — separate bundle,
-// separate concern; they only share the endpoint constants.)
+// separate concern; they only share the endpoint constants.
 
 import { MUClientBase } from "../../../_utils/mangaupdates/client";
 import { muRecordUrl, muRecordYear } from "../../../_utils/mangaupdates/record";

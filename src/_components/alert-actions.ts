@@ -1,15 +1,12 @@
 // The notch action box that sits under a `tray.alert` (which can't host child
-// buttons of its own). A bordered, centered box with an upward triangle notch
-// pointing back at the alert above it. Shared by the drift banners and the gist
-// delete-confirm so every "alert + actions" pair reads identically.
-//
-// PURE FUNCTION over `tray` so the build can inline it into serialized goja
-// callbacks (see CLAUDE.md "Splitting an extension across multiple files").
+// buttons of its own): a bordered box with an upward triangle pointing back at
+// the alert above it, so every "alert + actions" pair reads identically.
+// PURE over `tray` so the build can inline it into serialized goja callbacks.
 export function alertActions(tray: $ui.Tray, rows: unknown[]): unknown {
   return tray.div(
     [
-      // Upward-pointing triangle notch, absolutely positioned over the box's
-      // top border so it reads as "these actions belong to the alert above".
+      // Upward triangle over the box's top border, so the box reads as
+      // belonging to the alert above it.
       tray.div([], {
         style: {
           position: "absolute",

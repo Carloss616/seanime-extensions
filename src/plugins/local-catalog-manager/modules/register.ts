@@ -123,8 +123,6 @@ export const register = (ctx: $ui.Context) => {
   const rawUrl = ctx.state<string>($storage.get<string>(K_RAW_URL) ?? "");
   const status = ctx.state<string>("");
 
-  // Single normalization path: parseProgress handles the null cache (→ empty
-  // doc), the manga/anime namespaces, and per-entry updatedAt defaulting.
   const loadProgressDoc = (): LocalProgress =>
     parseProgress($storage.get<LocalProgress>(K_PROGRESS), log);
   const progress = ctx.state<LocalProgress>(loadProgressDoc());
@@ -219,9 +217,8 @@ export const register = (ctx: $ui.Context) => {
     });
   }
 
-  // Reload catalog = fetch remote, merge with local (local wins ties), push
-  // merged back so both sides converge. Replaces the separate Pull / Push
-  // catalog actions with a single idempotent sync.
+  // Reload = fetch remote, merge with local (local wins ties), push merged
+  // back so both sides converge. Idempotent.
   async function reloadCatalog() {
     const gistId = effectiveGistId();
     if (!hasToken() || !gistId) {
@@ -242,8 +239,7 @@ export const register = (ctx: $ui.Context) => {
         const merged = mergeCatalog(entries.get(), remote);
         // Push only when the merge actually changed the remote content.
         // Otherwise we'd write a noise revision differing solely in the
-        // envelope updatedAt — what autoSync produced on every tick. Mirrors
-        // the progressMangaEquals guard in syncProgressInner.
+        // envelope updatedAt — what autoSync produced on every tick.
         if (catalogsEqual(merged, remote)) {
           // Keep local in sync with remote without bumping K_UPDATED_AT, so the
           // next manual push doesn't re-serialize a newer date for free.
@@ -258,7 +254,6 @@ export const register = (ctx: $ui.Context) => {
         }
         status.set(`Reloaded · ${ent(merged.length)}`);
         ctx.toast.success(`Catalog reloaded — ${ent(merged.length)}`);
-        // Flush custom-source cache after the merged catalog is pushed.
         invalidateClientCaches({ catalog: true });
       } catch (e) {
         ctx.toast.error(`Reload failed: ${(e as Error).message}`);
@@ -329,13 +324,10 @@ export const register = (ctx: $ui.Context) => {
     return { applied: result.applied, skipped: result.skipped };
   }
 
-  // Silent background sync — used by event-triggered pulls (tray.onOpen,
-  // screen.onNavigate to manga entry, plugin init, optional onGetMangaCollection
-  // hook if seanime exposes it). Skips loudly if a hard precondition fails,
-  // but never toasts on no-op — only when something actually changed. A
-  // soft cooldown (`silentCooldownMs`) prevents spamming the network when
-  // multiple events fire in close succession (e.g., tray.onOpen + navigate
-  // both fire within ~1s).
+  // Silent background sync for event-triggered pulls. Toasts only when
+  // something actually changed (never on no-op), and a soft cooldown prevents
+  // spamming the network when multiple events fire in close succession (e.g.
+  // tray.onOpen + navigate both fire within ~1s).
   let lastSilentSyncAt = 0;
   async function pullProgressSilent(reason: string): Promise<void> {
     const gistId = effectiveGistId();
@@ -409,11 +401,6 @@ export const register = (ctx: $ui.Context) => {
     }
   }
 
-  // Single persistence path for progress mutations: updates ctx.state +
-  // $storage, then best-effort fire-and-forget push to the gist (skipped in
-  // local mode or while drift is pending). Used by cleanOrphans, the entry
-  // delete handler (which always prunes the entry's progress), and per-orphan
-  // deletes from the orphan list UI.
   function persistProgress(next: LocalProgress, updatedAt: number) {
     progress.set(next);
     progressUpdated.set(updatedAt);
@@ -439,8 +426,6 @@ export const register = (ctx: $ui.Context) => {
     progressStatus.set(`Cleaned ${orphans.length} orphan(s)`);
   }
 
-  // Single-orphan delete from the per-orphan list. Same persistence/push
-  // path as cleanOrphans, just one id.
   function deleteOrphan(localId: number) {
     if (!progress.get().manga[String(localId)]) return;
     const now = Date.now();
@@ -472,11 +457,6 @@ export const register = (ctx: $ui.Context) => {
     sleep: $sleep,
   });
 
-  // "📤 Apply progress" button — appears on the entries list when local
-  // progress drifts from seanime's state, AND on each orphan row.
-  // If the manga isn't in seanime's collection yet, auto-add it via
-  // $anilist.addMediaToCollection (defaults to PLANNING) then overwrite
-  // with local progress via updateEntry.
   async function applyProgress(localId: number) {
     const entry = progress.get().manga[String(localId)];
     if (!entry) return;
@@ -521,11 +501,8 @@ export const register = (ctx: $ui.Context) => {
             ? `Applied progress for #${localId} to seanime`
             : `Added #${localId} to seanime + applied progress`,
         );
-        // Refresh both lookups so subsequent renders see the just-applied
-        // state — mediaIdLookup so the row counts as "in list", and
-        // seanimeListDataLookup so the drift check matches and hides the
-        // push button (avoiding a stale "drift detected" badge right after
-        // a successful push).
+        // Refresh both lookups so the just-applied state hides the push button
+        // (no stale "drift detected" badge right after a successful push).
         // goja's Promise interop accepts `await` on getCollection's return
         // but does NOT expose `.then` on it — keep this inline with await.
         try {
@@ -562,9 +539,7 @@ export const register = (ctx: $ui.Context) => {
     });
   }
 
-  // AL_BaseManga_Title is romaji/english/native + a userPreferred. The user
-  // authors the three named variants directly; fPreferred picks which one
-  // becomes userPreferred (AniList derives it the same way, per viewer locale).
+  // fPreferred picks which of romaji/english/native becomes userPreferred.
   const fRomaji = ctx.fieldRef<string>("");
   const fEnglish = ctx.fieldRef<string>("");
   const fNative = ctx.fieldRef<string>("");
@@ -629,33 +604,25 @@ export const register = (ctx: $ui.Context) => {
   // banner. The menu items open these; a Cancel / the action itself closes it.
   const bindingPrompt = ctx.state<"" | "link" | "delete">("");
 
-  // Local-only mode: whether the "can't sync directly" limitation + JSON export
-  // blocks are expanded. Its own toggle (the ⚠️ header button) since it reveals
-  // CONTENT, not actions — unlike Gist mode's ⋮ actions menu.
+  // Local-only mode: whether the "can't sync directly" limitation + JSON output
+  // blocks are expanded. Own toggle (⚠️ header button) since it reveals CONTENT,
+  // not actions — unlike Gist mode's ⋮ actions menu.
   const localInfoExpanded = ctx.state<boolean>(false);
 
-  // Whether the orphan list (per-orphan delete + try-apply) is expanded under
-  // the READING PROGRESS section. Defaults collapsed; the ⚠️ N badge toggles.
   const orphansExpanded = ctx.state<boolean>(false);
 
-  // Whether the read-only catalog / progress JSON blocks are expanded in
-  // local mode. Both default collapsed — the user opens whichever section
-  // they need (copy catalog vs. inspect progress backup).
   const catalogJsonExpanded = ctx.state<boolean>(false);
   const progressJsonExpanded = ctx.state<boolean>(false);
 
-  // localId → seanime mediaId map, refreshed on tray.onOpen. Lets renders
-  // show the resolved mediaId (in tooltips) and the navigation handler skip
-  // the per-click getCollection() cost in the common case. Falls back to a
-  // fresh lookup at click time if the cache is stale or missing.
+  // localId → seanime mediaId cache, refreshed on tray.onOpen so renders/nav
+  // skip the per-click getCollection() cost. Falls back to a fresh lookup at
+  // click time when stale or missing.
   const mediaIdLookup = ctx.state<Map<number, number> | null>(null);
 
-  // localId → seanime's tracked listData (status / progress / scoreRaw) for
-  // entries that are in the user's manga collection. The "📤 push" button
-  // on each entry row uses this to decide whether to render at all — we
-  // only show it when local progress drifts from seanime's tracked state
-  // (or the entry isn't in the user's list yet), not for already-in-sync
-  // rows where pushing is a no-op.
+  // localId → seanime's tracked listData for entries in the user's collection.
+  // Gates the per-row "📤 push" button: shown only when local progress drifts
+  // from seanime's tracked state (or the entry isn't in the list yet), never
+  // for already-in-sync rows where pushing is a no-op.
   const seanimeListDataLookup = ctx.state<Map<number, SeanimeListData> | null>(
     null,
   );
@@ -691,8 +658,6 @@ export const register = (ctx: $ui.Context) => {
     seanimeListDataLookup.set(listData);
   }
 
-  // Entries filter: substring match (case-insensitive) on resolved title.
-  // Empty string = no filter (show all).
   const entrySearch = ctx.state<string>("");
   const fEntrySearch = ctx.fieldRef<string>("");
 
@@ -800,13 +765,10 @@ export const register = (ctx: $ui.Context) => {
     }
   }
 
-  // Tag of the currently-running async action ("" when idle). Buttons swap
-  // their label to a loading text when their tag matches; second-click while
-  // busy short-circuits with a toast so we don't queue duplicate ops.
+  // Tag of the currently-running async action ("" when idle). Buttons match
+  // their tag to swap to a loading label; a second click while busy short-
+  // circuits so we don't queue duplicate ops.
   const busyAction = ctx.state<string>("");
-  // GitHub OAuth Device Flow connect state: `connecting` guards a double-click
-  // starting two flows; `deviceStart` drives the "enter this code" view while a
-  // flow is in progress.
   const connecting = ctx.state<boolean>(false);
   const deviceStart = ctx.state<$gh.Login.DeviceCode | null>(null);
   // Reactive mirror of the device-flow token: $storage reads aren't reactive,
@@ -833,8 +795,6 @@ export const register = (ctx: $ui.Context) => {
   const hasToken = () => effToken().length > 0;
   const client = () => new GistClient(effToken(), (u, i) => ctx.fetch(u, i));
 
-  // Accept a Gist raw URL, share URL, or a bare hex id; return the gist id
-  // (or null if the input doesn't look like a gist).
   // MIGRATION (one-shot): legacy `gistUrl` userConfig field is gone from the
   // manifest. Existing installs may still have a value set; copy the parsed
   // id into $storage so the modern code path picks it up. New installs hit
@@ -847,13 +807,10 @@ export const register = (ctx: $ui.Context) => {
       log.log("migrated legacy gistUrl config to $storage");
     }
   }
-  // Gist binding lives entirely in $storage now (managed from the tray —
-  // create / link / unlink / delete remotely).
   const effectiveGistId = (): string => $storage.get<string>(K_GIST_ID) ?? "";
 
-  // GitHub OAuth Device Flow: ask DeviceFlowClient for a code → show user_code +
-  // link → poll for the token at `interval` until granted/expired. The HTTP
-  // POSTs live in DeviceFlowClient; this owns the poll cadence + UI state.
+  // GitHub OAuth Device Flow. The HTTP POSTs live in DeviceFlowClient; this
+  // owns the poll cadence + UI state.
   // ponytail: the poll loop BLOCKS the UI runtime via $sleep between polls
   // (there is no setTimeout). Bounded by expires_in so it can't hang forever —
   // acceptable for a user-initiated one-time connect.
@@ -1080,7 +1037,6 @@ export const register = (ctx: $ui.Context) => {
       const progressDiverges =
         d.conflicts > 0 || d.localOnly > 0 || d.remoteOnly > 0;
       if (localCount > 0 && remoteCount > 0 && progressDiverges) {
-        // Drift candidate — surface the banner.
         pendingProgressDrift.set({ local, remote });
         pauseProgressSync(remote);
         ctx.toast.warning(
@@ -1088,7 +1044,6 @@ export const register = (ctx: $ui.Context) => {
         );
         return;
       }
-      // No drift — auto-merge + apply + push (existing path).
       const res = await syncProgressInner();
       const progSummary = `applied ${res.applied}${res.skipped ? `, skipped ${res.skipped} orphan(s)` : ""}`;
       ctx.toast.success(
@@ -1111,9 +1066,6 @@ export const register = (ctx: $ui.Context) => {
     );
   }
 
-  // Drift resolution: applies one of {merge, local-wins, remote-wins} to the
-  // pending drift, then clears the pendingDrift flag and pushes the chosen
-  // catalog to remote (so both sides converge immediately).
   async function resolveDrift(mode: "merge" | "local" | "remote") {
     const drift = pendingDrift.get();
     if (!drift) return;
@@ -1173,8 +1125,6 @@ export const register = (ctx: $ui.Context) => {
         resolved = { ...drift.remote, updatedAt: now };
       }
       try {
-        // Apply remote-side wins to seanime (only entries the resolution
-        // bumped past local). Same path as the regular Reload progress flow.
         const collection = await ctx.manga.getCollection();
         const lookup = buildMediaIdLookup(
           collection,
@@ -1464,8 +1414,6 @@ export const register = (ctx: $ui.Context) => {
       ctx.toast.info(url);
     }
   });
-  // Binding prompts (opened from the header ⋮ menu). "link" reveals the paste
-  // input, "delete" the irreversible-confirm banner; Cancel closes either.
   ctx.registerEventHandler("lcm-binding-link-open", () => {
     bindingPrompt.set("link");
   });
@@ -1648,10 +1596,8 @@ export const register = (ctx: $ui.Context) => {
   }
 
   function renderProgressSection() {
-    // Header row: section title on left, reload (gist only) + orphan toggle
-    // on right. In local mode the stat cards still work (progress is cached
-    // in $storage by the hooks); the reload button hides because there's no
-    // remote to reload from.
+    // In local mode the stat cards still work (progress is cached in $storage
+    // by the hooks); only the reload button hides, as there's no remote.
     const linked = hasToken() && !!effectiveGistId();
     const oCount = orphanCount();
     const oExpanded = orphansExpanded.get();
@@ -1788,9 +1734,6 @@ export const register = (ctx: $ui.Context) => {
     return tray.stack(sub, { gap: 2 });
   }
 
-  // GitHub connect/disconnect block (shared githubConnect flow). Connected via
-  // device-flow OAuth or the PAT config field; Disconnect clears the OAuth
-  // token (a PAT is cleared in config — the disconnect toast says so).
   function renderConnect(): unknown {
     const start = deviceStart.get();
     const oauth = oauthTok.get(); // reactive
@@ -1811,10 +1754,6 @@ export const register = (ctx: $ui.Context) => {
     });
   }
 
-  // The "Link existing gist…" / "Delete gist remotely…" prompts opened from the
-  // header ⋮ menu. Rendered as a top-level banner near the top of the list (like
-  // the drift banners), not buried below the Sync section. Null when no prompt
-  // is open or it doesn't match the current linked state.
   function renderBindingPrompt(): unknown {
     if (!hasToken()) return null;
     const gid = effectiveGistId();
@@ -1848,8 +1787,6 @@ export const register = (ctx: $ui.Context) => {
         },
       );
     }
-    // "Delete gist remotely…" confirm banner (replaces the old in-place
-    // arm→confirm). Only when linked.
     if (prompt === "delete" && gid) {
       const deleteBusy = busyAction.get() === "delete-gist";
       const shortId = gid.length > 12 ? `${gid.slice(0, 12)}…` : gid;
@@ -1885,11 +1822,8 @@ export const register = (ctx: $ui.Context) => {
 
   function renderSync() {
     if (hasToken()) {
-      // The binding actions live in the header ⋮ menu; the link/delete prompts
-      // render as a top-level banner (renderBindingPrompt). This section carries
-      // only the status line now.
-      // Status line only when there's an explicit op result ("Synced N",
-      // "Reloaded · N", …) — the ENTRIES header + Linked pill already convey
+      // Show the status line only on an explicit op result ("Synced N",
+      // "Reloaded · N", …); the ENTRIES header + Linked pill already convey
       // the steady state, so there's no static fallback.
       const statusLine = status.get();
       if (!statusLine) return null;
@@ -1905,14 +1839,12 @@ export const register = (ctx: $ui.Context) => {
         { gap: 2 },
       );
     }
-    // Local-only mode (no GitHub token configured).
     const localCount = entries.get().length;
     const jsonOut = serializeCatalog(
       entries.get(),
       $storage.get<number>(K_UPDATED_AT) ?? Date.now(),
     );
     const expanded = localInfoExpanded.get();
-    // The mode/badge/toggle row is rendered by the top trayHeader now.
     const items: unknown[] = [];
     if (expanded) {
       items.push(
@@ -2023,10 +1955,6 @@ export const register = (ctx: $ui.Context) => {
         hint: "Backup / inspection only — the custom-source doesn't consume this file. Reading state lives here regardless of gist mode.",
       }),
     );
-    // Section 3: smart import. Auto-detects catalog vs progress JSON and
-    // routes to the right merge / replace path (see detectImportKind +
-    // importFromField above). Single field for both shapes — simpler UX,
-    // user just pastes whatever they have.
     const localProgressCount = Object.keys(progress.get().manga).length;
     const hasLocalData = localCount > 0 || localProgressCount > 0;
     const importButtons: unknown[] = hasLocalData
@@ -2081,7 +2009,6 @@ export const register = (ctx: $ui.Context) => {
   function renderList() {
     const allEntries = entries.get();
     const drifting = hasDrift();
-    // Case-insensitive substring match on resolved title or any synonym.
     const q = entrySearch.get().toLowerCase();
     const list = q
       ? allEntries.filter((e) => {
@@ -2103,8 +2030,6 @@ export const register = (ctx: $ui.Context) => {
         opacity: drifting ? 0.5 : 1,
       };
       row.status = statusToPill(e.status);
-      // "Open →" (navigate to the seanime entry) is hidden while drift is
-      // pending; the tooltip conveys the resolved mediaId / busy state.
       if (!drifting) {
         const inListMediaId = mediaIdLookup.get()?.get(e.id);
         const computedMediaId = mediaIdForImpl(
@@ -2142,7 +2067,6 @@ export const register = (ctx: $ui.Context) => {
           // A field counts as drifted only when LOCAL has a defined value
           // that differs from seanime's. Skipping local-undefined avoids
           // false positives when the pre-hook doesn't capture a field.
-          //
           const hasDriftRow = hasEntryProgressDrift(e.id);
           // Keep the button visible during the busy window even when drift
           // resolves to false mid-flight (applyProgress refreshes the lookup
@@ -2255,8 +2179,6 @@ export const register = (ctx: $ui.Context) => {
       noMatchText: `No entries match "${q}".`,
       showSearchRow: !drifting,
     });
-    // Gist mode: drift banner (if any) → header → entries → progress → gist binding.
-    // Local mode: header (with its own callouts + JSON I/O) → entries.
     if (hasToken()) {
       const layers: unknown[] = [];
       // tray.alert can't host child buttons, so an alert's actions live in a
@@ -2355,9 +2277,6 @@ export const register = (ctx: $ui.Context) => {
           ),
         );
       }
-      // Binding prompt (link/delete) sits right under the header — above the
-      // Sync section — since it's opened from the header ⋮ menu, mirroring how
-      // the drift banners surface near the top.
       const bindingBanner = renderBindingPrompt();
       if (bindingBanner) layers.push(bindingBanner);
       const connect = renderConnect();
@@ -2372,14 +2291,11 @@ export const register = (ctx: $ui.Context) => {
         layers.push(renderProgressSection());
       }
       layers.push(entriesSection);
-      // joinDividers drops a rule between each present block; the page gap (12px)
-      // spaces every divider equally on both sides.
       return tray.stack(joinDividers(tray, layers), { gap: 3 });
     }
-    // Local mode: header + callout + JSON I/O → progress section → entries.
-    // Progress works locally (hooks save to $storage); the reload button
-    // hides itself in local mode but stat cards + orphan cleanup remain.
-    // renderSync() may be null → joinDividers skips it (no stray divider).
+    // Local mode: progress still works (hooks save to $storage); the reload
+    // button hides but stat cards + orphan cleanup remain. renderSync() may be
+    // null → joinDividers skips it (no stray divider).
     const localSync = renderSync();
     return tray.stack(
       joinDividers(tray, [
@@ -2420,7 +2336,6 @@ export const register = (ctx: $ui.Context) => {
     });
   }
 
-  // Per-entry reading progress for the form/detail view (local doc + seanime).
   function renderFormProgressSection(): unknown {
     const isNew = editingId.get() === 0;
     const id = editingId.get();
@@ -2892,14 +2807,12 @@ export const register = (ctx: $ui.Context) => {
         { gap: 3 },
       );
     }
-    // List view folds the mode + linked status + binding actions (was a
-    // separate modeHeader row inside renderSync) into the identity header.
     const gid = effectiveGistId();
     let right: unknown[];
     if (hasToken()) {
       // Gist mode: badge + a ⋮ actions menu. The paste-input / delete-confirm
       // that some items need can't live in a dropdown, so those items open an
-      // inline prompt (renderSync, driven by bindingPrompt) instead.
+      // inline prompt (renderBindingPrompt, driven by bindingPrompt) instead.
       const menuItems: unknown[] = gid
         ? [
             tray.dropdownMenuItem(tray.text("📋 Copy raw catalog URL"), {
@@ -2940,7 +2853,7 @@ export const register = (ctx: $ui.Context) => {
       ];
     } else {
       // Local mode: the ⚠️ button reveals CONTENT (limitation note + JSON
-      // export), not actions — so it stays a plain content toggle.
+      // output), not actions — so it stays a plain content toggle.
       const expanded = localInfoExpanded.get();
       right = [
         tray.badge("💻 Device only", { intent: "gray" }),

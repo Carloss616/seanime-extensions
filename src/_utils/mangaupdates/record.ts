@@ -1,13 +1,10 @@
-// Pure normalization helpers for a MangaUpdates series record, shared by both
-// MU clients (the custom-source read client's `toBaseManga` and the plugin
-// client's lightweight `MUResult` mapping). Composition over a shared base
-// class: the two clients live in separate bundles with different return shapes,
-// so they share these pure field-extractors, not inheritance.
+// Pure field-extractors for a MangaUpdates series record, shared by both MU
+// clients (they live in separate bundles with different return shapes, so they
+// share these helpers rather than a base class).
 
 type MURecord = $mu.Search.Record | $mu.Series.Response;
 
-// Parse the publication year. MU ships it as a string ("2019"); returns
-// undefined for empty/missing/non-numeric values.
+// MU ships the year as a string ("2019"); undefined for empty/non-numeric.
 export function muRecordYear(record: MURecord): number | undefined {
   const year = record.year ? parseInt(record.year, 10) : undefined;
   return Number.isNaN(year) ? undefined : year;

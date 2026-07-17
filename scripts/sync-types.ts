@@ -17,7 +17,7 @@ const TYPES_GLOB = /^internal\/extension_repo\/.*\.d\.ts$/;
 /** Upstream paths to skip (basename collisions / known conflicts). Empty today. */
 const IGNORE: string[] = [];
 
-const GOJA_REL = "types/goja"; // repo-relative; stored in meta + used for output
+const GOJA_REL = "types/goja";
 const GOJA_DIR = join(import.meta.dir, "..", GOJA_REL);
 const META_PATH = join(GOJA_DIR, ".sync-meta.json");
 
@@ -27,8 +27,6 @@ interface SyncMeta {
   committedAt: string;
   files: { src: string; out: string }[];
 }
-
-// ---------- pure helpers (unit-tested) ----------
 
 export function filterTypePaths(
   paths: string[],
@@ -62,8 +60,6 @@ export function transformSource(content: string, shortSha: string): string {
   const header = `// AUTO-SYNCED from ${REPO}@${shortSha} — do not edit. Regenerate with \`bun run sync:types\`.\n`;
   return header + stripped;
 }
-
-// ---------- github IO ----------
 
 function ghHeaders(): Record<string, string> {
   const h: Record<string, string> = {
@@ -145,10 +141,7 @@ async function downloadRaw(sha: string, path: string): Promise<string> {
   return raw.text();
 }
 
-// ---------- orchestration ----------
-
 async function main(argv: string[]): Promise<void> {
-  // Default: latest main. Pass --ref <x> to sync a specific branch/tag/SHA.
   const refFlagIdx = argv.indexOf("--ref");
   let targetRef = "main";
   if (refFlagIdx !== -1) {

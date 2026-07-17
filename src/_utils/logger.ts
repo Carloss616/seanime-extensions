@@ -1,8 +1,7 @@
-// Create a logger that prepends the owning extension's manifest id (e.g.
-// "[mangaupdates-sync]") to every call and forwards to `console`, so the same
-// logger works in both plugin and custom-source runtimes (the latter has no
-// `$debug`). The prefix comes from `__MANIFEST_ID__`, a bundle-time literal
-// injected per extension by scripts/build.ts — see types/core.d.ts.
+// Prepends the owning extension's manifest id (e.g. "[mangaupdates-sync]") to
+// every call and forwards to `console` — works in both plugin and custom-source
+// runtimes (the latter has no `$debug`). The prefix comes from `__MANIFEST_ID__`,
+// a bundle-time literal injected per extension by scripts/build.ts.
 export function createLogger(): Console {
   const prefix = `[${__MANIFEST_ID__}]`;
   return {

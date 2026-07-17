@@ -7,7 +7,6 @@ export function normalizeProviderId(raw: string): string {
     .replace(/^["']|["']$/g, "");
 }
 
-/** Reader source dropdown value from the entry-page chapter list. */
 export async function readSelectedProvider(
   ctx: $ui.Context,
   container?: $ui.DOMElement,

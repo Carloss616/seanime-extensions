@@ -6,11 +6,35 @@ disable-model-invocation: true
 
 # Prune comments
 
-Goal: cut comment noise (restatement, stale/deprecated notes, dead code) while
-preserving — and tightening — the comments that document *non-obvious* things a
-reader genuinely cannot infer from the code. In this repo that is mostly goja
-runtime traps, build-pipeline constraints, encoding math, and seanime-internal
-behavior. Comments are edited; **code is never touched**.
+Goal: **aggressively** cut comment noise. The default action on any comment is
+**delete it**. A comment survives only if it earns its place by documenting
+something a competent reader — or Claude in a future session — genuinely could
+not infer from the code itself. Comment density in this repo is far too high:
+every session accretes narration, restatement, and step-by-step play-by-play,
+and almost none of it earns its keep. The comments that DO earn their place are
+nearly all goja runtime traps, build-pipeline constraints, encoding/bit math,
+and seanime-internal behavior. Everything else goes. Comments are edited;
+**code is never touched**.
+
+**The litmus test — apply to every comment.** Ask: *would a competent engineer,
+or Claude reading only this code in a future session, be surprised or make a
+wrong change without this note?* If **no** → delete it. "Hard to write" is not
+"hard to read": a comment narrating clever logic that is now plainly visible in
+the code still goes. The bar is not "is this true / nice to know" — it is "is
+this load-bearing." Most comments fail it.
+
+**Local warning vs. general lesson — the single biggest source of retained
+noise.** A comment earns *inline* placement only if it explains why **this
+specific line** does something surprising. A comment that teaches how the
+runtime / build / architecture works *in general* — the kind of thing true of
+every extension in the repo — is **documentation, not a code comment**: it
+belongs in CLAUDE.md, not copied above each `init()`, `shared-lib.ts`, or hook.
+The tell is a multi-line essay atop a file restating a rule CLAUDE.md already
+states ("callbacks run in separate goja runtimes, so must be self-contained…",
+"`$shared.define` must come before any hook…", "the build self-containerizes
+this file…"). **Cut it, or reduce it to a one-line pointer** (`// $shared
+factory (see CLAUDE.md "$shared")`). The trap is kept *where it bites*, not
+*where it is lectured*.
 
 ## 1. Decide scope
 
@@ -53,19 +77,23 @@ removed/improved/kept plus any judgment calls.
 
 ## The rubric (the heart — paste into every agent)
 
-**REMOVE** a comment when it:
-- Restates what the code already says (`// loop over items`, `// return result`, `// constructor`).
+**REMOVE** (the default — when in doubt, remove) a comment when it:
+- Explains **what** the code does rather than **why** (`// loop over items`, `// return result`, `// set the flag`, `// constructor`). If the code already says it, the comment is noise.
+- Restates a descriptive identifier or type (`// the gist client` above `const gistClient = …`).
+- Narrates steps a reader follows straight from the code (`// Step 1: fetch`, `// now build the map`, `// finally, render`) — the play-by-play sessions accrete.
+- Is a banner / decoration / section divider that just labels the obvious (`// ---- helpers ----`, `// STATE`, `// === render ===`).
 - Is outdated/deprecated: refers to code, params, paths, UI fields, or behavior that no longer exist.
 - Is commented-out dead code.
-- Is a banner/decoration or a divider that just labels the obvious.
-- Duplicates information already obvious from a descriptive identifier or type.
+- Is obvious JSDoc: `@param name The name` on a `name: string`, or a one-line `/** The X. */` that just echoes the function name. Strip the boilerplate.
+- Restates a **repo-wide convention already documented in CLAUDE.md** as a general lesson rather than a site-local warning — the goja isolation / `$shared` / build-pipeline rules spelled out as a multi-line essay atop a `code.ts` / `shared-lib.ts` / hook. The rule lives in CLAUDE.md; an inline copy at each call site is noise. Cut it, or reduce to a one-line pointer (`see CLAUDE.md "$shared"`). See "Local warning vs. general lesson" above.
 
-**KEEP** (and improve for accuracy/concision) a comment when it:
-- Explains a non-obvious **why** — a design decision, tradeoff, ordering constraint, or workaround.
-- Documents a gotcha, edge case, or invariant a reader could not infer from the code.
-- Documents a goja-runtime trap, the build pipeline's constraints, encoding/bit math, or seanime-internal behavior (see constraints below).
+**KEEP** (rare — the comment must justify its own existence against the litmus test) only when it:
+- Explains a non-obvious **why** a competent reader could NOT reconstruct from the code: a design decision, tradeoff, ordering constraint, or workaround.
+- Warns of a gotcha, edge case, or invariant the code alone does not reveal and that getting wrong would break something.
+- Documents a goja-runtime trap, build-pipeline constraint, encoding/bit math, or seanime-internal behavior **as a pointed, site-local warning** — right where the code does the non-obvious thing (the `String()` coercion before *this* `===`, the `$storage` mirror for *this* state). A *general* explanation of how the runtime works is NOT this — that belongs in CLAUDE.md, so REMOVE it (see the REMOVE list and "Local warning vs. general lesson").
 - Is a `SPIKE:` marker (flags a value inferred from reverse-engineering) — never remove.
-- Is genuinely useful JSDoc on an exported helper. Trim redundant JSDoc, keep the meaningful description.
+- Is a `ponytail:` marker (names a deliberate simplification or a known ceiling + upgrade path) — never remove.
+- Is JSDoc on an exported helper whose description carries a real non-obvious fact — keep only that fact, drop the rest.
 
 **IMPROVE** kept comments: make them accurate to the current code, concise, and
 matching the surrounding tone. Fix any that are now wrong — these audits reliably
@@ -73,9 +101,12 @@ surface *incorrect* comments (stale paths, params that changed, truncated JSDoc,
 fragments spliced in from another function). Correcting those is as valuable as
 removing noise.
 
-When uncertain whether a comment is doc-worthy, lean toward **keeping** a tightened
-version — the cost of deleting a real warning is higher than the cost of a slightly
-verbose note, and the user reviews everything in `git diff`.
+When uncertain whether a comment is doc-worthy, **remove it** — that is the whole
+point of this pass. The one exception is a genuine trap in the high-value category
+(a real goja / build-pipeline / encoding warning): there, keep a tightened version,
+because the cost of deleting a real warning outweighs a terse note and the user
+reviews everything in `git diff`. That safety valve is for **traps, not explanatory
+prose** — do not use it to rationalize keeping narration.
 
 ## Hard constraints (paste into every agent)
 
@@ -105,7 +136,11 @@ verbose note, and the user reviews everything in `git diff`.
    `res.json()`/`res.text()` being synchronous; the `declare` class-field emit
    gotcha; the custom-source mediaId encode/decode arithmetic and the
    `ext_custom_source_<id>|END|<url>` siteUrl prefix. CLAUDE.md is the source of
-   truth for all of these.
+   truth for all of these. **Keep them as terse, site-local warnings — right
+   where the trap bites.** When the SAME fact instead appears as a multi-line
+   architecture essay in a `code.ts` / `shared-lib.ts` header (re-teaching a rule
+   CLAUDE.md already documents), that copy is noise: cut it to a one-line pointer.
+   The rule: the trap is kept where it bites, not where it is lectured.
 
 ## 4. Verify centrally (always, after all edits land)
 

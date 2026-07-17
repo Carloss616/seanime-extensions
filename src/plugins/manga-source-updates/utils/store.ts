@@ -15,8 +15,6 @@ function readObj<T>(key: string): T {
   return raw != null && typeof raw === "object" ? raw : ({} as T);
 }
 
-// --- Live filters (pure) -----------------------------------------------------
-
 export function isLive(rec: unknown): boolean {
   return rec != null && (rec as { deletedAt?: number }).deletedAt == null;
 }
@@ -72,8 +70,6 @@ export function mergeProbeTimestamps(
   }
   return out;
 }
-
-// --- $storage accessors ------------------------------------------------------
 
 export function getExcluded(): Record<string, Record<string, ExcludedRecord>> {
   return readObj<Record<string, Record<string, ExcludedRecord>>>(K_EXCLUSIONS);

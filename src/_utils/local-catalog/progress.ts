@@ -1,14 +1,8 @@
-// Shared progress-sync helpers used by both the local-catalog-manager plugin
-// (writer + sync ops) and tests.
-//
-// The custom-source mediaId codec (decodeLocalId/encodeMediaId/…) lives in
-// src/_utils/custom-source-id.ts — import it from there.
-//
-// The wire/storage doc (LocalProgress) has symmetric `manga` and `anime`
-// namespaces keyed by stringified localId. Entries are seanime's native
-// Manga_/Anime_EntryListData plus a per-entry `updatedAt` (epoch ms) that drives
-// last-write-wins. `score` carries the AniList RAW (POINT_100) value — see
-// types/local-catalog.d.ts.
+// Shared progress-sync helpers for the local-catalog-manager plugin. The
+// LocalProgress doc has symmetric `manga`/`anime` maps keyed by stringified
+// localId; entries are native Manga_/Anime_EntryListData plus a per-entry
+// `updatedAt` (epoch ms) driving last-write-wins. `score` carries the AniList
+// RAW (POINT_100) value. See types/local-catalog.d.ts.
 
 export const EMPTY_DOC: LocalProgress = {
   version: 1,
@@ -21,9 +15,8 @@ function emptyDoc(): LocalProgress {
   return { version: 1, updatedAt: 0, manga: {}, anime: {} };
 }
 
-// Normalize one namespace map (manga or anime). Each stored entry is SPREAD so
-// every field survives — forward-compatible: new Manga_/Anime_EntryListData
-// fields don't need enumerating here. We only guarantee `updatedAt` is a number,
+// Each stored entry is SPREAD so every field survives — forward-compatible with
+// new Manga_/Anime_EntryListData fields. Only `updatedAt` is guaranteed numeric,
 // the one invariant the LWW merge relies on.
 function parseEntries<T extends { updatedAt: number }>(
   src: unknown,
@@ -161,7 +154,6 @@ function mergeEntries<T extends { updatedAt?: number; progress?: number }>(
       out[id] = lu > ru ? { ...l } : { ...r };
       continue;
     }
-    // Same updatedAt → defer to higher progress (monotonic-read assumption).
     const lp = l.progress ?? 0;
     const rp = r.progress ?? 0;
     out[id] = lp >= rp ? { ...l } : { ...r };
@@ -220,10 +212,8 @@ export function progressMangaEquals(
   return true;
 }
 
-// Counts of ids unique to each side + ids whose fields disagree. Used by the
-// link-drift UI to summarize the situation before the user picks a strategy.
-// "Conflicts" only flags same-id entries with disagreeing status/progress/
-// score — same-id entries with identical fields are treated as equivalent.
+// Counts of ids unique to each side + conflicts. "Conflicts" only flags same-id
+// entries with disagreeing status/progress/score — identical fields are equivalent.
 export function diffProgress(
   local: LocalProgress,
   remote: LocalProgress,
