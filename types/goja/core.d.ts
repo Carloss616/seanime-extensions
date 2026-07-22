@@ -1,4 +1,4 @@
-// AUTO-SYNCED from 5rahim/seanime@46d7aec — do not edit. Regenerate with `bun run sync:types`.
+// AUTO-SYNCED from 5rahim/seanime@a8e4b22 — do not edit. Regenerate with `bun run sync:types`.
 /**
  * Is offline
  */

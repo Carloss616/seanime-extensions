@@ -1,4 +1,4 @@
-// AUTO-SYNCED from 5rahim/seanime@46d7aec — do not edit. Regenerate with `bun run sync:types`.
+// AUTO-SYNCED from 5rahim/seanime@a8e4b22 — do not edit. Regenerate with `bun run sync:types`.
 
 declare namespace $ui {
     /**
@@ -514,7 +514,7 @@ declare namespace $ui {
         close(): void
 
         /** Updates the badge number of the tray icon. 0 = no badge. Default intent is "info". */
-        updateBadge(options: { number: number, intent?: "success" | "error" | "warning" | "info" }): void
+        updateBadge(options: { number: number, intent?: "success" | "error" | "warning" | "info" | "alert" }): void
     }
 
     interface WebviewOptions {
@@ -1935,6 +1935,12 @@ declare namespace $ui {
         setLegacyAnimeActivity(activity: $app.DiscordRPC_LegacyAnimeActivity): void
 
         /**
+         * Set a custom rich presence activity.
+         * @param activity - The custom activity to set
+         */
+        setCustomActivity(activity: $app.DiscordRPC_CustomActivity): void
+
+        /**
          * Cancels the current activity by closing the discord RPC client
          */
         cancelActivity(): void
@@ -2814,6 +2820,11 @@ declare namespace $database {
          * Get the Anilist username
          */
         function getUsername(): string
+
+        /**
+         * Get the Anilist avatar URL
+         */
+        function getAvatarUrl(): string
     }
 
     namespace autoDownloaderRules {

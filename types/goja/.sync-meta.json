@@ -1,7 +1,7 @@
 {
   "repo": "5rahim/seanime",
-  "ref": "46d7aec101195e530f40a503521d13c51d18f849",
-  "committedAt": "2026-07-08T14:17:38Z",
+  "ref": "a8e4b22d0cfabf540173d59dec232fbc1c835fbc",
+  "committedAt": "2026-07-21T09:55:00Z",
   "files": [
     {
       "src": "internal/extension_repo/goja_manga_test/manga-provider.d.ts",
