@@ -5,6 +5,14 @@ All notable changes to this extension are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.8] - 2026-07-22
+
+### Fixed
+- The whole-list source refresh stopped triggering an MSU scan on newer seanime. seanime replaced the library's **Refresh sources** dropdown item with a **Refresh manga sources** modal, and the plugin was still listening for the old menu — so running a native refresh no longer scanned your list for new chapters.
+
+### Added
+- MSU now appears inside seanime's **Refresh manga sources** modal as its own card (plugin icon, name, and a **Scan all sources** button) that runs a whole-list plugin scan independently of seanime's own refresh.
+
 ## [1.8.7] - 2026-07-16
 
 ### Fixed

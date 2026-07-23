@@ -8,6 +8,7 @@ import { GistClient } from "../../../_utils/gist/client";
 import { GITHUB_CLIENT_ID } from "../../../_utils/gist/constants";
 import { DeviceFlowClient } from "../../../_utils/gist/device-flow";
 import { createLogger } from "../../../_utils/logger";
+import refreshCardHtml from "../assets/refresh-source-card.html";
 import scanPanelHtml from "../assets/scan-panel.html";
 import { readCardAttrs } from "../utils/card-dom";
 import { makeProbe, unreadChapters } from "../utils/chapters";
@@ -2319,40 +2320,54 @@ export const register = (ctx: $ui.Context) => {
     }
   };
 
-  // Mirror the library page's "Refresh sources" dropdown item (a radix menu
-  // portaled to the document root). Unlike the entry page's "Reload sources" it
-  // fires with NO confirmation, so hooking it directly would launch the heavy
-  // whole-list scan on a single click — instead open our own confirm modal
-  // (requestConfirm). The menu item carries no data-* of
-  // its own; match it by text (lowercased) among the menu's [role=menuitem]s, so
-  // the sibling "Unread chapters only" and every other menu are skipped. Stamp
-  // data-msu-refresh-hooked so repeated observer fires within one open don't
-  // double-attach; each re-open is a fresh element → re-hooked. query()[0], never
-  // the denshi-broken queryOne.
-  const hookRefreshMenu = async (menu: $ui.DOMElement) => {
-    let items: $ui.DOMElement[] = [];
+  // The library whole-list refresh (the "Refresh" button + "Refresh sources"
+  // menu item) now just opens seanime's "Refresh manga sources" modal. An
+  // injected ctx.dom listener CANNOT cancel seanime's own "Start refresh"
+  // handler — the event is serialized to the plugin runtime long after React
+  // ran — so MSU can't piggy-back on that button; it injects its own card into
+  // the modal body instead. Idle-only: gated on the RadioGroup, which mounts
+  // only in the mode-select state, so once the job runs there's no group and
+  // sig "busy" parks a hidden marker.
+  // Function replacers so a `$` in the value isn't read as a `$&` pattern.
+  const MSU_CARD_HTML = refreshCardHtml
+    .replace("__MANIFEST_ICON__", () => escHtml(String(__MANIFEST_ICON__)))
+    .replace("__MANIFEST_NAME__", () => escHtml(String(__MANIFEST_NAME__)));
+
+  const hookSourceRefreshModal = async (dialog: $ui.DOMElement) => {
+    if (!syncNativeButtons()) return;
     try {
-      items = (await menu.query("[role='menuitem']")) ?? [];
+      if ((await dialogTitle(dialog)) !== "refresh manga sources") return;
     } catch {
       return;
     }
-    for (const item of items) {
-      try {
-        const text = String((await item.getText()) ?? "")
-          .trim()
-          .toLowerCase();
-        if (text !== "refresh sources") continue;
-        if (await item.hasAttribute("data-msu-refresh-hooked")) return;
-        item.setAttribute("data-msu-refresh-hooked", "1");
-        item.addEventListener("click", () => {
-          if (!syncNativeButtons()) return; // native-button sync disabled
-          requestConfirm("scan");
-        });
-      } catch {
-        /* couldn't hook this item */
-      }
-      return;
-    }
+    await dm.decorate(dialog, {
+      marker: "msu-refresh-modal",
+      lockKey: "refresh-modal",
+      scope: dialog,
+      sig: async () =>
+        (await dialog.query(".UI-RadioGroup__root"))?.[0] ? "idle" : "busy",
+      render: async (node) => {
+        // `dialog` IS `.UI-Modal__content` (radix stamps role="dialog" on the
+        // Content element), so header/body/footer are its direct children and
+        // querying for content (descendant-only) would miss the node it's on.
+        const footer = (await dialog.query(".UI-Modal__footer"))?.[0];
+        const group = (await dialog.query(".UI-RadioGroup__root"))?.[0];
+        if (!footer || !group) {
+          node.setStyle("display", "none");
+          dialog.append(node);
+          return;
+        }
+        node.setAttribute(
+          "class",
+          "rounded-xl border border-brand-500/40 bg-brand-500/5 p-3 space-y-2",
+        );
+        node.setInnerHTML(MSU_CARD_HTML);
+        const btn = (await node.query("[data-msu-scan-btn]"))?.[0];
+        btn?.addEventListener("click", () => requestConfirm("scan"));
+        // Content-level sibling → inherits `.UI-Modal__content`'s grid gap-4.
+        footer.before(node);
+      },
+    });
   };
 
   // In-place read reactivity: reading a chapter changes the entry header's
@@ -2412,16 +2427,12 @@ export const register = (ctx: $ui.Context) => {
     (els) => {
       for (const el of els ?? []) {
         void hookReloadModal(el);
+        void hookSourceRefreshModal(el);
         void watchManualMatchDialog(el);
       }
     },
     { withInnerHTML: true },
   );
-  // The library page's "Refresh sources" dropdown is a radix menu portal — hook
-  // its item on every open (radix re-mounts the menu each time).
-  dm.observe("[role='menu']", (els) => {
-    for (const el of els ?? []) void hookRefreshMenu(el);
-  });
   dm.observe("[data-media-page-header-progress-badge-progress]", (els) => {
     void (async () => {
       await applyProgressFromDom(els?.[0]);

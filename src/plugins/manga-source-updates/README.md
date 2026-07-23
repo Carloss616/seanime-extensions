@@ -5,7 +5,7 @@
 # 🔎 Manga Source Updates
 
 ![Type](https://shieldcn.dev/badge/type-plugin-3b82f6.svg?variant=secondary)
-![Version](https://shieldcn.dev/badge/version-1.8.7-22c55e.svg?variant=secondary)
+![Version](https://shieldcn.dev/badge/version-1.8.8-22c55e.svg?variant=secondary)
 ![TypeScript](https://shieldcn.dev/badge/TypeScript.svg?logo=typescript&color=3178C6&variant=secondary)
 
 **Scans your reading list against every installed manga provider and tells you which sources have new chapters — now synced across your devices.**
@@ -57,7 +57,7 @@ This plugin re-checks your **CURRENT** list across *all* installed providers and
 | `ttlMinutes` | `60` | Skip re-checking a manga scanned within N minutes (**Force rescan** ignores it). |
 | `farBehindGap` | `10` | Auto-exclude a source this many chapters behind your progress. |
 | `parallelBatch` | `10` | Providers probed at once per manga. |
-| `syncNativeButtons` | `true` | Also scan on seanime's **Reload sources** (entry) / **Refresh sources** (library). |
+| `syncNativeButtons` | `true` | Also scan on seanime's **Refresh source** (entry) and inject an **MSU card** (plugin icon + name + a *Scan all sources* button) into seanime's **Refresh manga sources** modal (library), below the mode options. |
 | `githubPat` | *(empty)* | GitHub PAT with the `gist` scope — fallback auth for [Sync](#-sync). |
 | `autoSync` | `false` | Periodically sync via the Gist (needs GitHub auth). |
 | `syncIntervalMinutes` | `30` | Auto-sync interval in minutes (min 5). |

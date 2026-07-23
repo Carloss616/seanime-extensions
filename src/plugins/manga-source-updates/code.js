@@ -800,6 +800,43 @@ var register = (...args) => {
       debug: (...args2) => console.debug(prefix, ...args2),
     };
   }
+  var refresh_source_card_default = `<div class="flex items-center gap-2">
+  <img src="__MANIFEST_ICON__" alt="" class="h-5 w-5 rounded object-cover shrink-0" />
+  <span class="block font-medium text-[--foreground]">__MANIFEST_NAME__</span>
+</div>
+<p class="text-sm text-[--muted]">
+  Scan every manga in your reading list across all installed sources for new
+  chapters — runs independently of seanime's refresh above.
+</p>
+<div class="flex justify-end">
+  <button
+    type="button"
+    data-msu-scan-btn
+    class="UI-Button_root whitespace-nowrap font-medium rounded-lg inline-flex items-center text-center justify-center focus-visible:outline-none focus-visible:ring-1 ring-offset-1 ring-offset-[--background] focus-visible:ring-white/40 disabled:opacity-50 disabled:pointer-events-none disabled:transform-none text-white border bg-brand-500 border-brand-400/20 active:bg-opacity-100 dark:bg-opacity-70 dark:hover:bg-opacity-90 text-sm h-8 px-2.5 transition-all duration-150 ease-[cubic-bezier(0.25,1,0.5,1)] motion-safe:hover:scale-[1.01] motion-safe:active:scale-[0.98]"
+  >
+    <span
+      class="UI-Button__icon inline-flex self-center flex-shrink-0"
+      style="margin-inline-end: 0.5rem"
+      ><svg
+        stroke="currentColor"
+        fill="none"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        height="1em"
+        width="1em"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+        <path d="M3 3v5h5"></path>
+        <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"></path>
+        <path d="M16 16h5v5"></path></svg
+    ></span>
+    <span class="md:inline-block">Scan all sources</span>
+  </button>
+</div>
+`;
   var scan_panel_default = `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>MSU scan</title><style>
 /* seanime's Tailwind + theme tokens are NOT loaded inside a webview iframe
@@ -3514,28 +3551,48 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
         });
       } catch {}
     };
-    const hookRefreshMenu = async (menu) => {
-      let items = [];
+    const MSU_CARD_HTML = refresh_source_card_default
+      .replace("__MANIFEST_ICON__", () =>
+        escHtml(
+          String(
+            "https://raw.githubusercontent.com/Carloss616/seanime-extensions/main/src/plugins/manga-source-updates/assets/icon.png",
+          ),
+        ),
+      )
+      .replace("__MANIFEST_NAME__", () =>
+        escHtml(String("Manga Source Updates")),
+      );
+    const hookSourceRefreshModal = async (dialog) => {
+      if (!syncNativeButtons()) return;
       try {
-        items = (await menu.query("[role='menuitem']")) ?? [];
+        if ((await dialogTitle(dialog)) !== "refresh manga sources") return;
       } catch {
         return;
       }
-      for (const item of items) {
-        try {
-          const text = String((await item.getText()) ?? "")
-            .trim()
-            .toLowerCase();
-          if (text !== "refresh sources") continue;
-          if (await item.hasAttribute("data-msu-refresh-hooked")) return;
-          item.setAttribute("data-msu-refresh-hooked", "1");
-          item.addEventListener("click", () => {
-            if (!syncNativeButtons()) return;
-            requestConfirm("scan");
-          });
-        } catch {}
-        return;
-      }
+      await dm.decorate(dialog, {
+        marker: "msu-refresh-modal",
+        lockKey: "refresh-modal",
+        scope: dialog,
+        sig: async () =>
+          (await dialog.query(".UI-RadioGroup__root"))?.[0] ? "idle" : "busy",
+        render: async (node) => {
+          const footer = (await dialog.query(".UI-Modal__footer"))?.[0];
+          const group = (await dialog.query(".UI-RadioGroup__root"))?.[0];
+          if (!footer || !group) {
+            node.setStyle("display", "none");
+            dialog.append(node);
+            return;
+          }
+          node.setAttribute(
+            "class",
+            "rounded-xl border border-brand-500/40 bg-brand-500/5 p-3 space-y-2",
+          );
+          node.setInnerHTML(MSU_CARD_HTML);
+          const btn = (await node.query("[data-msu-scan-btn]"))?.[0];
+          btn?.addEventListener("click", () => requestConfirm("scan"));
+          footer.before(node);
+        },
+      });
     };
     const applyProgressFromDom = async (badgeEl) => {
       const id = currentMediaId.get();
@@ -3581,14 +3638,12 @@ body{background:transparent;font-family:-apple-system,system-ui,sans-serif}
       (els) => {
         for (const el of els ?? []) {
           hookReloadModal(el);
+          hookSourceRefreshModal(el);
           watchManualMatchDialog(el);
         }
       },
       { withInnerHTML: true },
     );
-    dm.observe("[role='menu']", (els) => {
-      for (const el of els ?? []) hookRefreshMenu(el);
-    });
     dm.observe("[data-media-page-header-progress-badge-progress]", (els) => {
       (async () => {
         await applyProgressFromDom(els?.[0]);
